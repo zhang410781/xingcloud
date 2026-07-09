@@ -60,6 +60,54 @@
       </div>
     </section>
 
+    <section class="workbench-card health-panel">
+      <div class="section-toolbar">
+        <div class="toolbar-head">
+          <span class="toolbar-title">可观测健康状态</span>
+          <span class="toolbar-desc">展示 Prometheus、ClickHouse 与规则引擎最近一次真实检测结果。</span>
+        </div>
+      </div>
+
+      <div class="health-summary-grid">
+        <div class="health-summary-item">
+          <span>可用</span>
+          <strong>{{ datasourceHealth.summary?.ok || 0 }}</strong>
+        </div>
+        <div class="health-summary-item">
+          <span>异常</span>
+          <strong>{{ datasourceHealth.summary?.error || 0 }}</strong>
+        </div>
+        <div class="health-summary-item">
+          <span>未接入</span>
+          <strong>{{ datasourceHealth.summary?.not_configured || 0 }}</strong>
+        </div>
+        <div class="health-summary-item">
+          <span>规则失败</span>
+          <strong>{{ ruleEngine.failed_rules || 0 }}</strong>
+        </div>
+      </div>
+
+      <el-table :data="healthRows" size="small" class="health-table" empty-text="暂无数据源健康记录">
+        <el-table-column prop="kind" label="类型" width="90" />
+        <el-table-column prop="name" label="数据源" min-width="180" />
+        <el-table-column prop="environment" label="环境/集群" min-width="140">
+          <template #default="{ row }">{{ [row.environment, row.cluster_name].filter(Boolean).join(' / ') || '-' }}</template>
+        </el-table-column>
+        <el-table-column prop="last_check_status" label="状态" width="110">
+          <template #default="{ row }">
+            <el-tag :type="healthStatusType(row.last_check_status)" size="small">{{ healthStatusText(row.last_check_status) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="last_check_latency_ms" label="延迟" width="90">
+          <template #default="{ row }">{{ row.last_check_latency_ms ? `${row.last_check_latency_ms}ms` : '-' }}</template>
+        </el-table-column>
+        <el-table-column prop="last_check_at" label="最近检测" width="170">
+          <template #default="{ row }">{{ formatHealthTime(row.last_check_at) }}</template>
+        </el-table-column>
+        <el-table-column prop="last_check_message" label="摘要" min-width="220" show-overflow-tooltip />
+      </el-table>
+    </section>
+
   </div>
 </template>
 
@@ -77,6 +125,12 @@ const overview = ref({ modules: {}, summary: {} })
 const logDataSources = ref([])
 const metricDataSources = ref([])
 const alertRules = ref([])
+const datasourceHealth = computed(() => overview.value.datasource_health || { summary: {}, metrics: [], logs: [] })
+const ruleEngine = computed(() => overview.value.rule_engine || {})
+const healthRows = computed(() => [
+  ...(datasourceHealth.value.metrics || []).map((item) => ({ ...item, kind: '指标' })),
+  ...(datasourceHealth.value.logs || []).map((item) => ({ ...item, kind: '日志' })),
+])
 
 const capabilityCards = computed(() => [
   {
@@ -137,6 +191,29 @@ const datasourceCards = computed(() => [
 
 function openDatasourceConfig(item) {
   router.push(item.route)
+}
+
+function healthStatusText(status) {
+  return {
+    ok: '可用',
+    error: '异常',
+    not_configured: '未接入',
+    unknown: '未检测',
+  }[status] || status || '未检测'
+}
+
+function healthStatusType(status) {
+  return {
+    ok: 'success',
+    error: 'danger',
+    not_configured: 'info',
+    unknown: 'warning',
+  }[status] || 'info'
+}
+
+function formatHealthTime(value) {
+  if (!value) return '-'
+  return new Date(value).toLocaleString('zh-CN', { hour12: false })
 }
 
 async function loadOverview() {
@@ -334,6 +411,42 @@ onMounted(loadOverview)
   font-weight: 700;
 }
 
+.health-panel {
+  padding: 14px 16px 16px;
+}
+
+.health-summary-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 12px;
+}
+
+.health-summary-item {
+  background: #fff;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+}
+
+.health-summary-item span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.health-summary-item strong {
+  color: #0f172a;
+  font-size: 20px;
+}
+
+.health-table {
+  border-radius: 8px;
+  overflow: hidden;
+}
+
 .hero-actions :deep(.el-button) {
   border-radius: 10px;
   font-weight: 500;
@@ -343,7 +456,8 @@ onMounted(loadOverview)
 
 @media (max-width: 900px) {
   .audit-grid,
-  .datasource-grid {
+  .datasource-grid,
+  .health-summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -360,7 +474,8 @@ onMounted(loadOverview)
   }
 
   .audit-grid,
-  .datasource-grid {
+  .datasource-grid,
+  .health-summary-grid {
     grid-template-columns: 1fr;
   }
 }

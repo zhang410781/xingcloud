@@ -42,6 +42,8 @@ from .models import (
     NginxDomain,
     NginxEnvironment,
     NginxRoute,
+    ObservabilityDashboard,
+    ObservabilityDashboardPanel,
     TransactionTicket,
     TaskResource,
     TaskResourceGroup,
@@ -72,6 +74,21 @@ METRIC_SENSITIVE_KEYS = {
 
 def normalize_json_object(value):
     return value if isinstance(value, dict) else {}
+
+
+def mask_sensitive_config(value, sensitive_keys):
+    if isinstance(value, dict):
+        masked = {}
+        for key, item in value.items():
+            normalized_key = str(key).lower()
+            if normalized_key in sensitive_keys:
+                masked[key] = 'configured' if item else ''
+            else:
+                masked[key] = mask_sensitive_config(item, sensitive_keys)
+        return masked
+    if isinstance(value, list):
+        return [mask_sensitive_config(item, sensitive_keys) for item in value]
+    return value
 
 
 def validate_host_task_payload(task_type, payload):
@@ -178,6 +195,11 @@ class LogDataSourceSerializer(serializers.ModelSerializer):
         model = LogDataSource
         fields = '__all__'
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['config'] = mask_sensitive_config(data.get('config') or {}, LOG_SENSITIVE_KEYS)
+        return data
+
 
 class MetricDataSourceSerializer(serializers.ModelSerializer):
     provider_display = serializers.CharField(source='get_provider_display', read_only=True)
@@ -185,6 +207,93 @@ class MetricDataSourceSerializer(serializers.ModelSerializer):
     class Meta:
         model = MetricDataSource
         fields = '__all__'
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['config'] = mask_sensitive_config(data.get('config') or {}, METRIC_SENSITIVE_KEYS)
+        return data
+
+
+class ObservabilityDashboardPanelSerializer(serializers.ModelSerializer):
+    datasource_type_display = serializers.CharField(source='get_datasource_type_display', read_only=True)
+
+    class Meta:
+        model = ObservabilityDashboardPanel
+        fields = [
+            'id',
+            'key',
+            'title',
+            'chart_type',
+            'datasource_type',
+            'datasource_type_display',
+            'targets',
+            'options',
+            'sort_order',
+            'created_at',
+            'updated_at',
+        ]
+
+    def validate_targets(self, value):
+        if value in (None, ''):
+            return []
+        if not isinstance(value, list):
+            raise serializers.ValidationError('targets must be a list')
+        return value
+
+    def validate_options(self, value):
+        return value if isinstance(value, dict) else {}
+
+
+class ObservabilityDashboardSerializer(serializers.ModelSerializer):
+    panels = ObservabilityDashboardPanelSerializer(many=True, required=False)
+
+    class Meta:
+        model = ObservabilityDashboard
+        fields = [
+            'id',
+            'title',
+            'description',
+            'tags',
+            'layout',
+            'is_builtin',
+            'is_enabled',
+            'panels',
+            'created_at',
+            'updated_at',
+        ]
+
+    def validate_tags(self, value):
+        if value in (None, ''):
+            return []
+        if not isinstance(value, list):
+            raise serializers.ValidationError('tags must be a list')
+        return value
+
+    def validate_layout(self, value):
+        return value if isinstance(value, dict) else {}
+
+    def _replace_panels(self, dashboard, panels):
+        if panels is None:
+            return
+        dashboard.panels.all().delete()
+        for index, panel in enumerate(panels):
+            ObservabilityDashboardPanel.objects.create(
+                dashboard=dashboard,
+                sort_order=panel.get('sort_order') or index + 1,
+                **{key: value for key, value in panel.items() if key != 'sort_order'},
+            )
+
+    def create(self, validated_data):
+        panels = validated_data.pop('panels', [])
+        dashboard = ObservabilityDashboard.objects.create(**validated_data)
+        self._replace_panels(dashboard, panels)
+        return dashboard
+
+    def update(self, instance, validated_data):
+        panels = validated_data.pop('panels', None)
+        instance = super().update(instance, validated_data)
+        self._replace_panels(instance, panels)
+        return instance
 
 
 class DockerHostSerializer(serializers.ModelSerializer):

@@ -35,7 +35,7 @@ spec:
           command:
             - python
             - manage.py
-            - run_host_task_scheduler
+            - run_ops_scheduler
           resources:
             requests:
               cpu: 100m

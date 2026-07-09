@@ -369,8 +369,9 @@
               <el-tag :type="row.is_enabled ? 'success' : 'info'" size="small">{{ row.is_enabled ? '&#x542F;&#x7528;' : '&#x505C;&#x7528;' }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="&#x64CD;&#x4F5C;" width="180" fixed="right">
+          <el-table-column label="&#x64CD;&#x4F5C;" width="220" fixed="right">
             <template #default="{ row }">
+              <el-button v-if="canManageConfig" link size="small" type="success" @click="dryRunAlertRule(row)">&#x8BD5;&#x8FD0;&#x884C;</el-button>
               <el-button v-if="canManageConfig" link size="small" type="primary" @click="testAlertRule(row)">&#x89E6;&#x53D1;</el-button>
               <el-button v-if="canManageConfig" link size="small" @click="openAlertRule(row)">&#x7F16;&#x8F91;</el-button>
               <el-popconfirm v-if="canManageConfig" title="&#x5220;&#x9664;&#x8BE5;&#x544A;&#x8B66;&#x89C4;&#x5219;&#xFF1F;" @confirm="removeAlertRule(row.id)">
@@ -814,6 +815,7 @@ import {
   deleteAlertRecipientGroup,
   deleteAlertRule,
   deleteAlertRuleTemplate,
+  evaluateAlertRule,
   escalateAlert,
   getAlertAggregationRules,
   getAlertEscalationPolicies,
@@ -1573,6 +1575,19 @@ async function removeAlertRuleTemplate(id) {
   await deleteAlertRuleTemplate(id)
   ElMessage.success('\u89C4\u5219\u6A21\u677F\u5DF2\u5220\u9664')
   await fetchAlertRuleTemplates()
+}
+
+async function dryRunAlertRule(row) {
+  const result = await evaluateAlertRule(row.id, { dry_run: true })
+  const lines = [
+    `规则：${row.name}`,
+    `匹配结果：${result.matched_count || 0}`,
+    `预计触发：${result.would_fire_count || 0}`,
+  ]
+  if (result.error) lines.push(`错误：${result.error}`)
+  await ElMessageBox.alert(lines.join('\n'), '规则试运行', {
+    confirmButtonText: '知道了',
+  })
 }
 
 async function testAlertRule(row) {

@@ -634,6 +634,73 @@ def dispatch_alert_notifications(alert, action='fire', request=None, force=False
     return logs
 
 
+def _storm_group_key(alert):
+    return '|'.join([
+        alert.environment or '-',
+        alert.cluster or '-',
+        alert.namespace or '-',
+        alert.resource or alert.service or '-',
+    ])
+
+
+def _mark_notification_batch(alert, batch):
+    raw_payload = dict(alert.raw_payload or {})
+    raw_payload['notification_batch'] = batch
+    alert.raw_payload = raw_payload
+    alert.save(update_fields=['raw_payload', 'updated_at'])
+
+
+def dispatch_alert_batch_notifications(alerts, action='fire', request=None, force=False, storm_threshold=3):
+    alerts = [alert for alert in alerts or [] if alert]
+    if not alerts:
+        return {'notified_count': 0, 'notification_logs': [], 'storm_batches': []}
+
+    logs = []
+    notified = set()
+    storm_batches = []
+    groups = defaultdict(list)
+    for alert in alerts:
+        groups[_storm_group_key(alert)].append(alert)
+
+    for group_key, group_alerts in groups.items():
+        if len(group_alerts) >= storm_threshold:
+            ordered = sorted(group_alerts, key=lambda item: (LEVEL_RANK.get(item.level, 0), item.created_at or timezone.now()), reverse=True)
+            primary = ordered[0]
+            batch = {
+                'mode': 'storm',
+                'group_key': group_key,
+                'count': len(group_alerts),
+                'primary_alert_id': primary.id,
+                'action': action,
+            }
+            storm_batches.append(batch)
+            for alert in group_alerts:
+                _mark_notification_batch(alert, {**batch, 'role': 'primary' if alert.id == primary.id else 'timeline_only'})
+            if primary.id not in notified:
+                logs.extend(dispatch_alert_notifications(primary, action=action, request=request, force=force))
+                notified.add(primary.id)
+            continue
+
+        for alert in group_alerts:
+            if alert.id in notified:
+                continue
+            _mark_notification_batch(alert, {
+                'mode': 'single',
+                'group_key': group_key,
+                'count': 1,
+                'primary_alert_id': alert.id,
+                'action': action,
+            })
+            logs.extend(dispatch_alert_notifications(alert, action=action, request=request, force=force))
+            notified.add(alert.id)
+
+    return {
+        'notified_count': len(notified),
+        'notification_logs': logs,
+        'storm_batches': storm_batches,
+    }
+
+
 def apply_escalation_policy(alert, request=None):
     if alert.status not in {Alert.STATUS_ACTIVE, Alert.STATUS_MUTED}:
         return False

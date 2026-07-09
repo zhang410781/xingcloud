@@ -974,6 +974,43 @@ class AlertRule(models.Model):
         return self.name
 
 
+class AlertRuleState(models.Model):
+    STATUS_PENDING = 'pending'
+    STATUS_ACTIVE = 'active'
+    STATUS_RESOLVED = 'resolved'
+    STATUS_ERROR = 'error'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_ACTIVE, 'Active'),
+        (STATUS_RESOLVED, 'Resolved'),
+        (STATUS_ERROR, 'Error'),
+    ]
+
+    rule = models.ForeignKey(AlertRule, on_delete=models.CASCADE, related_name='states')
+    fingerprint = models.CharField(max_length=128, db_index=True)
+    labels = models.JSONField(default=dict, blank=True)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    first_seen_at = models.DateTimeField(null=True, blank=True)
+    last_seen_at = models.DateTimeField(null=True, blank=True)
+    last_value = models.FloatField(null=True, blank=True)
+    last_error = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['rule_id', 'fingerprint']
+        constraints = [
+            models.UniqueConstraint(fields=['rule', 'fingerprint'], name='uniq_ops_alert_rule_state'),
+        ]
+        indexes = [
+            models.Index(fields=['rule', 'status'], name='ops_ars_rule_status_idx'),
+            models.Index(fields=['last_seen_at'], name='ops_ars_last_seen_idx'),
+        ]
+
+    def __str__(self):
+        return f'{self.rule_id}:{self.fingerprint[:12]}:{self.status}'
+
+
 class AlertRecipient(models.Model):
     name = models.CharField('姓名', max_length=64)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='alert_recipients', verbose_name='平台用户')
@@ -1289,6 +1326,10 @@ class LogDataSource(models.Model):
     config = models.JSONField('连接配置', default=dict, blank=True)
     is_enabled = models.BooleanField('启用', default=True)
     is_default = models.BooleanField('默认数据源', default=False)
+    last_check_at = models.DateTimeField('最近检测时间', null=True, blank=True)
+    last_check_status = models.CharField('最近检测状态', max_length=32, blank=True, default='')
+    last_check_message = models.CharField('最近检测信息', max_length=500, blank=True, default='')
+    last_check_latency_ms = models.PositiveIntegerField('最近检测延迟毫秒', null=True, blank=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
@@ -1316,6 +1357,10 @@ class MetricDataSource(models.Model):
     config = models.JSONField('连接配置', default=dict, blank=True)
     is_enabled = models.BooleanField('启用', default=True)
     is_default = models.BooleanField('默认数据源', default=False)
+    last_check_at = models.DateTimeField('最近检测时间', null=True, blank=True)
+    last_check_status = models.CharField('最近检测状态', max_length=32, blank=True, default='')
+    last_check_message = models.CharField('最近检测信息', max_length=500, blank=True, default='')
+    last_check_latency_ms = models.PositiveIntegerField('最近检测延迟毫秒', null=True, blank=True)
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
@@ -1330,6 +1375,70 @@ class MetricDataSource(models.Model):
 
     def __str__(self):
         return f'{self.name} ({self.get_provider_display()})'
+
+
+class ObservabilityDashboard(models.Model):
+    title = models.CharField('标题', max_length=128)
+    description = models.CharField('描述', max_length=500, blank=True, default='')
+    tags = models.JSONField('标签', default=list, blank=True)
+    layout = models.JSONField('布局', default=dict, blank=True)
+    is_builtin = models.BooleanField('内置看板', default=False)
+    is_enabled = models.BooleanField('启用', default=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '可观测看板'
+        verbose_name_plural = '可观测看板'
+        ordering = ['-is_builtin', 'title']
+        indexes = [
+            models.Index(fields=['is_enabled', 'is_builtin'], name='ops_ob_dash_enabled_idx'),
+        ]
+
+    def __str__(self):
+        return self.title
+
+
+class ObservabilityDashboardPanel(models.Model):
+    DATASOURCE_PROMETHEUS = 'prometheus'
+    DATASOURCE_CLICKHOUSE = 'clickhouse'
+    DATASOURCE_SLA = 'sla'
+    DATASOURCE_CHOICES = [
+        (DATASOURCE_PROMETHEUS, 'Prometheus'),
+        (DATASOURCE_CLICKHOUSE, 'ClickHouse'),
+        (DATASOURCE_SLA, 'SLA'),
+    ]
+
+    dashboard = models.ForeignKey(ObservabilityDashboard, on_delete=models.CASCADE, related_name='panels', verbose_name='看板')
+    key = models.SlugField('面板标识', max_length=128, blank=True, default='')
+    title = models.CharField('标题', max_length=128)
+    chart_type = models.CharField('图表类型', max_length=32, default='timeseries')
+    datasource_type = models.CharField('数据源类型', max_length=32, choices=DATASOURCE_CHOICES, default=DATASOURCE_PROMETHEUS)
+    targets = models.JSONField('查询目标', default=list, blank=True)
+    options = models.JSONField('展示选项', default=dict, blank=True)
+    sort_order = models.PositiveIntegerField('排序', default=100)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '可观测看板面板'
+        verbose_name_plural = '可观测看板面板'
+        ordering = ['dashboard_id', 'sort_order', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['dashboard', 'key'], name='uniq_ops_ob_dash_panel_key'),
+        ]
+        indexes = [
+            models.Index(fields=['dashboard', 'sort_order'], name='ops_ob_panel_order_idx'),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self.key:
+            base = slugify(self.title)[:96] or 'panel'
+            self.key = f'{base}-{uuid.uuid4().hex[:8]}'
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f'{self.dashboard_id}:{self.title}'
 
 
 class K8sCluster(models.Model):

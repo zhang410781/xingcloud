@@ -34,6 +34,7 @@ router.register(r'alert-actions', views.AlertActionViewSet, basename='alert-acti
 router.register(r'logs', views.LogEntryViewSet)
 router.register(r'log/datasources', log_views.LogDataSourceViewSet, basename='log-datasource')
 router.register(r'observability/metric/datasources', observability_views.MetricDataSourceViewSet, basename='metric-datasource')
+router.register(r'observability/dashboard-definitions', observability_views.ObservabilityDashboardViewSet, basename='observability-dashboard-definition')
 router.register(r'k8s/clusters', k8s_views.K8sClusterViewSet)
 router.register(r'docker/hosts', docker_views.DockerHostViewSet)
 urlpatterns = [
@@ -57,6 +58,7 @@ urlpatterns = [
     path('docker/containers/<str:container_id>/logs/', docker_views.container_logs, name='docker-container-logs'),
     path('docker/containers/<str:container_id>/inspect/', docker_views.container_inspect, name='docker-container-inspect'),
     path('observability/overview/', observability_views.observability_overview, name='observability-overview'),
+    path('observability/sla/summary/', observability_views.sla_summary, name='observability-sla-summary'),
     path('observability/metrics/query/', observability_views.metrics_promql_query, name='observability-metrics-query'),
     path('observability/metrics/series-names/', observability_views.metrics_series_names, name='observability-metrics-series-names'),
     path('observability/dashboards/query/', observability_views.native_dashboard, name='observability-dashboards-query'),

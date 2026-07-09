@@ -855,6 +855,67 @@ class ObservabilityViewsTests(TestCase):
         self.assertNotIn('providers', payload)
         self.assertFalse(any('/tracing' in item['path'] for item in payload['navigation']))
 
+    def test_observability_overview_reports_datasource_health(self):
+        checked_at = timezone.now() - timedelta(minutes=2)
+        MetricDataSource.objects.create(
+            name='Healthy Prometheus',
+            environment='prod',
+            is_default=True,
+            config={'query_url': 'http://prometheus.prod.local:9090'},
+            last_check_at=checked_at,
+            last_check_status='ok',
+            last_check_message='up query returned samples',
+            last_check_latency_ms=21,
+        )
+        LogDataSource.objects.create(
+            name='Missing Test Logs',
+            provider='clickhouse',
+            is_enabled=False,
+            config={},
+            last_check_status='not_configured',
+            last_check_message='test environment logs are not connected',
+        )
+
+        response = self.client.get('/api/observability/overview/')
+
+        self.assertEqual(response.status_code, 200)
+        health = response.json()['datasource_health']
+        self.assertEqual(health['summary']['ok'], 1)
+        self.assertEqual(health['summary']['not_configured'], 1)
+        metric_health = next(item for item in health['metrics'] if item['name'] == 'Healthy Prometheus')
+        log_health = next(item for item in health['logs'] if item['name'] == 'Missing Test Logs')
+        self.assertEqual(metric_health['last_check_status'], 'ok')
+        self.assertEqual(metric_health['last_check_latency_ms'], 21)
+        self.assertEqual(log_health['last_check_status'], 'not_configured')
+        self.assertIn('not connected', log_health['last_check_message'])
+
+    def test_sla_summary_api_uses_disaster_alert_duration(self):
+        now = timezone.now()
+        alert = Alert.objects.create(
+            title='database p0 unavailable',
+            level='critical',
+            status=Alert.STATUS_RESOLVED,
+            source='prometheus',
+            source_type=Alert.SOURCE_PLATFORM,
+            message='mysql disaster outage',
+            resource_type='database',
+            service='mysql',
+            labels={'severity': 'disaster', 'product': 'database'},
+            starts_at=now - timedelta(minutes=45),
+            ends_at=now - timedelta(minutes=15),
+            last_received_at=now,
+        )
+        Alert.objects.filter(pk=alert.pk).update(created_at=now - timedelta(minutes=45), updated_at=now - timedelta(minutes=15))
+
+        response = self.client.get('/api/observability/sla/summary/')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['target'], 99.96)
+        self.assertGreater(payload['month_downtime_minutes'], 0)
+        self.assertTrue(any(item['key'] == 'database' for item in payload['product_slas']))
+        self.assertEqual(payload['disaster_events'][0]['id'], alert.id)
+
     def test_datasource_link_grafana_routes_are_removed(self):
         removed_routes = [
             '/api/observability/datasource-links/resolve_trace_to_grafana/',
@@ -1242,6 +1303,58 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(config['headers']['Authorization'], 'configured')
         self.assertEqual(config['headers']['X-Team'], 'ops')
         self.assertEqual(config['prometheus.basic']['prometheus.password'], 'configured')
+
+    @patch('ops.observability_views.execute_promql_query')
+    def test_dashboard_definition_crud_export_and_query(self, mock_promql):
+        from ops.models import ObservabilityDashboard
+
+        mock_promql.return_value = {
+            'result': [{'metric': {'instance': 'server-01'}, 'value': [1710000000, '3']}],
+        }
+        create_response = self.client.post(
+            '/api/observability/dashboard-definitions/',
+            {
+                'title': 'Custom Server Health',
+                'description': 'JSON driven dashboard',
+                'tags': ['server'],
+                'layout': {'columns': 12},
+                'is_builtin': False,
+                'is_enabled': True,
+                'panels': [
+                    {
+                        'title': 'Node count',
+                        'key': 'node-count',
+                        'chart_type': 'stat',
+                        'datasource_type': 'prometheus',
+                        'targets': [{'query': 'up'}],
+                        'options': {'unit': 'nodes'},
+                        'sort_order': 1,
+                    }
+                ],
+            },
+            format='json',
+        )
+
+        self.assertEqual(create_response.status_code, 201)
+        dashboard_id = create_response.json()['id']
+        self.assertTrue(ObservabilityDashboard.objects.filter(pk=dashboard_id).exists())
+
+        query_response = self.client.post(
+            f'/api/observability/dashboard-definitions/{dashboard_id}/query/',
+            {'step': 60},
+            format='json',
+        )
+        self.assertEqual(query_response.status_code, 200)
+        payload = query_response.json()
+        self.assertEqual(payload['dashboard']['id'], dashboard_id)
+        self.assertEqual(payload['panels'][0]['key'], 'node-count')
+        self.assertEqual(payload['panels'][0]['data']['value'], 3)
+
+        export_response = self.client.get(f'/api/observability/dashboard-definitions/{dashboard_id}/export/')
+        self.assertEqual(export_response.status_code, 200)
+        exported = export_response.json()
+        self.assertEqual(exported['title'], 'Custom Server Health')
+        self.assertEqual(exported['panels'][0]['targets'][0]['query'], 'up')
 
     def test_sls_catalog_is_not_supported(self):
         response = self.client.post(
@@ -2179,6 +2292,121 @@ class AlertPlatformRuleTests(TestCase):
         self.assertTrue(AlertAction.objects.filter(alert=alert, action='rule_evaluation').exists())
         rule.refresh_from_db()
         self.assertIsNotNone(rule.last_triggered_at)
+
+    @patch('ops.alert_engine.evaluator.execute_promql_query')
+    def test_evaluate_prometheus_rule_dry_run_does_not_create_alert(self, mock_promql):
+        mock_promql.return_value = {
+            'result': [
+                {'metric': {'instance': 'api-01', 'job': 'api'}, 'value': [1710000000, '95']},
+            ],
+        }
+        rule = AlertRule.objects.create(
+            name='API CPU high',
+            code='api-cpu-high-dry-run',
+            source_type='prometheus',
+            level='critical',
+            query_config={'promql': 'node_cpu_usage_percent'},
+            condition={'operator': '>', 'threshold': 90},
+            labels={'environment': 'prod', 'cluster': 'prod-k8s'},
+            annotations={'summary': 'CPU high'},
+            notify_enabled=False,
+        )
+
+        response = self.client.post(f'/api/alert-rules/{rule.id}/evaluate/', {'dry_run': True}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['dry_run'])
+        self.assertEqual(payload['matched_count'], 1)
+        self.assertEqual(payload['would_fire_count'], 1)
+        self.assertEqual(Alert.objects.count(), 0)
+
+    @patch('ops.alert_engine.evaluator._clickhouse_data_rows')
+    @patch('ops.alert_engine.evaluator._clickhouse_request')
+    def test_evaluate_clickhouse_rule_dry_run_counts_log_spike(self, mock_request, mock_rows):
+        mock_request.return_value = {'data': [{'value': 8, 'name': 'api'}]}
+        mock_rows.return_value = [{'value': 8, 'name': 'api'}]
+        LogDataSource.objects.create(
+            name='ClickHouse For Rule',
+            provider='clickhouse',
+            is_default=True,
+            config={
+                'endpoint': 'http://clickhouse.prod.local:8123',
+                'collections': [
+                    {'key': 'container-logs', 'database': 'container_logs', 'table': 'logs', 'time_field': 'timestamp'},
+                ],
+            },
+        )
+        rule = AlertRule.objects.create(
+            name='Container ERROR spike',
+            code='container-error-spike-dry-run',
+            source_type='clickhouse',
+            level='warning',
+            query_config={'collection': 'container-logs', 'window_minutes': 5, 'group_by': 'pod_name'},
+            condition={'level': 'ERROR', 'threshold': 5, 'keyword': 'Exception'},
+            labels={'environment': 'prod', 'cluster': 'prod-k8s', 'namespace': 'xing-cloud'},
+            notify_enabled=False,
+        )
+
+        response = self.client.post(f'/api/alert-rules/{rule.id}/evaluate/', {'dry_run': True}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['matched_count'], 1)
+        self.assertEqual(payload['results'][0]['value'], 8)
+        self.assertEqual(Alert.objects.count(), 0)
+        self.assertIn('container_logs', mock_request.call_args.args[1])
+
+    def test_alert_rule_engine_status_endpoint(self):
+        AlertRule.objects.create(
+            name='SLA monthly risk',
+            code='sla-monthly-risk-test',
+            source_type='sla',
+            level='warning',
+            query_config={'metric': 'month_sla'},
+            condition={'operator': '<', 'threshold': 99.96},
+            notify_enabled=False,
+        )
+
+        response = self.client.get('/api/alert-rules/engine-status/')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['enabled_rules'], 1)
+        self.assertIn('latest_scan_at', payload)
+
+
+class AlertBatchNotificationTests(TestCase):
+    def test_storm_batch_notifies_primary_alert_once(self):
+        from ops.alerting import dispatch_alert_batch_notifications
+
+        alerts = [
+            Alert.objects.create(
+                title=f'pod failure {index}',
+                level='critical',
+                status=Alert.STATUS_ACTIVE,
+                source='platform',
+                source_type=Alert.SOURCE_PLATFORM,
+                message='pod crash',
+                environment='prod',
+                cluster='prod-k8s',
+                namespace='xing-cloud',
+                resource_type='pod',
+                resource='api',
+                fingerprint=f'storm-{index}',
+            )
+            for index in range(3)
+        ]
+
+        with patch('ops.alerting.dispatch_alert_notifications', return_value=['sent']) as mocked_dispatch:
+            result = dispatch_alert_batch_notifications(alerts, action='fire')
+
+        self.assertEqual(mocked_dispatch.call_count, 1)
+        self.assertEqual(result['notified_count'], 1)
+        self.assertEqual(result['storm_batches'][0]['count'], 3)
+        for alert in alerts:
+            alert.refresh_from_db()
+            self.assertEqual(alert.raw_payload['notification_batch']['group_key'], 'prod|prod-k8s|xing-cloud|api')
 
 
 class AlertWebhookRetirementTests(TestCase):

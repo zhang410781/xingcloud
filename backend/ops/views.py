@@ -15,6 +15,8 @@ from eventwall.services import build_json_preview, build_resource, record_event
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 
 from . import deployer
+from .alert_engine import engine_status as alert_engine_status
+from .alert_engine import evaluate_rule
 from .host_task_schedules import (
     build_schedule_snapshot,
     preview_next_runs,
@@ -93,6 +95,7 @@ from .alerting import (
     match_matchers,
 )
 from .alert_rules import trigger_alert_rule
+from .sla import build_dashboard_sla as build_sla_dashboard_summary
 
 
 SLA_TARGET_PERCENT = 99.96
@@ -2294,6 +2297,8 @@ class AlertRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets
         'partial_update': ['ops.alert.config.manage'],
         'destroy': ['ops.alert.config.manage'],
         'trigger': ['ops.alert.config.manage'],
+        'evaluate': ['ops.alert.config.manage'],
+        'engine_status': ['ops.alert.config.view'],
     }
 
     @action(detail=True, methods=['post'])
@@ -2313,6 +2318,18 @@ class AlertRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets
             },
             status=status.HTTP_202_ACCEPTED,
         )
+
+    @action(detail=True, methods=['post'])
+    def evaluate(self, request, pk=None):
+        rule = self.get_object()
+        dry_run = str(request.data.get('dry_run', '')).lower() in {'1', 'true', 'yes'}
+        result = evaluate_rule(rule, dry_run=dry_run, request=request)
+        response_status = status.HTTP_200_OK if result.get('success') else status.HTTP_502_BAD_GATEWAY
+        return Response(result, status=response_status)
+
+    @action(detail=False, methods=['get'], url_path='engine-status')
+    def engine_status(self, request):
+        return Response(alert_engine_status())
 
 
 class AlertRecipientViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
@@ -2546,7 +2563,7 @@ def dashboard_stats(request):
 
     alert_total = Alert.objects.count()
     alert_levels = dict(Alert.objects.values_list('level').annotate(count=Count('id')).values_list('level', 'count'))
-    dashboard_sla = _build_dashboard_sla(
+    dashboard_sla = build_sla_dashboard_summary(
         list(Alert.objects.select_related('host').prefetch_related('claim_records').order_by('-created_at', '-id')),
         now,
     )

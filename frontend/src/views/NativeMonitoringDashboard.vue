@@ -22,6 +22,26 @@
 
     <ObservabilityRouteTabs group="boards" />
 
+    <section class="panel dashboard-definition-bar">
+      <div class="definition-selector">
+        <span>JSON 看板定义</span>
+        <el-select v-model="activeDefinitionId" size="small" filterable clearable placeholder="选择内置或导入的看板定义" @change="loadDashboard">
+          <el-option v-for="item in dashboardDefinitions" :key="item.id" :label="item.title" :value="item.id">
+            <span>{{ item.title }}</span>
+            <small>{{ (item.tags || []).join(' / ') }}</small>
+          </el-option>
+        </el-select>
+      </div>
+      <div class="definition-actions">
+        <el-button size="small" :loading="loadingDefinitions" @click="loadDashboardDefinitions">
+          <el-icon><RefreshRight /></el-icon>
+          刷新定义
+        </el-button>
+        <el-button size="small" @click="openImportDashboard">导入 JSON</el-button>
+        <el-button size="small" :disabled="!activeDefinitionId" @click="exportActiveDashboard">导出 JSON</el-button>
+      </div>
+    </section>
+
     <section class="panel native-monitor-control">
       <div class="dashboard-switcher">
         <button
@@ -179,10 +199,18 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { DataAnalysis, Histogram, Monitor, RefreshRight, Search } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
 import NativeDashboardChart from '@/components/observability/NativeDashboardChart.vue'
-import { getLogDataSources, getMetricDataSources, queryMonitoringDashboard } from '@/api/modules/ops'
+import {
+  exportDashboardDefinition,
+  getDashboardDefinitions,
+  getLogDataSources,
+  getMetricDataSources,
+  importDashboardDefinition,
+  queryDashboardDefinition,
+  queryMonitoringDashboard,
+} from '@/api/modules/ops'
 
 const dashboardOptions = [
   { key: 'server', label: '服务器看板', hint: '服务器 CPU、内存、磁盘、网络', icon: Monitor },
@@ -205,10 +233,13 @@ const timeShortcuts = [
 ]
 
 const loadingSources = ref(false)
+const loadingDefinitions = ref(false)
 const loadingDashboard = ref(false)
 const dashboardError = ref('')
 const metricDataSources = ref([])
 const logDataSources = ref([])
+const dashboardDefinitions = ref([])
+const activeDefinitionId = ref('')
 const dashboardPayload = ref({})
 const initialized = ref(false)
 
@@ -284,6 +315,8 @@ function buildDashboardPayload() {
     end_ms: toTimestampMs(filters.timeRange?.[1]),
     step: 60,
   }
+  payload.metric_datasource_id = filters.metricDatasourceId || undefined
+  payload.log_datasource_id = filters.logDatasourceId || undefined
   if (isMetricDashboard.value) {
     payload.metric_datasource_id = filters.metricDatasourceId || undefined
   } else {
@@ -324,11 +357,59 @@ async function loadDataSources() {
   }
 }
 
+async function loadDashboardDefinitions() {
+  loadingDefinitions.value = true
+  try {
+    const response = await getDashboardDefinitions({ is_enabled: true })
+    dashboardDefinitions.value = Array.isArray(response) ? response : response?.results || []
+    if (!activeDefinitionId.value && dashboardDefinitions.value.length) {
+      activeDefinitionId.value = dashboardDefinitions.value[0].id
+    }
+  } finally {
+    loadingDefinitions.value = false
+  }
+}
+
+async function openImportDashboard() {
+  try {
+    const { value } = await ElMessageBox.prompt('粘贴看板 JSON 定义', '导入看板', {
+      inputType: 'textarea',
+      inputPlaceholder: '{"title":"...","panels":[...]}',
+      confirmButtonText: '导入',
+      cancelButtonText: '取消',
+    })
+    const definition = JSON.parse(value)
+    const created = await importDashboardDefinition(definition)
+    ElMessage.success('看板定义已导入')
+    await loadDashboardDefinitions()
+    activeDefinitionId.value = created.id
+    await loadDashboard()
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    ElMessage.error(error.response?.data?.detail || error.message || '导入失败')
+  }
+}
+
+async function exportActiveDashboard() {
+  if (!activeDefinitionId.value) return
+  const definition = await exportDashboardDefinition(activeDefinitionId.value)
+  const blob = new Blob([JSON.stringify(definition, null, 2)], { type: 'application/json;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `${definition.title || 'observability-dashboard'}.json`
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
 async function loadDashboard() {
   dashboardError.value = ''
   loadingDashboard.value = true
   try {
-    dashboardPayload.value = await queryMonitoringDashboard(buildDashboardPayload(), { timeout: 60000 })
+    const payload = buildDashboardPayload()
+    dashboardPayload.value = activeDefinitionId.value
+      ? await queryDashboardDefinition(activeDefinitionId.value, payload, { timeout: 60000 })
+      : await queryMonitoringDashboard(payload, { timeout: 60000 })
   } catch (error) {
     dashboardPayload.value = {}
     dashboardError.value = error.response?.data?.detail || error.message || '看板数据加载失败'
@@ -338,6 +419,7 @@ async function loadDashboard() {
 }
 
 function changeDashboard(key) {
+  activeDefinitionId.value = ''
   filters.dashboard = key
   loadDashboard()
 }
@@ -411,6 +493,7 @@ watch(
 
 onMounted(async () => {
   await loadDataSources()
+  await loadDashboardDefinitions()
   await loadDashboard()
   initialized.value = true
   if (!metricDataSources.value.length && !clickHouseSources.value.length) {
@@ -473,6 +556,33 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+.dashboard-definition-bar {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.definition-selector {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 110px minmax(260px, 420px);
+}
+
+.definition-selector > span {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.definition-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
 }
 
 .dashboard-switcher {
@@ -766,6 +876,15 @@ onMounted(async () => {
 }
 
 @media (max-width: 1100px) {
+  .dashboard-definition-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .definition-selector {
+    grid-template-columns: 1fr;
+  }
+
   .dashboard-switcher,
   .native-filter-grid,
   .native-filter-grid--secondary,

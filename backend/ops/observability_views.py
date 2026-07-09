@@ -18,10 +18,14 @@ from eventwall.models import EventRecord
 from eventwall.services import record_event
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from rbac.services import user_has_permissions
-from .models import Alert, Deployment, LogDataSource, LogEntry, MetricDataSource
+from .dashboard_presets import ensure_builtin_dashboards
+from .datasource_health import datasource_health_payload
+from .models import Alert, Deployment, LogDataSource, LogEntry, MetricDataSource, ObservabilityDashboard
+from .sla import build_sla_summary
 from .serializers import (
     AlertSerializer,
     MetricDataSourceSerializer,
+    ObservabilityDashboardSerializer,
 )
 
 def _deny_if_missing_any(request, codes):
@@ -895,6 +899,171 @@ def native_dashboard(request):
     return Response(payload)
 
 
+def _dashboard_panel_options(panel):
+    return panel.options if isinstance(panel.options, dict) else {}
+
+
+def _dashboard_panel_target(panel):
+    targets = panel.targets if isinstance(panel.targets, list) else []
+    return targets[0] if targets and isinstance(targets[0], dict) else {}
+
+
+def _dashboard_prometheus_panel(panel, request_data, start_ms, end_ms):
+    options = _dashboard_panel_options(panel)
+    target = _dashboard_panel_target(panel)
+    native_panel = {
+        'key': panel.key,
+        'title': panel.title,
+        'type': panel.chart_type,
+        'unit': options.get('unit') or '',
+        'decimals': options.get('decimals', 0),
+        'query': target.get('query') or target.get('promql') or '',
+        'label': target.get('label') or options.get('label') or '',
+    }
+    return _native_panel_response(native_panel, _native_prometheus_panel(native_panel, request_data, start_ms, end_ms))
+
+
+def _dashboard_clickhouse_context(config, request_data, collection_key, start_ms, end_ms):
+    from .log_views import _clickhouse_identifier, _clickhouse_time_expression, _resolve_clickhouse_collection
+
+    collection = _resolve_clickhouse_collection(config, {**request_data, 'collection': collection_key})
+    table_ref = f'{_clickhouse_identifier(collection["database"], "database")}.{_clickhouse_identifier(collection["table"], "table")}'
+    time_field = request_data.get('time_field') or collection.get('time_field') or config.get('time_field') or 'timestamp'
+    timezone_name = request_data.get('timezone') or collection.get('timezone') or config.get('timezone') or 'Asia/Shanghai'
+    time_identifier = _clickhouse_identifier(time_field, 'time field')
+    time_filter = (
+        f'{time_identifier} >= {_clickhouse_time_expression(start_ms, timezone_name)} '
+        f'AND {time_identifier} <= {_clickhouse_time_expression(end_ms, timezone_name)}'
+    )
+    return {
+        'collection': collection,
+        'table': table_ref,
+        'time_field': time_identifier,
+        'time_filter': time_filter,
+        'filters': '',
+    }
+
+
+def _dashboard_clickhouse_panel(panel, request_data, start_ms, end_ms):
+    from .log_views import ProviderError, _merge_config
+
+    datasource_id = request_data.get('log_datasource_id') or request_data.get('datasource_id')
+    if datasource_id:
+        datasource = LogDataSource.objects.get(pk=datasource_id)
+    else:
+        datasource = LogDataSource.objects.filter(provider='clickhouse', is_enabled=True).order_by('-is_default', 'name').first()
+    if not datasource or datasource.provider != 'clickhouse':
+        raise ProviderError('请选择 ClickHouse 日志数据源')
+    target = _dashboard_panel_target(panel)
+    options = _dashboard_panel_options(panel)
+    config = _merge_config('clickhouse', datasource.config)
+    context = _dashboard_clickhouse_context(config, request_data, target.get('collection') or 'container-logs', start_ms, end_ms)
+    native_panel = {
+        'key': panel.key,
+        'title': panel.title,
+        'type': panel.chart_type,
+        'unit': options.get('unit') or '',
+        'decimals': options.get('decimals', 0),
+        'sql': target.get('sql') or 'SELECT count() AS value FROM {table} WHERE {time_filter}',
+    }
+    return _native_panel_response(native_panel, _native_clickhouse_panel(native_panel, config, context))
+
+
+def _dashboard_sla_panel(panel):
+    target = _dashboard_panel_target(panel)
+    options = _dashboard_panel_options(panel)
+    summary = build_sla_summary()
+    metric = target.get('metric') or 'month_sla'
+    value = summary.get(metric)
+    native_panel = {
+        'key': panel.key,
+        'title': panel.title,
+        'type': panel.chart_type,
+        'unit': options.get('unit') or '',
+        'decimals': options.get('decimals', 0),
+    }
+    return _native_panel_response(native_panel, {'value': value, 'summary': summary})
+
+
+def _query_dashboard_definition(dashboard, request_data):
+    request_data = dict(request_data or {})
+    start_ms, end_ms = _native_time_range(request_data)
+    panels = []
+    for panel in dashboard.panels.all().order_by('sort_order', 'id'):
+        try:
+            if panel.datasource_type == 'prometheus':
+                panels.append(_dashboard_prometheus_panel(panel, request_data, start_ms, end_ms))
+            elif panel.datasource_type == 'clickhouse':
+                panels.append(_dashboard_clickhouse_panel(panel, request_data, start_ms, end_ms))
+            elif panel.datasource_type == 'sla':
+                panels.append(_dashboard_sla_panel(panel))
+            else:
+                panels.append(_native_panel_response({'key': panel.key, 'title': panel.title, 'type': panel.chart_type}, {}, 'warning', 'unsupported datasource type'))
+        except Exception as exc:
+            panels.append(_native_panel_response({'key': panel.key, 'title': panel.title, 'type': panel.chart_type}, {}, 'warning', str(exc)))
+    return {
+        'dashboard': {
+            'id': dashboard.id,
+            'title': dashboard.title,
+            'description': dashboard.description,
+            'tags': dashboard.tags,
+            'layout': dashboard.layout,
+            'source': 'json',
+        },
+        'panels': panels,
+        'time_range': {
+            'start_ms': start_ms,
+            'end_ms': end_ms,
+            'step': _normalize_promql_step(request_data.get('step') or 60),
+        },
+    }
+
+
+class ObservabilityDashboardViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
+    serializer_class = ObservabilityDashboardSerializer
+    pagination_class = None
+    event_module = 'ops'
+    event_resource_type = 'observability_dashboard'
+    event_resource_label = '可观测看板'
+    event_resource_name_fields = ('title',)
+    rbac_permissions = {
+        'list': ['ops.monitor.dashboard.view'],
+        'retrieve': ['ops.monitor.dashboard.view'],
+        'create': ['ops.monitor.dashboard.manage'],
+        'update': ['ops.monitor.dashboard.manage'],
+        'partial_update': ['ops.monitor.dashboard.manage'],
+        'destroy': ['ops.monitor.dashboard.manage'],
+        'query': ['ops.monitor.dashboard.view'],
+        'export': ['ops.monitor.dashboard.view'],
+        'import_definition': ['ops.monitor.dashboard.manage'],
+    }
+
+    def get_queryset(self):
+        ensure_builtin_dashboards()
+        queryset = ObservabilityDashboard.objects.prefetch_related('panels').all()
+        is_enabled = self.request.query_params.get('is_enabled')
+        if is_enabled in ('true', 'false'):
+            queryset = queryset.filter(is_enabled=is_enabled == 'true')
+        return queryset.order_by('-is_builtin', 'title')
+
+    @action(detail=True, methods=['post'])
+    def query(self, request, pk=None):
+        dashboard = self.get_object()
+        return Response(_query_dashboard_definition(dashboard, request.data or {}))
+
+    @action(detail=True, methods=['get'])
+    def export(self, request, pk=None):
+        dashboard = self.get_object()
+        return Response(self.get_serializer(dashboard).data)
+
+    @action(detail=False, methods=['post'], url_path='import')
+    def import_definition(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        dashboard = serializer.save(is_builtin=False)
+        return Response(self.get_serializer(dashboard).data, status=status.HTTP_201_CREATED)
+
+
 class MetricDataSourceViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = MetricDataSource.objects.all().order_by('environment', '-is_default', 'name')
     serializer_class = MetricDataSourceSerializer
@@ -1041,6 +1210,17 @@ def metrics_series_names(request):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+def sla_summary(request):
+    denied = _deny_if_missing_any(request, ['ops.monitor.dashboard.view', 'ops.alert.view'])
+    if denied:
+        return denied
+    summary = build_sla_summary()
+    summary.pop('_monthly_alerts', None)
+    return Response(summary)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def observability_overview(request):
     access = _observability_access(request)
     denied = _deny_if_missing_any(
@@ -1050,9 +1230,17 @@ def observability_overview(request):
     if denied:
         return denied
 
+    if access['monitor_dashboard']:
+        ensure_builtin_dashboards()
     dashboards = _native_dashboard_summary() if access['monitor_dashboard'] else None
     logs = _log_module_summary() if (access['log_query'] or access['log_datasource']) else None
     alerts = _alert_module_summary() if access['alerts'] else None
+    datasource_health = datasource_health_payload() if (access['metric_datasource'] or access['log_datasource'] or access['metric_query'] or access['log_query']) else None
+    if access['alerts']:
+        from .alert_engine.scheduler import engine_status
+        rule_engine = engine_status()
+    else:
+        rule_engine = None
 
     navigation = []
     if access['monitor_dashboard']:
@@ -1080,6 +1268,8 @@ def observability_overview(request):
             'datasource_count': logs['datasource_count'] if logs else 0,
             'unacknowledged_alerts': alerts['unacknowledged'] if alerts else 0,
         },
+        'datasource_health': datasource_health,
+        'rule_engine': rule_engine,
         'navigation': navigation,
         'recent_alerts': alerts['recent'] if alerts else [],
         'tips': [],
