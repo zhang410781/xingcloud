@@ -1,0 +1,83 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: xing-cloud-init
+  namespace: xing-cloud
+  labels:
+    app: xing-cloud
+    component: init
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: xing-cloud
+        component: init
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: xing-cloud-init
+          image: registry.cn-hangzhou.aliyuncs.com/xinghaik8s/ops-agent:a1.02
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: xing-cloud-config
+            - secretRef:
+                name: xing-cloud-secret
+          command:
+            - sh
+            - -c
+          args:
+            - |
+              python - <<'PY'
+              import os
+              import pymysql
+
+              def ident(value):
+                  return '`' + str(value).replace('`', '``') + '`'
+
+              def literal(value):
+                  text = str(value)
+                  return "'" + text.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+              host = os.environ.get('MYSQL_HOST', 'xing-cloud-mysql')
+              port = int(os.environ.get('MYSQL_PORT', '3306'))
+              database = os.environ['MYSQL_DATABASE']
+              app_user = os.environ['MYSQL_USER']
+              app_password = os.environ['MYSQL_PASSWORD']
+              root_password = os.environ['MYSQL_ROOT_PASSWORD']
+
+              conn = pymysql.connect(
+                  host=host,
+                  port=port,
+                  user='root',
+                  password=root_password,
+                  charset='utf8mb4',
+                  autocommit=True,
+              )
+              with conn.cursor() as cursor:
+                  cursor.execute(
+                      f'CREATE DATABASE IF NOT EXISTS {ident(database)} '
+                      'CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
+                  )
+                  cursor.execute(
+                      f"CREATE USER IF NOT EXISTS {literal(app_user)}@'%' IDENTIFIED BY {literal(app_password)}"
+                  )
+                  cursor.execute(
+                      f"ALTER USER {literal(app_user)}@'%' IDENTIFIED BY {literal(app_password)}"
+                  )
+                  cursor.execute(
+                      f"GRANT ALL PRIVILEGES ON {ident(database)}.* TO {literal(app_user)}@'%'"
+                  )
+              conn.close()
+              PY
+              python manage.py migrate --noinput
+              python manage.py seed_templates
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi

@@ -1,0 +1,81 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: xing-cloud-app
+  namespace: xing-cloud
+  labels:
+    app: xing-cloud
+    component: app
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+  selector:
+    app: xing-cloud
+    component: app
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xing-cloud-app
+  namespace: xing-cloud
+  labels:
+    app: xing-cloud
+    component: app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: xing-cloud
+      component: app
+  template:
+    metadata:
+      labels:
+        app: xing-cloud
+        component: app
+    spec:
+      containers:
+        - name: xing-cloud
+          image: registry.cn-hangzhou.aliyuncs.com/xinghaik8s/ops-agent:a1.03
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: xing-cloud-config
+            - secretRef:
+                name: xing-cloud-secret
+          env:
+            - name: XING_CLOUD_MIGRATE
+              value: "0"
+            - name: XING_CLOUD_SEED_TEMPLATES
+              value: "0"
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8000
+              httpHeaders:
+                - name: Host
+                  value: xinghai.example.com
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8000
+              httpHeaders:
+                - name: Host
+                  value: xinghai.example.com
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: 2000m
+              memory: 2Gi

@@ -1,0 +1,172 @@
+<style>
+  .logo-brief { max-width: 1120px; margin: 0 auto; }
+  .final-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(320px, .9fr); gap: 18px; align-items: stretch; }
+  .final-card {
+    background: var(--bg-secondary);
+    border: 2px solid var(--selected-border);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 0 0 4px rgba(0, 113, 227, .1);
+  }
+  .stage {
+    min-height: 430px;
+    display: grid;
+    place-items: center;
+    background:
+      radial-gradient(circle at 28% 18%, rgba(125, 211, 252, .22), transparent 30%),
+      linear-gradient(135deg, #f8fbff 0%, #edf8fc 52%, #f8fafc 100%);
+    padding: 32px;
+  }
+  .logo-main { width: min(360px, 80vw); aspect-ratio: 1; }
+  .logo-main svg,
+  .logo-mini svg { width: 100%; height: 100%; overflow: visible; }
+  .side-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    overflow: hidden;
+  }
+  .side-section { padding: 18px; border-bottom: 1px solid var(--border); }
+  .side-section:last-child { border-bottom: 0; }
+  .label { margin-bottom: 12px; }
+  .sidebar-sample {
+    width: 88px;
+    height: 170px;
+    border-radius: 16px;
+    background: #0f172a;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 20px;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
+  }
+  .sidebar-sample .logo-mini { width: 48px; height: 48px; }
+  .wordmark-sample {
+    min-height: 92px;
+    border: 1px solid rgba(203, 213, 225, .9);
+    border-radius: 14px;
+    background: rgba(255,255,255,.9);
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 16px;
+  }
+  .wordmark-sample .logo-mini { width: 62px; height: 62px; flex: 0 0 auto; }
+  .wordmark-copy strong { display: block; color: #0f172a; font-size: 19px; line-height: 1.2; }
+  .wordmark-copy span { display: block; margin-top: 4px; color: #64748b; font-size: 12px; }
+  .tiny-row { display: flex; align-items: center; gap: 14px; }
+  .tiny-box {
+    width: 32px; height: 32px; border-radius: 8px; background: #f8fbff;
+    display: grid; place-items: center; border: 1px solid #dbeafe;
+  }
+  .tiny-box .logo-mini { width: 28px; height: 28px; }
+  .body { padding: 18px; }
+  .body h3 { margin-bottom: 8px; }
+  .body p { color: var(--text-secondary); font-size: 14px; margin: 0; }
+  @media (max-width: 900px) { .final-grid { grid-template-columns: 1fr; } }
+</style>
+
+<section class="logo-brief">
+  <h2>最终候选：轨道星标 Logo</h2>
+  <p class="subtitle">按你的方向：外层保留云原生轨道的轻蓝动势，中间把罗盘/K8S 舵轮替换成四向星标。这个版本更像“智能运维平台的方向与洞察”，也比舵轮更抽象。</p>
+
+  <div class="final-grid">
+    <article class="final-card" data-choice="orbit-star-final" onclick="toggleSelect(this)">
+      <div class="stage">
+        <div class="logo-main">
+          <svg viewBox="0 0 128 128" aria-label="XingCloud Orbit Star Logo">
+            <defs>
+              <linearGradient id="finalOrbitA" x1="18" y1="16" x2="112" y2="112" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#77c7ec"/>
+                <stop offset=".55" stop-color="#58bee4"/>
+                <stop offset="1" stop-color="#43a6d7"/>
+              </linearGradient>
+              <linearGradient id="finalOrbitB" x1="16" y1="24" x2="110" y2="104" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#c7eefb"/>
+                <stop offset="1" stop-color="#7bc9ea"/>
+              </linearGradient>
+              <linearGradient id="finalStar" x1="42" y1="36" x2="86" y2="92" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#0c91a9"/>
+                <stop offset="1" stop-color="#086f89"/>
+              </linearGradient>
+            </defs>
+            <path d="M58 11c13-10 33 0 33 17 0 14-13 23-26 18-7-3-10-10-16-8-16 4-22 31-10 59 8 18 21 29 35 31" fill="none" stroke="url(#finalOrbitA)" stroke-width="9" stroke-linecap="round"/>
+            <path d="M27 40c30-16 73-15 91 9 11 15 3 29-10 29-8 0-14-5-18-12" fill="none" stroke="url(#finalOrbitB)" stroke-width="8.5" stroke-linecap="round"/>
+            <path d="M113 83c3 22-17 36-38 24-17-10-29-30-32-53" fill="none" stroke="url(#finalOrbitA)" stroke-width="8.5" stroke-linecap="round"/>
+            <path d="M25 102c21 14 50 10 72-8" fill="none" stroke="url(#finalOrbitA)" stroke-width="8.5" stroke-linecap="round"/>
+            <circle cx="92" cy="28" r="4.5" fill="#9bdcf3" opacity=".9"/>
+            <circle cx="25" cy="102" r="8" fill="#99d8f0"/>
+            <circle cx="110" cy="78" r="8.5" fill="#bce8f7"/>
+            <path d="M17 67c8-9 20-15 34-18" fill="none" stroke="#c7eefb" stroke-width="7" stroke-linecap="round"/>
+            <path d="M64 32 72 57 98 64 72 71 64 96 56 71 30 64 56 57 64 32Z" fill="url(#finalStar)"/>
+            <path d="M31 64h66" stroke="#bdeaf8" stroke-width="5" stroke-linecap="round" opacity=".72"/>
+            <circle cx="64" cy="64" r="9.5" fill="#f8fbff"/>
+            <circle cx="64" cy="64" r="4" fill="#0b7892"/>
+          </svg>
+        </div>
+      </div>
+      <div class="body">
+        <h3>Orbit Star / 轨道星标</h3>
+        <p>外层表达云原生系统的环绕编排，中心星标表达方向、洞察、定位与智能研判。比 Kubernetes 舵轮更通用，也比单纯罗盘更轻盈。</p>
+      </div>
+    </article>
+
+    <aside class="side-card">
+      <section class="side-section">
+        <div class="label">Sidebar</div>
+        <div class="sidebar-sample">
+          <div class="logo-mini">
+            <svg viewBox="0 0 128 128" aria-label="Sidebar preview">
+              <path d="M58 11c13-10 33 0 33 17 0 14-13 23-26 18-7-3-10-10-16-8-16 4-22 31-10 59 8 18 21 29 35 31" fill="none" stroke="#77c7ec" stroke-width="9" stroke-linecap="round"/>
+              <path d="M27 40c30-16 73-15 91 9 11 15 3 29-10 29-8 0-14-5-18-12" fill="none" stroke="#bdeaf8" stroke-width="8.5" stroke-linecap="round"/>
+              <path d="M113 83c3 22-17 36-38 24-17-10-29-30-32-53" fill="none" stroke="#58bee4" stroke-width="8.5" stroke-linecap="round"/>
+              <path d="M64 32 72 57 98 64 72 71 64 96 56 71 30 64 56 57 64 32Z" fill="#087b94"/>
+              <circle cx="64" cy="64" r="9.5" fill="#f8fbff"/>
+              <circle cx="64" cy="64" r="4" fill="#0b7892"/>
+            </svg>
+          </div>
+        </div>
+      </section>
+
+      <section class="side-section">
+        <div class="label">Login / Wordmark</div>
+        <div class="wordmark-sample">
+          <div class="logo-mini">
+            <svg viewBox="0 0 128 128" aria-label="Wordmark preview">
+              <path d="M58 11c13-10 33 0 33 17 0 14-13 23-26 18-7-3-10-10-16-8-16 4-22 31-10 59 8 18 21 29 35 31" fill="none" stroke="#77c7ec" stroke-width="9" stroke-linecap="round"/>
+              <path d="M27 40c30-16 73-15 91 9 11 15 3 29-10 29-8 0-14-5-18-12" fill="none" stroke="#bdeaf8" stroke-width="8.5" stroke-linecap="round"/>
+              <path d="M113 83c3 22-17 36-38 24-17-10-29-30-32-53" fill="none" stroke="#58bee4" stroke-width="8.5" stroke-linecap="round"/>
+              <circle cx="25" cy="102" r="8" fill="#99d8f0"/>
+              <circle cx="110" cy="78" r="8.5" fill="#bce8f7"/>
+              <path d="M64 32 72 57 98 64 72 71 64 96 56 71 30 64 56 57 64 32Z" fill="#087b94"/>
+              <circle cx="64" cy="64" r="9.5" fill="#f8fbff"/>
+              <circle cx="64" cy="64" r="4" fill="#0b7892"/>
+            </svg>
+          </div>
+          <div class="wordmark-copy">
+            <strong>XingCloud</strong>
+            <span>AI Agent · 智能运维平台</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="side-section">
+        <div class="label">Small Size</div>
+        <div class="tiny-row">
+          <div class="tiny-box">
+            <div class="logo-mini">
+              <svg viewBox="0 0 128 128" aria-label="Favicon preview">
+                <path d="M58 11c13-10 33 0 33 17 0 14-13 23-26 18-7-3-10-10-16-8-16 4-22 31-10 59 8 18 21 29 35 31" fill="none" stroke="#77c7ec" stroke-width="10" stroke-linecap="round"/>
+                <path d="M27 40c30-16 73-15 91 9" fill="none" stroke="#bdeaf8" stroke-width="9" stroke-linecap="round"/>
+                <path d="M64 32 72 57 98 64 72 71 64 96 56 71 30 64 56 57 64 32Z" fill="#087b94"/>
+                <circle cx="64" cy="64" r="9.5" fill="#f8fbff"/>
+                <circle cx="64" cy="64" r="4" fill="#0b7892"/>
+              </svg>
+            </div>
+          </div>
+          <span style="color:#64748b;font-size:13px;">32px 小尺寸仍能识别为星标中心</span>
+        </div>
+      </section>
+    </aside>
+  </div>
+</section>

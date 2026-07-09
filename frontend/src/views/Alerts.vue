@@ -1,0 +1,2476 @@
+<template>
+  <div class="alerts-page">
+    <section class="hero panel">
+      <div class="hero-copy">
+        <div class="hero-title-row">
+          <span class="hero-icon">
+            <el-icon><Bell /></el-icon>
+          </span>
+          <h2>&#x544A;&#x8B66;&#x4E2D;&#x5FC3;</h2>
+          <p class="page-inline-desc">&#x7EDF;&#x4E00;&#x63A5;&#x6536;&#x591A;&#x6E90;&#x544A;&#x8B66;&#xFF0C;&#x652F;&#x6301;&#x805A;&#x5408;&#x3001;&#x6291;&#x5236;&#x3001;&#x5C4F;&#x853D;&#x3001;&#x8BA4;&#x9886;&#x3001;&#x5347;&#x7EA7;&#x4E0E;&#x901A;&#x77E5;&#x5206;&#x53D1;</p>
+        </div>
+      </div>
+      <div class="hero-actions">
+        <el-button size="small" :icon="Refresh" :loading="loading || configLoading" @click="refreshAll">&#x5237;&#x65B0;</el-button>
+      </div>
+    </section>
+
+    <div class="audit-grid alert-top-stats">
+      <button
+        v-for="card in statCards"
+        :key="card.key"
+        type="button"
+        class="audit-card audit-card--inline audit-card--action alert-summary-card"
+        :class="[card.tone, { 'is-active': activeStatKey === card.key }]"
+        @click="applyStatFilter(card)"
+      >
+        <div class="stat-label">{{ card.label }}</div>
+        <div class="stat-value">{{ card.value }}</div>
+      </button>
+    </div>
+
+    <div class="neo-tabs theme-blue alert-center-tabs">
+      <button v-if="canViewAlerts" class="neo-tab-btn" :class="{ active: activeTab === 'events' }" @click="switchTab('events')">
+        <el-icon style="margin-right: 4px;"><Bell /></el-icon>&#x544A;&#x8B66;&#x4E8B;&#x4EF6;
+      </button>
+      <button v-if="canViewConfig" class="neo-tab-btn" :class="{ active: activeTab === 'rules' }" @click="switchTab('rules')">
+        <el-icon style="margin-right: 4px;"><Operation /></el-icon>&#x544A;&#x8B66;&#x89C4;&#x5219;
+      </button>
+      <button v-if="canViewConfig" class="neo-tab-btn" :class="{ active: activeTab === 'templates' }" @click="switchTab('templates')">
+        <el-icon style="margin-right: 4px;"><Document /></el-icon>&#x89C4;&#x5219;&#x6A21;&#x677F;
+      </button>
+      <button v-if="canViewConfig" class="neo-tab-btn" :class="{ active: activeTab === 'notify' }" @click="switchTab('notify')">
+        <el-icon style="margin-right: 4px;"><Setting /></el-icon>&#x901A;&#x77E5;&#x914D;&#x7F6E;
+      </button>
+      <button v-if="canViewAlerts" class="neo-tab-btn" :class="{ active: activeTab === 'logs' }" @click="switchTab('logs')">
+        <el-icon style="margin-right: 4px;"><Document /></el-icon>&#x901A;&#x77E5;&#x8BB0;&#x5F55;
+      </button>
+      <button v-if="canViewConfig" class="neo-tab-btn" :class="{ active: activeTab === 'policies' }" @click="switchTab('policies')">
+        <el-icon style="margin-right: 4px;"><Operation /></el-icon>&#x9759;&#x9ED8;&#x6291;&#x5236;
+      </button>
+    </div>
+
+    <template v-if="activeTab === 'events' && canViewAlerts">
+      <section class="panel">
+        <div class="toolbar">
+          <el-select v-model="filters.status" size="small" clearable placeholder="&#x72B6;&#x6001;" @change="handleFilterChange">
+            <el-option label="&#x6D3B;&#x8DC3;" value="active" />
+            <el-option label="&#x5DF2;&#x6062;&#x590D;" value="resolved" />
+            <el-option label="&#x5DF2;&#x5C4F;&#x853D;" value="muted" />
+            <el-option label="&#x5DF2;&#x5173;&#x95ED;" value="closed" />
+          </el-select>
+          <el-select v-model="filters.source_type" size="small" clearable placeholder="&#x6765;&#x6E90;" @change="handleFilterChange">
+            <el-option v-for="item in providerOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+          <el-select v-model="filters.environment" size="small" clearable filterable allow-create default-first-option placeholder="&#x73AF;&#x5883;" @change="handleFilterChange">
+            <el-option v-for="item in environmentOptions" :key="item" :label="item" :value="item" />
+          </el-select>
+          <el-select v-model="filters.level" size="small" clearable placeholder="&#x7EA7;&#x522B;" @change="handleFilterChange">
+            <el-option label="&#x4E25;&#x91CD;" value="critical" />
+            <el-option label="&#x8B66;&#x544A;" value="warning" />
+            <el-option label="&#x4FE1;&#x606F;" value="info" />
+          </el-select>
+          <el-input
+            v-model="filters.search"
+            size="small"
+            clearable
+            placeholder="&#x641C;&#x7D22;&#x6807;&#x9898; / &#x6765;&#x6E90; / &#x670D;&#x52A1; / &#x8D44;&#x6E90;"
+            :prefix-icon="Search"
+            @input="handleFilterChange"
+          />
+          <el-segmented v-model="eventMode" size="small" :options="eventModeOptions" @change="refreshEvents" />
+          <el-button size="small" :icon="Refresh" :loading="loading" @click="refreshEvents">&#x5237;&#x65B0;</el-button>
+          <div class="toolbar-spacer" />
+          <el-button
+            v-if="canManageAlerts && eventMode === 'list'"
+            size="small"
+            type="danger"
+            :disabled="!selectedAlerts.length"
+            @click="handleBatchDelete"
+          >
+            &#x6279;&#x91CF;&#x5220;&#x9664;
+          </el-button>
+        </div>
+
+        <div v-if="eventMode === 'group'" class="group-toolbar">
+          <span class="toolbar-label">&#x5206;&#x7EC4;&#x7EF4;&#x5EA6;</span>
+          <el-select v-model="groupBy" size="small" multiple collapse-tags collapse-tags-tooltip @change="fetchGroups">
+            <el-option v-for="item in dimensionOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+        </div>
+
+        <el-table v-if="eventMode === 'list'" :data="alerts" stripe size="small" v-loading="loading" class="data-table" @selection-change="handleSelectionChange">
+          <el-table-column type="selection" width="42" />
+          <el-table-column prop="id" label="告警ID" width="70">
+            <template #default="{ row }">
+              <span class="alert-id-cell">{{ row.id }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="title" label="&#x544A;&#x8B66;&#x6807;&#x9898;" min-width="240">
+            <template #default="{ row }">
+              <button class="link-title" type="button" @click="openDetail(row)">{{ row.title }}</button>
+              <div class="sub-line">{{ row.service || row.resource || row.source }}</div>
+            </template>
+          </el-table-column>
+          <el-table-column prop="level" label="&#x7EA7;&#x522B;" width="80">
+            <template #default="{ row }">
+              <el-tag :type="levelType(row.level)" size="small">{{ row.level_display || levelText(row.level) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="status" label="&#x72B6;&#x6001;" width="80">
+            <template #default="{ row }">
+              <el-tag :type="statusType(row.status)" size="small">{{ row.status_display || statusText(row.status) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="source_type" label="&#x63A5;&#x5165;" width="120">
+            <template #default="{ row }">{{ providerText(row.source_type) }}</template>
+          </el-table-column>
+          <el-table-column prop="environment" label="&#x73AF;&#x5883;" width="100" />
+          <el-table-column prop="claimed_by" label="&#x8BA4;&#x9886;&#x4EBA;" width="120">
+            <template #default="{ row }">
+              <div class="claimant-cell" v-if="row.claimants?.length">
+                <el-tag v-for="item in row.claimants" :key="item.id" size="small" class="mini-tag claimant-tag">{{ item.claimant }}</el-tag>
+              </div>
+              <span v-else>-</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="occurrence_count" label="&#x6B21;&#x6570;" width="60" />
+          <el-table-column prop="last_received_at" label="&#x6700;&#x8FD1;&#x63A5;&#x6536;" width="180">
+            <template #default="{ row }">{{ formatTime(row.last_received_at || row.created_at) }}</template>
+          </el-table-column>
+          <el-table-column label="&#x64CD;&#x4F5C;" width="145" fixed="right">
+            <template #default="{ row }">
+              <div class="row-actions">
+                <el-button v-if="canManageAlerts && !row.current_user_claimed" link type="success" size="small" @click="runAlertAction(row, 'claim')">&#x8BA4;&#x9886;</el-button>
+                <el-button v-if="canManageAlerts" link type="warning" size="small" @click="openMuteDialog(row)">&#x5C4F;&#x853D;</el-button>
+                <el-button link size="small" type="primary" @click="openDetail(row)">&#x8BE6;&#x60C5;</el-button>
+              </div>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <el-table v-else :data="groups" stripe size="small" v-loading="loading" class="data-table">
+          <el-table-column label="&#x5206;&#x7EC4;" min-width="280">
+            <template #default="{ row }">
+              <div class="group-key">{{ row.key }}</div>
+              <div class="sub-line">{{ row.sample_title }}</div>
+            </template>
+          </el-table-column>
+          <el-table-column prop="total" label="&#x603B;&#x6570;" width="80" />
+          <el-table-column prop="critical" label="&#x4E25;&#x91CD;" width="80" />
+          <el-table-column prop="warning" label="&#x8B66;&#x544A;" width="80" />
+          <el-table-column prop="unacknowledged" label="&#x672A;&#x8BA4;&#x9886;" width="90" />
+          <el-table-column prop="suppressed" label="&#x6291;&#x5236;" width="100" />
+          <el-table-column prop="latest_at" label="&#x6700;&#x65B0;&#x65F6;&#x95F4;" width="170">
+            <template #default="{ row }">{{ formatTime(row.latest_at) }}</template>
+          </el-table-column>
+          <el-table-column label="&#x64CD;&#x4F5C;" width="120">
+            <template #default="{ row }">
+              <el-button link size="small" type="primary" @click="openGroup(row)">&#x67E5;&#x770B;&#x660E;&#x7EC6;</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <div class="pager" v-if="eventMode === 'list'">
+          <el-pagination
+            small
+            v-model:current-page="page"
+            :page-size="20"
+            :total="total"
+            layout="total, prev, pager, next"
+            @current-change="refreshEvents"
+          />
+        </div>
+      </section>
+    </template>
+
+    <template v-if="activeTab === 'notify' && canViewConfig">
+      <section class="panel">
+        <div class="neo-sub-tabs theme-blue alert-sub-tabs">
+          <button class="neo-sub-tab-btn" :class="{ active: notifyTab === 'rules' }" @click="changeNotifyTab('rules')">&#x901A;&#x77E5;&#x89C4;&#x5219;</button>
+          <button class="neo-sub-tab-btn" :class="{ active: notifyTab === 'channels' }" @click="changeNotifyTab('channels')">&#x901A;&#x77E5;&#x6E20;&#x9053;</button>
+          <button class="neo-sub-tab-btn" :class="{ active: notifyTab === 'recipients' }" @click="changeNotifyTab('recipients')">&#x63A5;&#x6536;&#x5BF9;&#x8C61;</button>
+        </div>
+
+        <div v-show="notifyTab === 'rules'">
+          <div class="section-head">
+            <h3>&#x901A;&#x77E5;&#x89C4;&#x5219;</h3>
+            <el-button v-if="canManageConfig" size="small" type="primary" :icon="Plus" @click="openNotificationRule()">&#x65B0;&#x589E;&#x89C4;&#x5219;</el-button>
+          </div>
+          <el-table :data="notificationRules" stripe size="small" v-loading="configLoading">
+            <el-table-column prop="name" label="&#x89C4;&#x5219;&#x540D;&#x79F0;" min-width="180" />
+            <el-table-column prop="min_level" label="&#x6700;&#x4F4E;&#x7EA7;&#x522B;" width="110">
+              <template #default="{ row }">{{ levelText(row.min_level) || '&#x5168;&#x90E8;' }}</template>
+            </el-table-column>
+            <el-table-column label="&#x6E20;&#x9053;" min-width="180">
+              <template #default="{ row }">
+                <el-tag v-for="item in row.channels" :key="item.id" size="small" class="mini-tag">{{ item.channel_type_display || channelText(item.channel_type) }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="&#x63A5;&#x6536;&#x7EC4;" min-width="180">
+              <template #default="{ row }">{{ (row.recipient_groups || []).map((item) => item.name).join(', ') || '-' }}</template>
+            </el-table-column>
+            <el-table-column label="&#x72B6;&#x6001;" width="90">
+              <template #default="{ row }">
+                <el-tag :type="row.is_enabled ? 'success' : 'info'" size="small">{{ row.is_enabled ? '&#x542F;&#x7528;' : '&#x505C;&#x7528;' }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="&#x64CD;&#x4F5C;" width="150" fixed="right">
+              <template #default="{ row }">
+                <el-button v-if="canManageConfig" link size="small" @click="openNotificationRule(row)">&#x7F16;&#x8F91;</el-button>
+                <el-popconfirm v-if="canManageConfig" title="&#x5220;&#x9664;&#x8BE5;&#x89C4;&#x5219;&#xFF1F;" @confirm="removeNotificationRule(row.id)">
+                  <template #reference><el-button link type="danger" size="small">&#x5220;&#x9664;</el-button></template>
+                </el-popconfirm>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+
+        <div v-show="notifyTab === 'channels'">
+          <div class="section-head">
+            <h3>&#x901A;&#x77E5;&#x6E20;&#x9053;</h3>
+            <el-button v-if="canManageConfig" size="small" type="primary" :icon="Plus" @click="openChannel()">&#x65B0;&#x589E;&#x6E20;&#x9053;</el-button>
+          </div>
+          <el-table :data="channels" stripe size="small" v-loading="configLoading">
+            <el-table-column prop="name" label="&#x6E20;&#x9053;&#x540D;&#x79F0;" min-width="180" />
+            <el-table-column prop="channel_type" label="&#x7C7B;&#x578B;" width="100">
+              <template #default="{ row }">{{ row.channel_type_display || channelText(row.channel_type) }}</template>
+            </el-table-column>
+            <el-table-column prop="send_resolved" label="&#x6062;&#x590D;&#x901A;&#x77E5;" width="100">
+              <template #default="{ row }">{{ row.send_resolved ? '&#x53D1;&#x9001;' : '&#x4E0D;&#x53D1;&#x9001;' }}</template>
+            </el-table-column>
+            <el-table-column prop="updated_at" label="&#x66F4;&#x65B0;&#x65F6;&#x95F4;" width="170">
+              <template #default="{ row }">{{ formatTime(row.updated_at) }}</template>
+            </el-table-column>
+            <el-table-column label="&#x72B6;&#x6001;" width="90">
+              <template #default="{ row }">
+                <el-tag :type="row.is_enabled ? 'success' : 'info'" size="small">{{ row.is_enabled ? '&#x542F;&#x7528;' : '&#x505C;&#x7528;' }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="&#x64CD;&#x4F5C;" width="190" fixed="right">
+              <template #default="{ row }">
+                <el-button v-if="canNotifyAlerts" link type="success" size="small" @click="testChannel(row)">&#x6D4B;&#x8BD5;</el-button>
+                <el-button v-if="canManageConfig" link size="small" @click="openChannel(row)">&#x7F16;&#x8F91;</el-button>
+                <el-popconfirm v-if="canManageConfig" title="&#x5220;&#x9664;&#x8BE5;&#x6E20;&#x9053;&#xFF1F;" @confirm="removeChannel(row.id)">
+                  <template #reference><el-button link type="danger" size="small">&#x5220;&#x9664;</el-button></template>
+                </el-popconfirm>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+
+        <div v-show="notifyTab === 'recipients'">
+          <div class="split-grid">
+            <div class="split-panel">
+              <div class="section-head">
+                <h3>&#x63A5;&#x6536;&#x4EBA;</h3>
+                <el-button v-if="canManageConfig" size="small" type="primary" :icon="Plus" @click="openRecipient()">&#x65B0;&#x589E;&#x63A5;&#x6536;&#x4EBA;</el-button>
+              </div>
+              <el-table :data="recipients" stripe size="small" v-loading="configLoading">
+                <el-table-column prop="name" label="&#x59D3;&#x540D;" min-width="120" />
+                <el-table-column prop="phone" label="&#x624B;&#x673A;" min-width="130" />
+                <el-table-column prop="email" label="&#x90AE;&#x7BB1;" min-width="170" />
+                <el-table-column label="&#x64CD;&#x4F5C;" width="120">
+                  <template #default="{ row }">
+                    <el-button v-if="canManageConfig" link size="small" @click="openRecipient(row)">&#x7F16;&#x8F91;</el-button>
+                    <el-popconfirm v-if="canManageConfig" title="&#x5220;&#x9664;&#x8BE5;&#x63A5;&#x6536;&#x4EBA;&#xFF1F;" @confirm="removeRecipient(row.id)">
+                      <template #reference><el-button link type="danger" size="small">&#x5220;&#x9664;</el-button></template>
+                    </el-popconfirm>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+
+            <div class="split-panel">
+              <div class="section-head">
+                <h3>&#x63A5;&#x6536;&#x7EC4;</h3>
+                <el-button v-if="canManageConfig" size="small" type="primary" :icon="Plus" @click="openRecipientGroup()">&#x65B0;&#x589E;&#x63A5;&#x6536;&#x7EC4;</el-button>
+              </div>
+              <el-table :data="recipientGroups" stripe size="small" v-loading="configLoading">
+                <el-table-column prop="name" label="&#x7EC4;&#x540D;" min-width="130" />
+                <el-table-column label="&#x6210;&#x5458;" min-width="220">
+                  <template #default="{ row }">{{ groupMembers(row) }}</template>
+                </el-table-column>
+                <el-table-column label="&#x64CD;&#x4F5C;" width="120">
+                  <template #default="{ row }">
+                    <el-button v-if="canManageConfig" link size="small" @click="openRecipientGroup(row)">&#x7F16;&#x8F91;</el-button>
+                    <el-popconfirm v-if="canManageConfig" title="&#x5220;&#x9664;&#x8BE5;&#x63A5;&#x6536;&#x7EC4;&#xFF1F;" @confirm="removeRecipientGroup(row.id)">
+                      <template #reference><el-button link type="danger" size="small">&#x5220;&#x9664;</el-button></template>
+                    </el-popconfirm>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+          </div>
+        </div>
+      </section>
+    </template>
+
+    <template v-if="activeTab === 'policies' && canViewConfig">
+      <section class="panel">
+        <div class="neo-sub-tabs theme-blue alert-sub-tabs">
+          <button class="neo-sub-tab-btn" :class="{ active: policyTab === 'aggregation' }" @click="changePolicyTab('aggregation')">&#x805A;&#x5408;</button>
+          <button class="neo-sub-tab-btn" :class="{ active: policyTab === 'inhibition' }" @click="changePolicyTab('inhibition')">&#x6291;&#x5236;</button>
+          <button class="neo-sub-tab-btn" :class="{ active: policyTab === 'mute' }" @click="changePolicyTab('mute')">&#x5C4F;&#x853D;</button>
+          <button class="neo-sub-tab-btn" :class="{ active: policyTab === 'escalation' }" @click="changePolicyTab('escalation')">&#x5347;&#x7EA7;</button>
+        </div>
+
+        <div v-show="policyTab === 'aggregation'">
+          <PolicyTable title="&#x805A;&#x5408;&#x89C4;&#x5219;" :data="aggregationRules" :loading="configLoading" :can-manage="canManageConfig" @create="openAggregationRule()" @edit="openAggregationRule" @remove="removeAggregationRule" />
+        </div>
+        <div v-show="policyTab === 'inhibition'">
+          <PolicyTable title="&#x6291;&#x5236;&#x89C4;&#x5219;" :data="inhibitionRules" :loading="configLoading" :can-manage="canManageConfig" @create="openInhibitionRule()" @edit="openInhibitionRule" @remove="removeInhibitionRule" />
+        </div>
+        <div v-show="policyTab === 'mute'">
+          <PolicyTable title="&#x5C4F;&#x853D;&#x89C4;&#x5219;" :data="muteRules" :loading="configLoading" :can-manage="canManageConfig" @create="openMuteRule()" @edit="openMuteRule" @remove="removeMuteRule" />
+        </div>
+        <div v-show="policyTab === 'escalation'">
+          <PolicyTable title="&#x5347;&#x7EA7;&#x7B56;&#x7565;" :data="escalationPolicies" :loading="configLoading" :can-manage="canManageConfig" @create="openEscalationPolicy()" @edit="openEscalationPolicy" @remove="removeEscalationPolicy" />
+        </div>
+      </section>
+    </template>
+
+    <template v-if="activeTab === 'rules' && canViewConfig">
+      <section class="panel">
+        <div class="section-head">
+          <h3>&#x544A;&#x8B66;&#x89C4;&#x5219;</h3>
+          <el-button v-if="canManageConfig" size="small" type="primary" :icon="Plus" @click="openAlertRule()">&#x65B0;&#x589E;&#x89C4;&#x5219;</el-button>
+        </div>
+        <el-table :data="alertRules" stripe size="small" v-loading="configLoading">
+          <el-table-column prop="name" label="&#x89C4;&#x5219;&#x540D;&#x79F0;" min-width="180">
+            <template #default="{ row }">
+              <div class="rule-name-cell">
+                <strong>{{ row.name }}</strong>
+                <span>{{ row.code }}</span>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column prop="source_type" label="&#x6570;&#x636E;&#x6E90;" width="130">
+            <template #default="{ row }">{{ ruleSourceText(row.source_type) }}</template>
+          </el-table-column>
+          <el-table-column prop="level" label="&#x7EA7;&#x522B;" width="90">
+            <template #default="{ row }"><el-tag :type="levelType(row.level)" size="small">{{ row.level_display || levelText(row.level) }}</el-tag></template>
+          </el-table-column>
+          <el-table-column label="&#x80FD;&#x529B;" width="145">
+            <template #default="{ row }">
+              <el-tag size="small" class="mini-tag" :type="row.notify_enabled ? 'success' : 'info'">&#x901A;&#x77E5;</el-tag>
+              <el-tag size="small" class="mini-tag" :type="row.auto_analyze ? 'primary' : 'info'">AI</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="interval_seconds" label="&#x95F4;&#x9694;" width="90">
+            <template #default="{ row }">{{ row.interval_seconds }}s</template>
+          </el-table-column>
+          <el-table-column prop="template_name" label="&#x6A21;&#x677F;" min-width="150" show-overflow-tooltip />
+          <el-table-column prop="last_triggered_at" label="&#x6700;&#x8FD1;&#x89E6;&#x53D1;" width="160">
+            <template #default="{ row }">{{ formatTime(row.last_triggered_at) }}</template>
+          </el-table-column>
+          <el-table-column label="&#x72B6;&#x6001;" width="80">
+            <template #default="{ row }">
+              <el-tag :type="row.is_enabled ? 'success' : 'info'" size="small">{{ row.is_enabled ? '&#x542F;&#x7528;' : '&#x505C;&#x7528;' }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="&#x64CD;&#x4F5C;" width="180" fixed="right">
+            <template #default="{ row }">
+              <el-button v-if="canManageConfig" link size="small" type="primary" @click="testAlertRule(row)">&#x89E6;&#x53D1;</el-button>
+              <el-button v-if="canManageConfig" link size="small" @click="openAlertRule(row)">&#x7F16;&#x8F91;</el-button>
+              <el-popconfirm v-if="canManageConfig" title="&#x5220;&#x9664;&#x8BE5;&#x544A;&#x8B66;&#x89C4;&#x5219;&#xFF1F;" @confirm="removeAlertRule(row.id)">
+                <template #reference><el-button link type="danger" size="small">&#x5220;&#x9664;</el-button></template>
+              </el-popconfirm>
+            </template>
+          </el-table-column>
+        </el-table>
+      </section>
+    </template>
+
+    <template v-if="activeTab === 'templates' && canViewConfig">
+      <section class="panel">
+        <div class="section-head">
+          <h3>&#x89C4;&#x5219;&#x6A21;&#x677F;</h3>
+          <el-button v-if="canManageConfig" size="small" type="primary" :icon="Plus" @click="openAlertRuleTemplate()">&#x65B0;&#x589E;&#x6A21;&#x677F;</el-button>
+        </div>
+        <el-table :data="alertRuleTemplates" stripe size="small" v-loading="configLoading">
+          <el-table-column prop="name" label="&#x6A21;&#x677F;&#x540D;&#x79F0;" min-width="190">
+            <template #default="{ row }">
+              <div class="rule-name-cell">
+                <strong>{{ row.name }}</strong>
+                <span>{{ row.code }}</span>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column prop="source_type" label="&#x6570;&#x636E;&#x6E90;" width="130">
+            <template #default="{ row }">{{ ruleSourceText(row.source_type) }}</template>
+          </el-table-column>
+          <el-table-column prop="level" label="&#x7EA7;&#x522B;" width="90">
+            <template #default="{ row }"><el-tag :type="levelType(row.level)" size="small">{{ row.level_display || levelText(row.level) }}</el-tag></template>
+          </el-table-column>
+          <el-table-column prop="description" label="&#x8BF4;&#x660E;" min-width="240" show-overflow-tooltip />
+          <el-table-column label="&#x7C7B;&#x578B;" width="90">
+            <template #default="{ row }"><el-tag :type="row.is_builtin ? 'primary' : 'info'" size="small">{{ row.is_builtin ? '&#x5185;&#x7F6E;' : '&#x81EA;&#x5B9A;&#x4E49;' }}</el-tag></template>
+          </el-table-column>
+          <el-table-column label="&#x72B6;&#x6001;" width="80">
+            <template #default="{ row }"><el-tag :type="row.is_enabled ? 'success' : 'info'" size="small">{{ row.is_enabled ? '&#x542F;&#x7528;' : '&#x505C;&#x7528;' }}</el-tag></template>
+          </el-table-column>
+          <el-table-column label="&#x64CD;&#x4F5C;" width="130" fixed="right">
+            <template #default="{ row }">
+              <el-button v-if="canManageConfig" link size="small" @click="openAlertRuleTemplate(row)">&#x7F16;&#x8F91;</el-button>
+              <el-popconfirm v-if="canManageConfig && !row.is_builtin" title="&#x5220;&#x9664;&#x8BE5;&#x89C4;&#x5219;&#x6A21;&#x677F;&#xFF1F;" @confirm="removeAlertRuleTemplate(row.id)">
+                <template #reference><el-button link type="danger" size="small">&#x5220;&#x9664;</el-button></template>
+              </el-popconfirm>
+            </template>
+          </el-table-column>
+        </el-table>
+      </section>
+    </template>
+
+    <template v-if="activeTab === 'logs' && canViewAlerts">
+      <section class="panel">
+        <div class="section-head">
+          <h3>&#x901A;&#x77E5;&#x8BB0;&#x5F55;</h3>
+          <el-button size="small" :icon="Refresh" @click="fetchNotificationLogs">&#x5237;&#x65B0;</el-button>
+        </div>
+        <el-table :data="notificationLogs" stripe size="small" v-loading="configLoading">
+          <el-table-column prop="created_at" label="&#x65F6;&#x95F4;" width="170">
+            <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
+          </el-table-column>
+          <el-table-column prop="action" label="&#x52A8;&#x4F5C;" width="90" />
+          <el-table-column prop="channel_name" label="&#x6E20;&#x9053;" width="140" />
+          <el-table-column prop="rule_name" label="&#x89C4;&#x5219;" min-width="150" />
+          <el-table-column prop="recipient_summary" label="&#x63A5;&#x6536;&#x5BF9;&#x8C61;" min-width="180" />
+          <el-table-column prop="status" label="&#x72B6;&#x6001;" width="90">
+            <template #default="{ row }">
+              <el-tag :type="notifyStatusType(row.status)" size="small">{{ row.status_display || row.status }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="error_message" label="&#x9519;&#x8BEF;&#x4FE1;&#x606F;" min-width="220" show-overflow-tooltip />
+        </el-table>
+      </section>
+    </template>
+
+    <el-drawer v-model="detailVisible" class="alert-detail-drawer" size="640px" title="&#x544A;&#x8B66;&#x8BE6;&#x60C5;">
+      <template v-if="selectedAlert">
+        <div class="alert-detail-body">
+          <div class="detail-head">
+            <div class="detail-badges">
+              <el-tag :type="levelType(selectedAlert.level)">{{ selectedAlert.level_display || levelText(selectedAlert.level) }}</el-tag>
+              <el-tag :type="statusType(selectedAlert.status)">{{ selectedAlert.status_display || statusText(selectedAlert.status) }}</el-tag>
+              <span class="detail-alert-id">告警ID：{{ selectedAlert.id }}</span>
+            </div>
+            <span class="detail-title">{{ selectedAlert.title }}</span>
+            <span class="detail-fingerprint">告警指纹：{{ selectedAlert.fingerprint || '-' }}</span>
+          </div>
+          <section class="alert-detail-card">
+            <el-descriptions class="alert-detail-summary" :column="1" size="small" border>
+              <el-descriptions-item label="&#x6765;&#x6E90;">{{ providerText(selectedAlert.source_type) }} / {{ selectedAlert.source }}</el-descriptions-item>
+              <el-descriptions-item label="&#x8D44;&#x6E90;">{{ selectedAlert.resource || selectedAlert.host_name || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="&#x670D;&#x52A1;">{{ selectedAlert.service || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="&#x73AF;&#x5883;">{{ selectedAlert.environment || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="&#x8BA4;&#x9886;&#x4EBA;">
+                <div class="claimant-cell" v-if="selectedAlert.claimants?.length">
+                  <el-tag v-for="item in selectedAlert.claimants" :key="item.id" size="small" class="mini-tag claimant-tag">{{ item.claimant }}</el-tag>
+                </div>
+                <span v-else>-</span>
+              </el-descriptions-item>
+              <el-descriptions-item label="&#x805A;&#x5408;&#x952E;">{{ selectedAlert.group_key || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="&#x63CF;&#x8FF0;">{{ selectedAlert.message }}</el-descriptions-item>
+            </el-descriptions>
+          </section>
+          <div v-if="canManageAlerts || canNotifyAlerts" class="detail-actions">
+            <el-button v-if="!selectedAlert.current_user_claimed" size="small" type="success" @click="runAlertAction(selectedAlert, 'claim')">&#x8BA4;&#x9886;</el-button>
+            <el-button v-if="selectedAlert.current_user_claimed" size="small" @click="runAlertAction(selectedAlert, 'unclaim')">&#x53D6;&#x6D88;&#x8BA4;&#x9886;</el-button>
+            <el-button v-if="canManageAlerts" size="small" type="warning" @click="openMuteDialog(selectedAlert)">&#x5C4F;&#x853D;</el-button>
+            <el-button v-if="canNotifyAlerts" size="small" type="primary" @click="runAlertAction(selectedAlert, 'notify')">&#x53D1;&#x9001;&#x901A;&#x77E5;</el-button>
+            <el-button v-if="canManageAlerts" size="small" @click="runAlertAction(selectedAlert, 'close')">&#x5173;&#x95ED;&#x544A;&#x8B66;</el-button>
+          </div>
+          <section class="alert-detail-card">
+            <div class="detail-section-title">
+              <h4>&#x6807;&#x7B7E;</h4>
+              <span>{{ Object.keys(selectedAlert.labels || {}).length }} 项</span>
+            </div>
+            <div class="kv-list">
+              <el-tag v-for="(value, key) in selectedAlert.labels" :key="key" size="small">{{ key }}={{ value }}</el-tag>
+              <span v-if="!Object.keys(selectedAlert.labels || {}).length" class="detail-empty">暂无标签</span>
+            </div>
+          </section>
+          <section class="alert-detail-card">
+            <div class="detail-section-title">
+              <h4>&#x5904;&#x7406;&#x8BB0;&#x5F55;</h4>
+              <span>{{ (selectedAlert.actions || []).length }} 条</span>
+            </div>
+            <el-timeline class="alert-detail-timeline">
+              <el-timeline-item v-for="item in selectedAlert.actions || []" :key="item.id" :timestamp="formatTime(item.created_at)">
+                {{ item.actor || '\u7CFB\u7EDF' }} / {{ item.action_display || item.action }} / {{ item.note || '-' }}
+              </el-timeline-item>
+            </el-timeline>
+            <span v-if="!(selectedAlert.actions || []).length" class="detail-empty">暂无处理记录</span>
+          </section>
+        </div>
+      </template>
+    </el-drawer>
+
+    <el-dialog v-model="ruleDialog.visible" title="&#x544A;&#x8B66;&#x89C4;&#x5219;" width="760px">
+      <el-form :model="ruleDialog.form" label-width="130px">
+        <el-form-item label="&#x89C4;&#x5219;&#x540D;&#x79F0;"><el-input v-model="ruleDialog.form.name" /></el-form-item>
+        <el-form-item label="&#x89C4;&#x5219;&#x7F16;&#x7801;"><el-input v-model="ruleDialog.form.code" placeholder="&#x7559;&#x7A7A;&#x5219;&#x81EA;&#x52A8;&#x751F;&#x6210;" /></el-form-item>
+        <el-form-item label="&#x6765;&#x6E90;&#x6A21;&#x677F;">
+          <el-select v-model="ruleDialog.form.template" clearable filterable @change="applyTemplateToRule">
+            <el-option v-for="item in alertRuleTemplates" :key="item.id" :label="`${item.name} / ${ruleSourceText(item.source_type)}`" :value="item.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="&#x6570;&#x636E;&#x6E90;">
+          <el-select v-model="ruleDialog.form.source_type">
+            <el-option v-for="item in ruleSourceOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="&#x7EA7;&#x522B;">
+          <el-select v-model="ruleDialog.form.level">
+            <el-option label="&#x4E25;&#x91CD;" value="critical" />
+            <el-option label="&#x8B66;&#x544A;" value="warning" />
+            <el-option label="&#x4FE1;&#x606F;" value="info" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="&#x67E5;&#x8BE2;&#x914D;&#x7F6E;"><el-input v-model="ruleDialog.form.query_config_text" type="textarea" :rows="4" /></el-form-item>
+        <el-form-item label="&#x89E6;&#x53D1;&#x6761;&#x4EF6;"><el-input v-model="ruleDialog.form.condition_text" type="textarea" :rows="3" /></el-form-item>
+        <el-form-item label="&#x6807;&#x7B7E;"><MatcherEditor v-model="ruleDialog.form.label_rows" mode="equals" /></el-form-item>
+        <el-form-item label="&#x6CE8;&#x89E3;"><MatcherEditor v-model="ruleDialog.form.annotation_rows" mode="equals" /></el-form-item>
+        <div class="split-grid">
+          <el-form-item label="&#x5DE1;&#x68C0;&#x95F4;&#x9694;"><el-input-number v-model="ruleDialog.form.interval_seconds" :min="10" /> <span class="field-suffix">s</span></el-form-item>
+          <el-form-item label="&#x6301;&#x7EED;&#x65F6;&#x95F4;"><el-input-number v-model="ruleDialog.form.duration_seconds" :min="0" /> <span class="field-suffix">s</span></el-form-item>
+        </div>
+        <el-form-item label="&#x80FD;&#x529B;&#x5F00;&#x5173;">
+          <el-checkbox v-model="ruleDialog.form.notify_enabled">&#x547D;&#x4E2D;&#x540E;&#x901A;&#x77E5;</el-checkbox>
+          <el-checkbox v-model="ruleDialog.form.auto_analyze">&#x547D;&#x4E2D;&#x540E; AI &#x7814;&#x5224;</el-checkbox>
+        </el-form-item>
+        <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="ruleDialog.form.is_enabled" /></el-form-item>
+        <el-form-item label="&#x8BF4;&#x660E;"><el-input v-model="ruleDialog.form.description" type="textarea" :rows="2" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="ruleDialog.visible = false">&#x53D6;&#x6D88;</el-button>
+        <el-button type="primary" @click="saveAlertRule">&#x4FDD;&#x5B58;</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="templateDialog.visible" title="&#x89C4;&#x5219;&#x6A21;&#x677F;" width="760px">
+      <el-form :model="templateDialog.form" label-width="130px">
+        <el-form-item label="&#x6A21;&#x677F;&#x540D;&#x79F0;"><el-input v-model="templateDialog.form.name" /></el-form-item>
+        <el-form-item label="&#x6A21;&#x677F;&#x7F16;&#x7801;"><el-input v-model="templateDialog.form.code" placeholder="&#x7559;&#x7A7A;&#x5219;&#x81EA;&#x52A8;&#x751F;&#x6210;" /></el-form-item>
+        <el-form-item label="&#x6570;&#x636E;&#x6E90;">
+          <el-select v-model="templateDialog.form.source_type">
+            <el-option v-for="item in ruleSourceOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="&#x9ED8;&#x8BA4;&#x7EA7;&#x522B;">
+          <el-select v-model="templateDialog.form.level">
+            <el-option label="&#x4E25;&#x91CD;" value="critical" />
+            <el-option label="&#x8B66;&#x544A;" value="warning" />
+            <el-option label="&#x4FE1;&#x606F;" value="info" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="&#x67E5;&#x8BE2;&#x914D;&#x7F6E;"><el-input v-model="templateDialog.form.query_config_text" type="textarea" :rows="4" /></el-form-item>
+        <el-form-item label="&#x89E6;&#x53D1;&#x6761;&#x4EF6;"><el-input v-model="templateDialog.form.condition_text" type="textarea" :rows="3" /></el-form-item>
+        <el-form-item label="&#x9ED8;&#x8BA4;&#x6807;&#x7B7E;"><MatcherEditor v-model="templateDialog.form.default_label_rows" mode="equals" /></el-form-item>
+        <el-form-item label="&#x9ED8;&#x8BA4;&#x6CE8;&#x89E3;"><MatcherEditor v-model="templateDialog.form.annotation_rows" mode="equals" /></el-form-item>
+        <div class="split-grid">
+          <el-form-item label="&#x5DE1;&#x68C0;&#x95F4;&#x9694;"><el-input-number v-model="templateDialog.form.interval_seconds" :min="10" /> <span class="field-suffix">s</span></el-form-item>
+          <el-form-item label="&#x6301;&#x7EED;&#x65F6;&#x95F4;"><el-input-number v-model="templateDialog.form.duration_seconds" :min="0" /> <span class="field-suffix">s</span></el-form-item>
+        </div>
+        <el-form-item label="&#x9ED8;&#x8BA4;&#x80FD;&#x529B;">
+          <el-checkbox v-model="templateDialog.form.notify_enabled">&#x547D;&#x4E2D;&#x540E;&#x901A;&#x77E5;</el-checkbox>
+          <el-checkbox v-model="templateDialog.form.auto_analyze">&#x547D;&#x4E2D;&#x540E; AI &#x7814;&#x5224;</el-checkbox>
+        </el-form-item>
+        <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="templateDialog.form.is_enabled" /></el-form-item>
+        <el-form-item label="&#x8BF4;&#x660E;"><el-input v-model="templateDialog.form.description" type="textarea" :rows="2" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="templateDialog.visible = false">&#x53D6;&#x6D88;</el-button>
+        <el-button type="primary" @click="saveAlertRuleTemplate">&#x4FDD;&#x5B58;</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="channelDialog.visible" title="&#x901A;&#x77E5;&#x6E20;&#x9053;" width="700px">
+      <el-form :model="channelDialog.form" label-width="130px">
+        <el-form-item label="&#x540D;&#x79F0;"><el-input v-model="channelDialog.form.name" /></el-form-item>
+        <el-form-item label="&#x7C7B;&#x578B;">
+          <el-select v-model="channelDialog.form.channel_type">
+            <el-option v-for="item in channelOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="&#x901A;&#x77E5;&#x5730;&#x5740;"><el-input v-model="channelDialog.form.webhook_url" /></el-form-item>
+        <el-form-item label="&#x8BBF;&#x95EE;&#x4EE4;&#x724C;"><el-input v-model="channelDialog.form.access_token" show-password /></el-form-item>
+        <el-form-item label="&#x9ED8;&#x8BA4;&#x63A5;&#x6536;&#x5730;&#x5740;"><el-input v-model="channelDialog.form.to" placeholder="&#x591A;&#x4E2A;&#x63A5;&#x6536;&#x5730;&#x5740;&#x6216;&#x624B;&#x673A;&#x53F7;&#xFF0C;&#x4F7F;&#x7528;&#x82F1;&#x6587;&#x9017;&#x53F7;&#x5206;&#x9694;" /></el-form-item>
+        <el-form-item label="&#x6807;&#x9898;&#x6A21;&#x677F;"><el-input v-model="channelDialog.form.template_title" /></el-form-item>
+        <el-form-item label="&#x5185;&#x5BB9;&#x6A21;&#x677F;"><el-input v-model="channelDialog.form.template_body" type="textarea" :rows="4" /></el-form-item>
+        <el-form-item label="&#x6062;&#x590D;&#x901A;&#x77E5;"><el-switch v-model="channelDialog.form.send_resolved" /></el-form-item>
+        <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="channelDialog.form.is_enabled" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="channelDialog.visible = false">&#x53D6;&#x6D88;</el-button>
+        <el-button type="primary" @click="saveChannel">&#x4FDD;&#x5B58;</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="recipientDialog.visible" title="&#x63A5;&#x6536;&#x4EBA;" width="620px">
+      <el-form :model="recipientDialog.form" label-width="120px">
+        <el-form-item label="&#x59D3;&#x540D;"><el-input v-model="recipientDialog.form.name" /></el-form-item>
+        <el-form-item label="&#x624B;&#x673A;&#x53F7;"><el-input v-model="recipientDialog.form.phone" /></el-form-item>
+        <el-form-item label="&#x90AE;&#x7BB1;"><el-input v-model="recipientDialog.form.email" /></el-form-item>
+        <el-form-item label="&#x9489;&#x9489; ID"><el-input v-model="recipientDialog.form.dingtalk_user_id" /></el-form-item>
+        <el-form-item label="&#x98DE;&#x4E66; ID"><el-input v-model="recipientDialog.form.feishu_user_id" /></el-form-item>
+        <el-form-item label="&#x4F01;&#x5FAE; ID"><el-input v-model="recipientDialog.form.wecom_user_id" /></el-form-item>
+        <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="recipientDialog.form.is_enabled" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="recipientDialog.visible = false">&#x53D6;&#x6D88;</el-button>
+        <el-button type="primary" @click="saveRecipient">&#x4FDD;&#x5B58;</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="recipientGroupDialog.visible" title="&#x63A5;&#x6536;&#x7EC4;" width="620px">
+      <el-form :model="recipientGroupDialog.form" label-width="120px">
+        <el-form-item label="&#x7EC4;&#x540D;"><el-input v-model="recipientGroupDialog.form.name" /></el-form-item>
+        <el-form-item label="&#x63A5;&#x6536;&#x4EBA;">
+          <el-select v-model="recipientGroupDialog.form.recipient_ids" multiple filterable>
+            <el-option v-for="item in recipients" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="&#x5E73;&#x53F0;&#x7528;&#x6237;">
+          <el-select v-model="recipientGroupDialog.form.user_ids" multiple filterable>
+            <el-option v-for="item in users" :key="item.id" :label="item.display_name || item.username" :value="item.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="recipientGroupDialog.form.is_enabled" /></el-form-item>
+        <el-form-item label="&#x8BF4;&#x660E;"><el-input v-model="recipientGroupDialog.form.description" type="textarea" :rows="2" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="recipientGroupDialog.visible = false">&#x53D6;&#x6D88;</el-button>
+        <el-button type="primary" @click="saveRecipientGroup">&#x4FDD;&#x5B58;</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="notificationRuleDialog.visible" title="&#x901A;&#x77E5;&#x89C4;&#x5219;" width="760px">
+      <el-form :model="notificationRuleDialog.form" label-width="130px">
+        <el-form-item label="&#x540D;&#x79F0;"><el-input v-model="notificationRuleDialog.form.name" /></el-form-item>
+        <el-form-item label="&#x5339;&#x914D;&#x6761;&#x4EF6;"><MatcherEditor v-model="notificationRuleDialog.form.matchers" /></el-form-item>
+        <el-form-item label="&#x6700;&#x4F4E;&#x7EA7;&#x522B;">
+          <el-select v-model="notificationRuleDialog.form.min_level" clearable>
+            <el-option label="&#x4E25;&#x91CD;" value="critical" />
+            <el-option label="&#x8B66;&#x544A;" value="warning" />
+            <el-option label="&#x4FE1;&#x606F;" value="info" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="&#x901A;&#x77E5;&#x6E20;&#x9053;">
+          <el-select v-model="notificationRuleDialog.form.channel_ids" multiple>
+            <el-option v-for="item in channels" :key="item.id" :label="`${item.name} / ${channelText(item.channel_type)}`" :value="item.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="&#x63A5;&#x6536;&#x7EC4;">
+          <el-select v-model="notificationRuleDialog.form.recipient_group_ids" multiple>
+            <el-option v-for="item in recipientGroups" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="&#x63A5;&#x6536;&#x4EBA;">
+          <el-select v-model="notificationRuleDialog.form.recipient_ids" multiple>
+            <el-option v-for="item in recipients" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="&#x805A;&#x5408;&#x89C4;&#x5219;">
+          <el-select v-model="notificationRuleDialog.form.aggregation_rule" clearable>
+            <el-option v-for="item in aggregationRules" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="&#x5347;&#x7EA7;&#x7B56;&#x7565;">
+          <el-select v-model="notificationRuleDialog.form.escalation_policy" clearable>
+            <el-option v-for="item in escalationPolicies" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="&#x901A;&#x77E5;&#x65F6;&#x673A;">
+          <el-checkbox v-model="notificationRuleDialog.form.notify_on_fire">&#x89E6;&#x53D1;</el-checkbox>
+          <el-checkbox v-model="notificationRuleDialog.form.notify_on_resolved">&#x6062;&#x590D;</el-checkbox>
+          <el-checkbox v-model="notificationRuleDialog.form.notify_on_escalation">&#x5347;&#x7EA7;</el-checkbox>
+        </el-form-item>
+        <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="notificationRuleDialog.form.is_enabled" /></el-form-item>
+        <el-form-item label="&#x8BF4;&#x660E;"><el-input v-model="notificationRuleDialog.form.description" type="textarea" :rows="2" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="notificationRuleDialog.visible = false">&#x53D6;&#x6D88;</el-button>
+        <el-button type="primary" @click="saveNotificationRule">&#x4FDD;&#x5B58;</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="policyDialog.visible" :title="policyDialog.title" width="760px">
+      <el-form :model="policyDialog.form" label-width="130px">
+        <el-form-item label="&#x540D;&#x79F0;"><el-input v-model="policyDialog.form.name" /></el-form-item>
+        <el-form-item v-if="policyDialog.kind !== 'inhibition'" label="&#x5339;&#x914D;&#x6761;&#x4EF6;"><MatcherEditor v-model="policyDialog.form.matchers" /></el-form-item>
+
+        <template v-if="policyDialog.kind === 'aggregation'">
+          <el-form-item label="&#x5206;&#x7EC4;&#x7EF4;&#x5EA6;">
+            <el-select v-model="policyDialog.form.group_by" multiple>
+              <el-option v-for="item in dimensionOptions" :key="item.value" :label="item.label" :value="item.value" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="&#x805A;&#x5408;&#x7A97;&#x53E3;"><el-input-number v-model="policyDialog.form.window_minutes" :min="1" /> &#x5206;&#x949F;</el-form-item>
+          <el-form-item label="&#x91CD;&#x590D;&#x95F4;&#x9694;"><el-input-number v-model="policyDialog.form.repeat_interval_minutes" :min="1" /> &#x5206;&#x949F;</el-form-item>
+        </template>
+
+        <template v-if="policyDialog.kind === 'inhibition'">
+          <el-form-item label="&#x6765;&#x6E90;&#x5339;&#x914D;"><MatcherEditor v-model="policyDialog.form.source_matchers" /></el-form-item>
+          <el-form-item label="&#x76EE;&#x6807;&#x5339;&#x914D;"><MatcherEditor v-model="policyDialog.form.target_matchers" /></el-form-item>
+          <el-form-item label="&#x76F8;&#x7B49;&#x6807;&#x7B7E;">
+            <el-select v-model="policyDialog.form.equal_labels" multiple allow-create filterable>
+              <el-option v-for="item in dimensionOptions" :key="item.value" :label="item.label" :value="item.value" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="&#x6301;&#x7EED;&#x65F6;&#x95F4;"><el-input-number v-model="policyDialog.form.duration_minutes" :min="1" /> &#x5206;&#x949F;</el-form-item>
+        </template>
+
+        <template v-if="policyDialog.kind === 'mute'">
+          <el-form-item label="&#x65F6;&#x95F4;&#x8303;&#x56F4;">
+            <el-date-picker
+              v-model="policyDialog.form.range"
+              type="datetimerange"
+              value-format="YYYY-MM-DDTHH:mm:ssZ"
+              start-placeholder="&#x5F00;&#x59CB;&#x65F6;&#x95F4;"
+              end-placeholder="&#x7ED3;&#x675F;&#x65F6;&#x95F4;"
+            />
+          </el-form-item>
+          <el-form-item label="&#x539F;&#x56E0;"><el-input v-model="policyDialog.form.reason" /></el-form-item>
+        </template>
+
+        <template v-if="policyDialog.kind === 'escalation'">
+          <el-form-item label="&#x91CD;&#x590D;&#x95F4;&#x9694;"><el-input-number v-model="policyDialog.form.repeat_interval_minutes" :min="1" /> &#x5206;&#x949F;</el-form-item>
+          <el-form-item label="&#x5347;&#x7EA7;&#x5C42;&#x7EA7;">
+            <div class="level-editor">
+              <div v-for="(item, index) in policyDialog.form.levels" :key="index" class="level-row">
+                <el-input-number v-model="item.after_minutes" :min="0" size="small" />
+                <el-input v-model="item.name" size="small" placeholder="&#x5C42;&#x7EA7;&#x540D;&#x79F0;" />
+                <el-select v-model="item.channel_ids" multiple size="small" placeholder="&#x901A;&#x77E5;&#x6E20;&#x9053;">
+                  <el-option v-for="channel in channels" :key="channel.id" :label="channel.name" :value="channel.id" />
+                </el-select>
+                <el-button link type="danger" :icon="Delete" @click="policyDialog.form.levels.splice(index, 1)" />
+              </div>
+              <el-button size="small" :icon="Plus" @click="policyDialog.form.levels.push({ name: '', after_minutes: 30, channel_ids: [] })">&#x65B0;&#x589E;&#x5C42;&#x7EA7;</el-button>
+            </div>
+          </el-form-item>
+        </template>
+
+        <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="policyDialog.form.is_enabled" /></el-form-item>
+        <el-form-item label="&#x8BF4;&#x660E;"><el-input v-model="policyDialog.form.description" type="textarea" :rows="2" /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="policyDialog.visible = false">&#x53D6;&#x6D88;</el-button>
+        <el-button type="primary" @click="savePolicy">&#x4FDD;&#x5B58;</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="muteDialog.visible" title="&#x5C4F;&#x853D;&#x544A;&#x8B66;" width="420px">
+      <el-form :model="muteDialog.form" label-width="96px">
+        <el-form-item label="&#x5C4F;&#x853D;&#x65F6;&#x957F;">
+          <el-input-number v-model="muteDialog.form.minutes" :min="1" :max="10080" />
+          <span class="field-suffix">&#x5206;&#x949F;</span>
+        </el-form-item>
+        <el-form-item label="&#x5FEB;&#x6377;&#x9009;&#x62E9;">
+          <div class="mute-presets">
+            <el-button size="small" @click="muteDialog.form.minutes = 30">30m</el-button>
+            <el-button size="small" @click="muteDialog.form.minutes = 60">1h</el-button>
+            <el-button size="small" @click="muteDialog.form.minutes = 180">3h</el-button>
+            <el-button size="small" @click="muteDialog.form.minutes = 1440">1d</el-button>
+            <el-button size="small" @click="muteDialog.form.minutes = 10080">7d</el-button>
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="muteDialog.visible = false">&#x53D6;&#x6D88;</el-button>
+        <el-button type="primary" @click="submitMuteDialog">&#x786E;&#x8BA4;&#x5C4F;&#x853D;</el-button>
+      </template>
+    </el-dialog>
+  </div>
+</template>
+
+<script setup>
+import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
+import { Bell, Delete, Document, Operation, Plus, Refresh, Search, Setting } from '@element-plus/icons-vue'
+import { ElButton, ElInput, ElMessage, ElMessageBox, ElOption, ElPopconfirm, ElSelect, ElTable, ElTableColumn, ElTag } from 'element-plus'
+import {
+  claimAlert,
+  closeAlert,
+  createAlertAggregationRule,
+  createAlertEscalationPolicy,
+  createAlertInhibitionRule,
+  createAlertMuteRule,
+  createAlertNotificationChannel,
+  createAlertNotificationRule,
+  createAlertRecipient,
+  createAlertRecipientGroup,
+  createAlertRule,
+  createAlertRuleTemplate,
+  deleteAlert,
+  deleteAlertAggregationRule,
+  deleteAlertEscalationPolicy,
+  deleteAlertInhibitionRule,
+  deleteAlertMuteRule,
+  deleteAlertNotificationChannel,
+  deleteAlertNotificationRule,
+  deleteAlertRecipient,
+  deleteAlertRecipientGroup,
+  deleteAlertRule,
+  deleteAlertRuleTemplate,
+  escalateAlert,
+  getAlertAggregationRules,
+  getAlertEscalationPolicies,
+  getAlertGroups,
+  getAlertInhibitionRules,
+  getAlertMuteRules,
+  getAlertNotificationChannels,
+  getAlertNotificationLogs,
+  getAlertNotificationRules,
+  getAlertRecipientGroups,
+  getAlertRecipients,
+  getAlertRules,
+  getAlertRuleTemplates,
+  getAlerts,
+  getAlertSummary,
+  getUsers,
+  muteAlert,
+  notifyAlert,
+  reopenAlert,
+  testAlertNotificationChannel,
+  triggerAlertRule,
+  unclaimAlert,
+  updateAlertAggregationRule,
+  updateAlertEscalationPolicy,
+  updateAlertInhibitionRule,
+  updateAlertMuteRule,
+  updateAlertNotificationChannel,
+  updateAlertNotificationRule,
+  updateAlertRecipient,
+  updateAlertRecipientGroup,
+  updateAlertRule,
+  updateAlertRuleTemplate,
+} from '@/api/modules/ops'
+import { useAuthStore } from '@/stores/auth'
+
+function clone(value) {
+  return JSON.parse(JSON.stringify(value || []))
+}
+
+function listOf(response) {
+  return Array.isArray(response) ? response : (response?.results || [])
+}
+
+function splitText(value) {
+  return String(value || '').split(',').map((item) => item.trim()).filter(Boolean)
+}
+
+function matchersToObject(rows) {
+  const data = {}
+  for (const row of rows || []) {
+    if (row.key) data[row.key] = row.value
+  }
+  return data
+}
+
+function jsonText(value) {
+  return JSON.stringify(value || {}, null, 2)
+}
+
+function parseJsonText(value, label) {
+  const raw = String(value || '').trim()
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    throw new Error(`${label} 不是有效 JSON`)
+  }
+}
+
+function matcherRowsFromObject(obj) {
+  return Object.entries(obj || {}).map(([key, value]) => ({ key, op: '==', value }))
+}
+
+const MatcherEditor = defineComponent({
+  name: 'MatcherEditor',
+  props: {
+    modelValue: { type: Array, default: () => [] },
+    mode: { type: String, default: 'matcher' },
+  },
+  emits: ['update:modelValue'],
+  setup(props, { emit }) {
+    const ops = ['==', '!=', '=~', '!~', 'in', 'not in', 'contains']
+    function update(index, key, value) {
+      const rows = clone(props.modelValue)
+      rows[index] = { ...rows[index], [key]: value }
+      emit('update:modelValue', rows)
+    }
+    function remove(index) {
+      const rows = clone(props.modelValue)
+      rows.splice(index, 1)
+      emit('update:modelValue', rows)
+    }
+    function add() {
+      emit('update:modelValue', [...props.modelValue, { key: '', op: '==', value: '' }])
+    }
+    return () => h('div', { class: 'matcher-editor' }, [
+      ...props.modelValue.map((row, index) => h('div', { class: 'matcher-row', key: index }, [
+        h(ElInput, { modelValue: row.key, size: 'small', placeholder: '\u5B57\u6BB5\u6216\u6807\u7B7E', onInput: (value) => update(index, 'key', value) }),
+        props.mode === 'equals'
+          ? null
+          : h(ElSelect, { modelValue: row.op || '==', size: 'small', onChange: (value) => update(index, 'op', value) }, () => ops.map((op) => h(ElOption, { key: op, label: op, value: op }))),
+        h(ElInput, { modelValue: row.value, size: 'small', placeholder: '\u5339\u914D\u503C', onInput: (value) => update(index, 'value', value) }),
+        h(ElButton, { link: true, type: 'danger', icon: Delete, onClick: () => remove(index) }),
+      ])),
+      h(ElButton, { size: 'small', icon: Plus, onClick: add }, () => '\u65B0\u589E\u5339\u914D'),
+    ])
+  },
+})
+
+const PolicyTable = defineComponent({
+  name: 'PolicyTable',
+  props: {
+    title: { type: String, required: true },
+    data: { type: Array, default: () => [] },
+    loading: { type: Boolean, default: false },
+    canManage: { type: Boolean, default: false },
+  },
+  emits: ['create', 'edit', 'remove'],
+  setup(props, { emit }) {
+    return () => h('div', [
+      h('div', {
+        class: 'section-head',
+        style: {
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '8px',
+          marginBottom: '8px',
+          minHeight: '30px',
+          width: '100%',
+          flexWrap: 'nowrap',
+        },
+      }, [
+        h('h3', {
+          style: {
+            margin: '0',
+            fontSize: '15px',
+            fontWeight: '700',
+            lineHeight: '1.3',
+            flex: '0 1 auto',
+          },
+        }, props.title),
+        props.canManage ? h(ElButton, {
+          size: 'small',
+          type: 'primary',
+          icon: Plus,
+          onClick: () => emit('create'),
+          style: {
+            marginLeft: 'auto',
+            flex: '0 0 auto',
+          },
+        }, () => '\u65B0\u589E\u7B56\u7565') : null,
+      ]),
+      h(ElTable, { data: props.data, stripe: true, size: 'small', loading: props.loading }, () => [
+        h(ElTableColumn, { prop: 'name', label: '\u540D\u79F0', minWidth: 180 }),
+        h(ElTableColumn, { prop: 'description', label: '\u8BF4\u660E', minWidth: 220, showOverflowTooltip: true }),
+        h(ElTableColumn, { label: '\u72B6\u6001', width: 90 }, {
+          default: ({ row }) => h(ElTag, { type: row.is_enabled ? 'success' : 'info', size: 'small' }, () => (row.is_enabled ? '\u542F\u7528' : '\u505C\u7528')),
+        }),
+        h(ElTableColumn, { prop: 'updated_at', label: '\u66F4\u65B0\u65F6\u95F4', width: 170 }, {
+          default: ({ row }) => formatTime(row.updated_at),
+        }),
+        h(ElTableColumn, { label: '\u64CD\u4F5C', width: 140, fixed: 'right' }, {
+          default: ({ row }) => h('div', { class: 'row-actions' }, [
+            props.canManage ? h(ElButton, { link: true, size: 'small', onClick: () => emit('edit', row) }, () => '\u7F16\u8F91') : null,
+            props.canManage ? h(ElPopconfirm, { title: '\u786E\u8BA4\u5220\u9664\u8BE5\u7B56\u7565\uFF1F', onConfirm: () => emit('remove', row.id) }, {
+              reference: () => h(ElButton, { link: true, type: 'danger', size: 'small' }, () => '\u5220\u9664'),
+            }) : null,
+          ]),
+        }),
+      ]),
+    ])
+  },
+})
+
+const route = useRoute()
+const authStore = useAuthStore()
+
+const activeTab = ref('events')
+const routeTabs = ['events', 'rules', 'templates', 'notify', 'logs', 'policies']
+const notifyTab = ref('rules')
+const policyTab = ref('aggregation')
+const eventMode = ref('list')
+const eventModeOptions = [
+  { label: '\u5217\u8868', value: 'list' },
+  { label: '\u5206\u7EC4', value: 'group' },
+]
+
+const providerOptions = [
+  { label: '\u5E73\u53F0\u89C4\u5219', value: 'platform' },
+]
+
+const ruleSourceOptions = [
+  { label: 'Prometheus \u6307\u6807', value: 'prometheus' },
+  { label: 'ClickHouse \u65E5\u5FD7', value: 'clickhouse' },
+  { label: 'K8S \u8D44\u6E90/\u4E8B\u4EF6', value: 'k8s' },
+  { label: 'SLA', value: 'sla' },
+  { label: '\u5E73\u53F0\u5185\u7F6E', value: 'platform' },
+]
+
+const channelOptions = [
+  { label: '\u77ED\u4FE1', value: 'sms' },
+  { label: '\u8BED\u97F3', value: 'voice' },
+  { label: '\u90AE\u4EF6', value: 'email' },
+  { label: '\u9489\u9489', value: 'dingtalk' },
+  { label: '\u98DE\u4E66', value: 'feishu' },
+  { label: '\u4F01\u5FAE', value: 'wecom' },
+]
+
+const dimensionOptions = [
+  { label: '\u6765\u6E90\u7C7B\u578B', value: 'source_type' },
+  { label: '\u73AF\u5883', value: 'environment' },
+  { label: '\u670D\u52A1', value: 'service' },
+  { label: '\u96C6\u7FA4', value: 'cluster' },
+  { label: '\u547D\u540D\u7A7A\u95F4', value: 'namespace' },
+  { label: '业务线', value: 'business_line' },
+  { label: '\u8D44\u6E90\u7C7B\u578B', value: 'resource_type' },
+  { label: '\u8D44\u6E90', value: 'resource' },
+  { label: '\u7EA7\u522B', value: 'level' },
+  { label: '\u5730\u57DF', value: 'region' },
+  { label: '\u6807\u7B7E alertname', value: 'label.alertname' },
+  { label: '\u6807\u7B7E team', value: 'label.team' },
+]
+
+const filters = reactive({
+  search: '',
+  level: '',
+  status: '',
+  claimed: '',
+  source_type: '',
+  environment: '',
+})
+
+const loading = ref(false)
+const configLoading = ref(false)
+const alerts = ref([])
+const selectedAlerts = ref([])
+const groups = ref([])
+const summary = ref({})
+const total = ref(0)
+const page = ref(1)
+const groupBy = ref(['source_type', 'environment', 'service'])
+const alertRules = ref([])
+const alertRuleTemplates = ref([])
+const channels = ref([])
+const recipients = ref([])
+const recipientGroups = ref([])
+const users = ref([])
+const notificationRules = ref([])
+const aggregationRules = ref([])
+const inhibitionRules = ref([])
+const muteRules = ref([])
+const escalationPolicies = ref([])
+const notificationLogs = ref([])
+const selectedAlert = ref(null)
+const detailVisible = ref(false)
+
+const canViewAlerts = computed(() => authStore.hasPermission('ops.alert.view'))
+const canManageAlerts = computed(() => authStore.hasPermission('ops.alert.manage'))
+const canNotifyAlerts = computed(() => authStore.hasPermission('ops.alert.notify'))
+const canViewConfig = computed(() => authStore.hasPermission('ops.alert.config.view'))
+const canManageConfig = computed(() => authStore.hasPermission('ops.alert.config.manage'))
+
+const statCards = computed(() => [
+  { key: 'all', label: '\u5168\u90E8\u544A\u8B66', value: summary.value.total || 0, tone: 'base-card', filter: { status: '', level: '', claimed: '' } },
+  { key: 'active', label: '\u6D3B\u8DC3\u544A\u8B66', value: summary.value.active || 0, tone: 'info-card', filter: { status: 'active', level: '', claimed: '' } },
+  { key: 'critical', label: '\u4E25\u91CD\u544A\u8B66', value: summary.value.critical || 0, tone: 'danger-card', filter: { status: '', level: 'critical', claimed: '' } },
+  { key: 'muted', label: '\u5DF2\u5C4F\u853D\u544A\u8B66', value: summary.value.muted || 0, tone: 'warning-card', filter: { status: 'muted', level: '', claimed: '' } },
+])
+
+const activeStatKey = computed(() => {
+  const current = {
+    status: filters.status || '',
+    level: filters.level || '',
+    claimed: filters.claimed || '',
+  }
+  return statCards.value.find((card) => (
+    card.filter.status === current.status
+    && card.filter.level === current.level
+    && card.filter.claimed === current.claimed
+  ))?.key || ''
+})
+
+const environmentOptions = computed(() => {
+  const values = new Set()
+  for (const item of alerts.value || []) {
+    const env = String(item?.environment || '').trim()
+    if (env) values.add(env)
+  }
+  const selected = String(filters.environment || '').trim()
+  if (selected) values.add(selected)
+  return Array.from(values).sort((a, b) => a.localeCompare(b, 'zh-CN'))
+})
+
+const ruleDialog = reactive({ visible: false, form: emptyAlertRule() })
+const templateDialog = reactive({ visible: false, form: emptyAlertRuleTemplate() })
+const muteDialog = reactive({ visible: false, target: null, form: { minutes: 60 } })
+const channelDialog = reactive({ visible: false, form: emptyChannel() })
+const recipientDialog = reactive({ visible: false, form: emptyRecipient() })
+const recipientGroupDialog = reactive({ visible: false, form: emptyRecipientGroup() })
+const notificationRuleDialog = reactive({ visible: false, form: emptyNotificationRule() })
+const policyDialog = reactive({ visible: false, kind: 'aggregation', title: '', form: emptyAggregationRule() })
+
+function levelType(level) {
+  return { critical: 'danger', warning: 'warning', info: 'info' }[level] || 'info'
+}
+
+function levelText(level) {
+  return { critical: '\u4E25\u91CD', warning: '\u8B66\u544A', info: '\u4FE1\u606F' }[level] || ''
+}
+
+function statusType(status) {
+  return { active: 'danger', resolved: 'success', muted: 'warning', closed: 'info' }[status] || 'info'
+}
+
+function statusText(status) {
+  return { active: '\u6D3B\u8DC3', resolved: '\u5DF2\u6062\u590D', muted: '\u5DF2\u5C4F\u853D', closed: '\u5DF2\u5173\u95ED' }[status] || status
+}
+
+function providerText(value) {
+  return providerOptions.find((item) => item.value === value)?.label || value || '-'
+}
+
+function ruleSourceText(value) {
+  return ruleSourceOptions.find((item) => item.value === value)?.label || value || '-'
+}
+
+function channelText(value) {
+  return channelOptions.find((item) => item.value === value)?.label || value || '-'
+}
+
+function notifyStatusType(value) {
+  return { success: 'success', skipped: 'info', error: 'danger' }[value] || 'info'
+}
+
+function formatTime(value) {
+  return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-'
+}
+
+function groupMembers(row) {
+  const names = (row.recipients || []).map((item) => item.name)
+  const platformUsers = (row.users || []).map((item) => item.display_name || item.username)
+  return [...names, ...platformUsers].join('\u3001') || '-'
+}
+
+function buildAlertParams() {
+  const params = { page: page.value }
+  if (filters.search) params.search = filters.search
+  if (filters.level) params.level = filters.level
+  if (filters.status) params.status = filters.status
+  if (filters.claimed) params.claimed = filters.claimed
+  if (filters.source_type) params.source_type = filters.source_type
+  if (filters.environment) params.environment = filters.environment
+  return params
+}
+
+async function fetchAlerts() {
+  loading.value = true
+  try {
+    const response = await getAlerts(buildAlertParams())
+    alerts.value = listOf(response)
+    selectedAlerts.value = []
+    total.value = response?.count || alerts.value.length
+  } finally {
+    loading.value = false
+  }
+}
+
+async function fetchSummary() {
+  summary.value = await getAlertSummary(buildAlertParams())
+}
+
+async function fetchGroups() {
+  if (eventMode.value !== 'group') return
+  loading.value = true
+  try {
+    groups.value = await getAlertGroups({ ...buildAlertParams(), group_by: groupBy.value.join(',') })
+  } finally {
+    loading.value = false
+  }
+}
+
+async function refreshEvents() {
+  const tasks = [fetchSummary()]
+  if (eventMode.value === 'group') tasks.push(fetchGroups())
+  else tasks.push(fetchAlerts())
+  await Promise.all(tasks)
+}
+
+function handleFilterChange() {
+  page.value = 1
+  refreshEvents()
+}
+
+async function applyStatFilter(card) {
+  const shouldClear = activeStatKey.value === card.key
+  filters.status = shouldClear ? '' : card.filter.status
+  filters.level = shouldClear ? '' : card.filter.level
+  filters.claimed = shouldClear ? '' : card.filter.claimed
+  activeTab.value = 'events'
+  eventMode.value = 'list'
+  page.value = 1
+  await refreshEvents()
+}
+
+function openGroup(row) {
+  eventMode.value = 'list'
+  filters.search = row.sample_title || ''
+  page.value = 1
+  refreshEvents()
+}
+
+function openDetail(row) {
+  selectedAlert.value = row
+  detailVisible.value = true
+}
+
+function handleSelectionChange(rows) {
+  selectedAlerts.value = rows || []
+}
+
+async function runAlertAction(row, action) {
+  const actionMap = {
+    claim: () => claimAlert(row.id),
+    unclaim: () => unclaimAlert(row.id),
+    mute: () => muteAlert(row.id, { minutes: 60 }),
+    escalate: () => escalateAlert(row.id),
+    close: () => closeAlert(row.id),
+    reopen: () => reopenAlert(row.id),
+    notify: () => notifyAlert(row.id, { action: row.status === 'resolved' ? 'resolved' : 'fire' }),
+  }
+  await actionMap[action]?.()
+  ElMessage.success('\u64CD\u4F5C\u5DF2\u63D0\u4EA4')
+  detailVisible.value = false
+  await refreshAll()
+}
+
+function openMuteDialog(row) {
+  muteDialog.target = row
+  muteDialog.form.minutes = 60
+  muteDialog.visible = true
+}
+
+async function submitMuteDialog() {
+  if (!muteDialog.target?.id) return
+  await muteAlert(muteDialog.target.id, { minutes: Number(muteDialog.form.minutes || 60) })
+  muteDialog.visible = false
+  ElMessage.success('\u64CD\u4F5C\u5DF2\u63D0\u4EA4')
+  detailVisible.value = false
+  await refreshAll()
+}
+
+async function handleRowCommand(command, row) {
+  if (command === 'delete') {
+    await deleteAlert(row.id)
+    ElMessage.success('\u544A\u8B66\u5DF2\u5220\u9664')
+    await refreshAll()
+    return
+  }
+  await runAlertAction(row, command)
+}
+
+async function handleBatchDelete() {
+  if (!selectedAlerts.value.length) return
+  await ElMessageBox.confirm(`确认删除已选中的 ${selectedAlerts.value.length} 条告警？`, '批量删除', {
+    type: 'warning',
+    confirmButtonText: '删除',
+    cancelButtonText: '取消',
+  })
+  await Promise.all(selectedAlerts.value.map((item) => deleteAlert(item.id)))
+  selectedAlerts.value = []
+  ElMessage.success('\u5DF2\u5220\u9664\u9009\u4E2D\u544A\u8B66')
+  await refreshAll()
+}
+
+function ensureTabAccess() {
+  const tabs = []
+  if (canViewAlerts.value) tabs.push('events', 'logs')
+  if (canViewConfig.value) tabs.push('rules', 'templates', 'notify', 'policies')
+  if (!tabs.includes(activeTab.value)) activeTab.value = tabs[0] || 'events'
+}
+
+async function switchTab(tab) {
+  activeTab.value = tab
+  await refreshAll()
+}
+
+function applyRouteTab() {
+  const tab = typeof route.query.tab === 'string' ? route.query.tab.trim() : ''
+  if (routeTabs.includes(tab)) activeTab.value = tab
+}
+
+async function changeNotifyTab(tab) {
+  notifyTab.value = tab
+  await loadNotifyTab()
+}
+
+async function changePolicyTab(tab) {
+  policyTab.value = tab
+  await loadPolicyTab()
+}
+
+async function loadNotifyTab() {
+  if (!canViewConfig.value) return
+  configLoading.value = true
+  try {
+    if (notifyTab.value === 'rules') {
+      const [rules, channelList, recipientList, groupList, aggregationList, escalationList] = await Promise.all([
+        getAlertNotificationRules(),
+        getAlertNotificationChannels(),
+        getAlertRecipients(),
+        getAlertRecipientGroups(),
+        getAlertAggregationRules(),
+        getAlertEscalationPolicies(),
+      ])
+      notificationRules.value = listOf(rules)
+      channels.value = listOf(channelList)
+      recipients.value = listOf(recipientList)
+      recipientGroups.value = listOf(groupList)
+      aggregationRules.value = listOf(aggregationList)
+      escalationPolicies.value = listOf(escalationList)
+    } else if (notifyTab.value === 'channels') {
+      channels.value = listOf(await getAlertNotificationChannels())
+    } else {
+      const [recipientList, groupList, userList] = await Promise.all([
+        getAlertRecipients(),
+        getAlertRecipientGroups(),
+        getUsers(),
+      ])
+      recipients.value = listOf(recipientList)
+      recipientGroups.value = listOf(groupList)
+      users.value = listOf(userList)
+    }
+  } finally {
+    configLoading.value = false
+  }
+}
+
+async function loadPolicyTab() {
+  if (!canViewConfig.value) return
+  configLoading.value = true
+  try {
+    if (policyTab.value === 'aggregation') {
+      aggregationRules.value = listOf(await getAlertAggregationRules())
+    } else if (policyTab.value === 'inhibition') {
+      inhibitionRules.value = listOf(await getAlertInhibitionRules())
+    } else if (policyTab.value === 'mute') {
+      muteRules.value = listOf(await getAlertMuteRules())
+    } else {
+      const [policyList, channelList] = await Promise.all([
+        getAlertEscalationPolicies(),
+        getAlertNotificationChannels(),
+      ])
+      escalationPolicies.value = listOf(policyList)
+      channels.value = listOf(channelList)
+    }
+  } finally {
+    configLoading.value = false
+  }
+}
+
+async function fetchAlertRules() {
+  configLoading.value = true
+  try {
+    const [ruleList, templateList] = await Promise.all([
+      getAlertRules(),
+      getAlertRuleTemplates(),
+    ])
+    alertRules.value = listOf(ruleList)
+    alertRuleTemplates.value = listOf(templateList)
+  } finally {
+    configLoading.value = false
+  }
+}
+
+async function fetchAlertRuleTemplates() {
+  configLoading.value = true
+  try {
+    alertRuleTemplates.value = listOf(await getAlertRuleTemplates())
+  } finally {
+    configLoading.value = false
+  }
+}
+
+async function fetchNotificationLogs() {
+  configLoading.value = true
+  try {
+    notificationLogs.value = listOf(await getAlertNotificationLogs())
+  } finally {
+    configLoading.value = false
+  }
+}
+
+async function refreshAll() {
+  ensureTabAccess()
+  if (activeTab.value === 'events' && canViewAlerts.value) await refreshEvents()
+  if (activeTab.value === 'rules' && canViewConfig.value) await fetchAlertRules()
+  if (activeTab.value === 'templates' && canViewConfig.value) await fetchAlertRuleTemplates()
+  if (activeTab.value === 'notify' && canViewConfig.value) await loadNotifyTab()
+  if (activeTab.value === 'policies' && canViewConfig.value) await loadPolicyTab()
+  if (activeTab.value === 'logs' && canViewAlerts.value) await fetchNotificationLogs()
+}
+
+function emptyAlertRule() {
+  return {
+    id: null,
+    template: null,
+    name: '',
+    code: '',
+    source_type: 'k8s',
+    level: 'warning',
+    query_config_text: jsonText({}),
+    condition_text: jsonText({}),
+    label_rows: [],
+    annotation_rows: [],
+    interval_seconds: 60,
+    duration_seconds: 0,
+    notify_enabled: true,
+    auto_analyze: true,
+    is_enabled: true,
+    description: '',
+  }
+}
+
+function emptyAlertRuleTemplate() {
+  return {
+    id: null,
+    name: '',
+    code: '',
+    source_type: 'k8s',
+    level: 'warning',
+    query_config_text: jsonText({}),
+    condition_text: jsonText({}),
+    default_label_rows: [],
+    annotation_rows: [],
+    interval_seconds: 60,
+    duration_seconds: 0,
+    notify_enabled: true,
+    auto_analyze: true,
+    is_enabled: true,
+    description: '',
+  }
+}
+
+function openAlertRule(row = null) {
+  ruleDialog.form = row
+    ? {
+        ...emptyAlertRule(),
+        ...row,
+        query_config_text: jsonText(row.query_config),
+        condition_text: jsonText(row.condition),
+        label_rows: matcherRowsFromObject(row.labels),
+        annotation_rows: matcherRowsFromObject(row.annotations),
+      }
+    : emptyAlertRule()
+  ruleDialog.visible = true
+  if (!alertRuleTemplates.value.length) fetchAlertRuleTemplates()
+}
+
+function openAlertRuleTemplate(row = null) {
+  templateDialog.form = row
+    ? {
+        ...emptyAlertRuleTemplate(),
+        ...row,
+        query_config_text: jsonText(row.query_config),
+        condition_text: jsonText(row.condition),
+        default_label_rows: matcherRowsFromObject(row.default_labels),
+        annotation_rows: matcherRowsFromObject(row.annotations),
+      }
+    : emptyAlertRuleTemplate()
+  templateDialog.visible = true
+}
+
+function applyTemplateToRule(templateId) {
+  const template = alertRuleTemplates.value.find((item) => item.id === templateId)
+  if (!template) return
+  const form = ruleDialog.form
+  if (!form.name) form.name = template.name
+  form.source_type = template.source_type
+  form.level = template.level
+  form.query_config_text = jsonText(template.query_config)
+  form.condition_text = jsonText(template.condition)
+  form.label_rows = matcherRowsFromObject(template.default_labels)
+  form.annotation_rows = matcherRowsFromObject(template.annotations)
+  form.interval_seconds = template.interval_seconds || 60
+  form.duration_seconds = template.duration_seconds || 0
+  form.notify_enabled = Boolean(template.notify_enabled)
+  form.auto_analyze = Boolean(template.auto_analyze)
+  if (!form.description) form.description = template.description || ''
+}
+
+function buildAlertRulePayload(form) {
+  const data = {
+    ...form,
+    template: form.template || null,
+    query_config: parseJsonText(form.query_config_text, '\u67E5\u8BE2\u914D\u7F6E'),
+    condition: parseJsonText(form.condition_text, '\u89E6\u53D1\u6761\u4EF6'),
+    labels: matchersToObject(form.label_rows),
+    annotations: matchersToObject(form.annotation_rows),
+  }
+  delete data.query_config_text
+  delete data.condition_text
+  delete data.label_rows
+  delete data.annotation_rows
+  return data
+}
+
+function buildAlertRuleTemplatePayload(form) {
+  const data = {
+    ...form,
+    query_config: parseJsonText(form.query_config_text, '\u67E5\u8BE2\u914D\u7F6E'),
+    condition: parseJsonText(form.condition_text, '\u89E6\u53D1\u6761\u4EF6'),
+    default_labels: matchersToObject(form.default_label_rows),
+    annotations: matchersToObject(form.annotation_rows),
+  }
+  delete data.query_config_text
+  delete data.condition_text
+  delete data.default_label_rows
+  delete data.annotation_rows
+  return data
+}
+
+async function saveAlertRule() {
+  try {
+    const data = buildAlertRulePayload(ruleDialog.form)
+    if (data.id) await updateAlertRule(data.id, data)
+    else await createAlertRule(data)
+    ruleDialog.visible = false
+    ElMessage.success('\u544A\u8B66\u89C4\u5219\u5DF2\u4FDD\u5B58')
+    await fetchAlertRules()
+  } catch (error) {
+    ElMessage.error(error.message || '\u544A\u8B66\u89C4\u5219\u4FDD\u5B58\u5931\u8D25')
+  }
+}
+
+async function saveAlertRuleTemplate() {
+  try {
+    const data = buildAlertRuleTemplatePayload(templateDialog.form)
+    if (data.id) await updateAlertRuleTemplate(data.id, data)
+    else await createAlertRuleTemplate(data)
+    templateDialog.visible = false
+    ElMessage.success('\u89C4\u5219\u6A21\u677F\u5DF2\u4FDD\u5B58')
+    await fetchAlertRuleTemplates()
+  } catch (error) {
+    ElMessage.error(error.message || '\u89C4\u5219\u6A21\u677F\u4FDD\u5B58\u5931\u8D25')
+  }
+}
+
+async function removeAlertRule(id) {
+  await deleteAlertRule(id)
+  ElMessage.success('\u544A\u8B66\u89C4\u5219\u5DF2\u5220\u9664')
+  await fetchAlertRules()
+}
+
+async function removeAlertRuleTemplate(id) {
+  await deleteAlertRuleTemplate(id)
+  ElMessage.success('\u89C4\u5219\u6A21\u677F\u5DF2\u5220\u9664')
+  await fetchAlertRuleTemplates()
+}
+
+async function testAlertRule(row) {
+  await ElMessageBox.confirm('\u624B\u52A8\u89E6\u53D1\u4F1A\u751F\u6210\u4E00\u6761\u544A\u8B66\u4E8B\u4EF6\uFF0C\u786E\u8BA4\u7EE7\u7EED\uFF1F', '\u624B\u52A8\u89E6\u53D1', {
+    type: 'warning',
+    confirmButtonText: '\u89E6\u53D1',
+    cancelButtonText: '\u53D6\u6D88',
+  })
+  await triggerAlertRule(row.id, {
+    title: row.name,
+    message: row.description || row.name,
+    labels: row.labels || {},
+    resource_type: row.source_type,
+    resource: row.code,
+    evidence: { manual: true },
+  })
+  ElMessage.success('\u544A\u8B66\u89C4\u5219\u5DF2\u89E6\u53D1')
+  await refreshAll()
+}
+
+function emptyChannel() {
+  return { id: null, name: '', channel_type: 'dingtalk', webhook_url: '', access_token: '', to: '', template_title: '', template_body: '', send_resolved: true, is_enabled: true, timeout_seconds: 8 }
+}
+
+function openChannel(row = null) {
+  if (row) {
+    const config = row.config || {}
+    const configTo = config.to || config.phones || []
+    channelDialog.form = {
+      ...emptyChannel(),
+      ...row,
+      webhook_url: config.webhook_url || config.url || '',
+      access_token: config.access_token || config.token || '',
+      to: Array.isArray(configTo) ? configTo.join(',') : String(configTo || ''),
+    }
+  } else {
+    channelDialog.form = emptyChannel()
+  }
+  channelDialog.visible = true
+}
+
+async function saveChannel() {
+  const data = { ...channelDialog.form }
+  const recipientsText = splitText(data.to)
+  data.config = {
+    ...(data.webhook_url ? { webhook_url: data.webhook_url } : {}),
+    ...(data.access_token ? { access_token: data.access_token } : {}),
+    ...(data.channel_type === 'email' ? { to: recipientsText } : {}),
+    ...((data.channel_type === 'sms' || data.channel_type === 'voice') ? { phones: recipientsText } : {}),
+  }
+  if (data.id) await updateAlertNotificationChannel(data.id, data)
+  else await createAlertNotificationChannel(data)
+  channelDialog.visible = false
+  ElMessage.success('\u901A\u77E5\u6E20\u9053\u5DF2\u4FDD\u5B58')
+  await loadNotifyTab()
+}
+
+async function removeChannel(id) {
+  await deleteAlertNotificationChannel(id)
+  ElMessage.success('\u901A\u77E5\u6E20\u9053\u5DF2\u5220\u9664')
+  await loadNotifyTab()
+}
+
+async function testChannel(row) {
+  await testAlertNotificationChannel(row.id)
+  ElMessage.success('\u6D4B\u8BD5\u8BF7\u6C42\u5DF2\u63D0\u4EA4')
+  await fetchNotificationLogs()
+}
+
+function emptyRecipient() {
+  return { id: null, name: '', phone: '', email: '', dingtalk_user_id: '', feishu_user_id: '', wecom_user_id: '', is_enabled: true }
+}
+
+function openRecipient(row = null) {
+  recipientDialog.form = row ? { ...emptyRecipient(), ...row } : emptyRecipient()
+  recipientDialog.visible = true
+}
+
+async function saveRecipient() {
+  const data = { ...recipientDialog.form }
+  if (data.id) await updateAlertRecipient(data.id, data)
+  else await createAlertRecipient(data)
+  recipientDialog.visible = false
+  ElMessage.success('\u63A5\u6536\u4EBA\u5DF2\u4FDD\u5B58')
+  await loadNotifyTab()
+}
+
+async function removeRecipient(id) {
+  await deleteAlertRecipient(id)
+  ElMessage.success('\u63A5\u6536\u4EBA\u5DF2\u5220\u9664')
+  await loadNotifyTab()
+}
+
+function emptyRecipientGroup() {
+  return { id: null, name: '', recipient_ids: [], user_ids: [], is_enabled: true, description: '' }
+}
+
+function openRecipientGroup(row = null) {
+  recipientGroupDialog.form = row
+    ? {
+        ...emptyRecipientGroup(),
+        ...row,
+        recipient_ids: (row.recipients || []).map((item) => item.id),
+        user_ids: (row.users || []).map((item) => item.id),
+      }
+    : emptyRecipientGroup()
+  recipientGroupDialog.visible = true
+}
+
+async function saveRecipientGroup() {
+  const data = { ...recipientGroupDialog.form }
+  if (data.id) await updateAlertRecipientGroup(data.id, data)
+  else await createAlertRecipientGroup(data)
+  recipientGroupDialog.visible = false
+  ElMessage.success('\u63A5\u6536\u7EC4\u5DF2\u4FDD\u5B58')
+  await loadNotifyTab()
+}
+
+async function removeRecipientGroup(id) {
+  await deleteAlertRecipientGroup(id)
+  ElMessage.success('\u63A5\u6536\u7EC4\u5DF2\u5220\u9664')
+  await loadNotifyTab()
+}
+
+function emptyNotificationRule() {
+  return {
+    id: null,
+    name: '',
+    matchers: [],
+    min_level: '',
+    channel_ids: [],
+    recipient_ids: [],
+    recipient_group_ids: [],
+    aggregation_rule: null,
+    escalation_policy: null,
+    notify_on_fire: true,
+    notify_on_resolved: true,
+    notify_on_escalation: true,
+    is_enabled: true,
+    description: '',
+  }
+}
+
+function openNotificationRule(row = null) {
+  notificationRuleDialog.form = row
+    ? {
+        ...emptyNotificationRule(),
+        ...row,
+        channel_ids: (row.channels || []).map((item) => item.id),
+        recipient_ids: (row.recipients || []).map((item) => item.id),
+        recipient_group_ids: (row.recipient_groups || []).map((item) => item.id),
+        matchers: clone(row.matchers || []),
+      }
+    : emptyNotificationRule()
+  notificationRuleDialog.visible = true
+}
+
+async function saveNotificationRule() {
+  const data = { ...notificationRuleDialog.form }
+  if (data.id) await updateAlertNotificationRule(data.id, data)
+  else await createAlertNotificationRule(data)
+  notificationRuleDialog.visible = false
+  ElMessage.success('\u901A\u77E5\u89C4\u5219\u5DF2\u4FDD\u5B58')
+  await loadNotifyTab()
+}
+
+async function removeNotificationRule(id) {
+  await deleteAlertNotificationRule(id)
+  ElMessage.success('\u901A\u77E5\u89C4\u5219\u5DF2\u5220\u9664')
+  await loadNotifyTab()
+}
+
+function emptyAggregationRule() {
+  return { id: null, name: '', matchers: [], group_by: ['source_type', 'environment', 'service'], window_minutes: 5, repeat_interval_minutes: 30, is_enabled: true, description: '' }
+}
+
+function emptyInhibitionRule() {
+  return { id: null, name: '', source_matchers: [], target_matchers: [], equal_labels: ['service', 'resource'], duration_minutes: 60, is_enabled: true, description: '' }
+}
+
+function emptyMuteRule() {
+  return { id: null, name: '', matchers: [], range: [], starts_at: null, ends_at: null, reason: '', is_enabled: true, description: '' }
+}
+
+function emptyEscalationPolicy() {
+  return { id: null, name: '', matchers: [], levels: [{ name: '\u4E00\u7EA7\u5347\u7EA7', after_minutes: 30, channel_ids: [] }], repeat_interval_minutes: 30, is_enabled: true, description: '' }
+}
+
+function openAggregationRule(row = null) {
+  policyDialog.kind = 'aggregation'
+  policyDialog.title = '\u805A\u5408\u89C4\u5219'
+  policyDialog.form = row ? { ...emptyAggregationRule(), ...row, matchers: clone(row.matchers), group_by: clone(row.group_by) } : emptyAggregationRule()
+  policyDialog.visible = true
+}
+
+function openInhibitionRule(row = null) {
+  policyDialog.kind = 'inhibition'
+  policyDialog.title = '\u6291\u5236\u89C4\u5219'
+  policyDialog.form = row ? { ...emptyInhibitionRule(), ...row, source_matchers: clone(row.source_matchers), target_matchers: clone(row.target_matchers), equal_labels: clone(row.equal_labels) } : emptyInhibitionRule()
+  policyDialog.visible = true
+}
+
+function openMuteRule(row = null) {
+  policyDialog.kind = 'mute'
+  policyDialog.title = '\u5C4F\u853D\u89C4\u5219'
+  policyDialog.form = row ? { ...emptyMuteRule(), ...row, matchers: clone(row.matchers), range: row.starts_at && row.ends_at ? [row.starts_at, row.ends_at] : [] } : emptyMuteRule()
+  policyDialog.visible = true
+}
+
+function openEscalationPolicy(row = null) {
+  policyDialog.kind = 'escalation'
+  policyDialog.title = '\u5347\u7EA7\u7B56\u7565'
+  policyDialog.form = row ? { ...emptyEscalationPolicy(), ...row, matchers: clone(row.matchers), levels: clone(row.levels || []) } : emptyEscalationPolicy()
+  policyDialog.visible = true
+}
+
+async function savePolicy() {
+  const data = { ...policyDialog.form }
+  if (policyDialog.kind === 'mute') {
+    data.starts_at = data.range?.[0] || null
+    data.ends_at = data.range?.[1] || null
+  }
+  const actionMap = {
+    aggregation: [createAlertAggregationRule, updateAlertAggregationRule, loadPolicyTab],
+    inhibition: [createAlertInhibitionRule, updateAlertInhibitionRule, loadPolicyTab],
+    mute: [createAlertMuteRule, updateAlertMuteRule, loadPolicyTab],
+    escalation: [createAlertEscalationPolicy, updateAlertEscalationPolicy, loadPolicyTab],
+  }
+  const [createFn, updateFn, refreshFn] = actionMap[policyDialog.kind]
+  if (data.id) await updateFn(data.id, data)
+  else await createFn(data)
+  policyDialog.visible = false
+  ElMessage.success('\u7B56\u7565\u5DF2\u4FDD\u5B58')
+  await refreshFn()
+}
+
+async function removeAggregationRule(id) {
+  await deleteAlertAggregationRule(id)
+  ElMessage.success('\u805A\u5408\u89C4\u5219\u5DF2\u5220\u9664')
+  await loadPolicyTab()
+}
+
+async function removeInhibitionRule(id) {
+  await deleteAlertInhibitionRule(id)
+  ElMessage.success('\u6291\u5236\u89C4\u5219\u5DF2\u5220\u9664')
+  await loadPolicyTab()
+}
+
+async function removeMuteRule(id) {
+  await deleteAlertMuteRule(id)
+  ElMessage.success('\u5C4F\u853D\u89C4\u5219\u5DF2\u5220\u9664')
+  await loadPolicyTab()
+}
+
+async function removeEscalationPolicy(id) {
+  await deleteAlertEscalationPolicy(id)
+  ElMessage.success('\u5347\u7EA7\u7B56\u7565\u5DF2\u5220\u9664')
+  await loadPolicyTab()
+}
+
+function applyRouteFilters() {
+  applyRouteTab()
+  filters.search = typeof route.query.search === 'string' ? route.query.search.trim() : ''
+  filters.level = typeof route.query.level === 'string' ? route.query.level.trim() : ''
+  if (route.query.claimed === '0' || route.query.ack === '0') filters.claimed = '0'
+  else if (route.query.claimed === '1' || route.query.ack === '1') filters.claimed = '1'
+  else filters.claimed = ''
+}
+
+watch(
+  () => [route.query.tab || '', route.query.search || '', route.query.level || '', route.query.claimed || '', route.query.ack || ''].join('|'),
+  async () => {
+    applyRouteFilters()
+    page.value = 1
+    await refreshAll()
+  },
+)
+
+onMounted(async () => {
+  applyRouteFilters()
+  users.value = listOf(await getUsers())
+  await refreshAll()
+})
+</script>
+
+<style scoped>
+.alerts-page {
+  --alert-primary: #3370ff;
+  --alert-bg: #f7f8fa;
+  --alert-panel: #ffffff;
+  --alert-border-soft: #eff0f2;
+  --alert-text: #1f2329;
+  --alert-muted: #646a73;
+  --alert-subtle: #8f959e;
+  --alert-shadow: 0 8px 24px rgba(31, 35, 41, 0.06);
+  background: linear-gradient(180deg, rgba(247, 248, 250, 0.94), rgba(255, 255, 255, 0) 180px), var(--alert-bg);
+  color: var(--alert-text);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 100%;
+}
+
+.hero,
+.hero-title-row,
+.hero-actions,
+.toolbar,
+.row-actions,
+.group-toolbar,
+.section-head,
+.detail-actions,
+.matcher-row,
+.level-row,
+.claimant-cell {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+}
+
+.claimant-cell {
+  flex-wrap: wrap;
+}
+
+.claimant-tag {
+  margin: 0;
+}
+
+.hero.panel {
+  background: linear-gradient(180deg, #ffffff 0%, #fffdf8 100%);
+  border: 1px solid var(--alert-border-soft);
+  border-radius: 12px;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.04);
+  justify-content: space-between;
+  padding: 12px 14px;
+}
+
+.hero-copy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.hero-title-row {
+  align-items: center;
+  gap: 10px;
+}
+
+.hero-title-row h2 {
+  color: #0f172a;
+  font-size: 23px;
+  font-weight: 700;
+  line-height: 1.1;
+  margin: 0;
+}
+
+.page-inline-desc {
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0;
+  flex: 0 1 auto;
+  transform: translateY(1px);
+}
+
+.hero-icon {
+  align-items: center;
+  background: linear-gradient(135deg, #0f766e, #0ea5e9);
+  border-radius: 16px;
+  color: #fff;
+  display: inline-flex;
+  height: 40px;
+  justify-content: center;
+  width: 40px;
+}
+
+.hero-actions .el-button {
+  border-radius: 10px;
+  font-weight: 500;
+  min-height: 32px;
+  padding: 0 14px;
+}
+
+.panel {
+  background: var(--alert-panel);
+  border: 1px solid var(--alert-border-soft);
+  border-radius: 16px;
+  box-shadow: var(--alert-shadow);
+  padding: 12px 14px;
+}
+
+.alert-center-tabs .neo-tab-btn {
+  min-height: 36px;
+  padding: 0 18px;
+}
+
+.alert-center-tabs.theme-blue .neo-tab-btn.active {
+  color: #245bdb;
+  background: rgba(51, 112, 255, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(51, 112, 255, 0.08);
+}
+
+.alert-center-tabs {
+  margin: 0;
+}
+
+.alert-sub-tabs {
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.alert-sub-tabs .neo-sub-tab-btn {
+  min-height: 30px;
+  padding: 0 14px;
+}
+
+.alert-top-stats {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 0;
+}
+
+.alert-summary-card {
+  justify-content: center;
+  min-height: 68px;
+  padding: 14px 16px;
+}
+
+.alert-summary-card.audit-card--action:hover {
+  border-color: rgba(36, 91, 219, 0.16);
+  box-shadow: 0 10px 20px rgba(36, 91, 219, 0.06);
+}
+
+.alert-summary-card.audit-card--action.is-active {
+  border-color: rgba(36, 91, 219, 0.24);
+  background: linear-gradient(180deg, #f4f7ff 0%, #ffffff 100%);
+  box-shadow: 0 0 0 1px rgba(36, 91, 219, 0.05), 0 12px 22px rgba(36, 91, 219, 0.08);
+}
+
+.alert-summary-card .stat-label {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.alert-summary-card .stat-value {
+  color: #1f2329;
+  font-size: 24px;
+}
+
+.toolbar,
+.group-toolbar {
+  background: #fbfcff;
+  border: 1px solid var(--alert-border-soft);
+  border-radius: 12px;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+}
+
+.toolbar {
+  flex-wrap: wrap;
+}
+
+.toolbar-spacer {
+  flex: 1 1 auto;
+}
+
+.section-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.toolbar .el-input {
+  width: 280px;
+}
+
+.toolbar .el-select {
+  width: 120px;
+}
+
+.group-toolbar .el-select {
+  min-width: 420px;
+}
+
+.toolbar-label {
+  color: var(--alert-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.data-table {
+  width: 100%;
+}
+
+.link-title {
+  background: transparent;
+  border: 0;
+  color: var(--alert-text);
+  cursor: pointer;
+  font-weight: 600;
+  padding: 0;
+  text-align: left;
+}
+
+.link-title:hover {
+  color: var(--alert-primary);
+}
+
+.alert-id-cell {
+  color: var(--alert-text);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.sub-line {
+  color: var(--alert-subtle);
+  margin-top: 3px;
+}
+
+.group-key {
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  font-weight: 600;
+}
+
+.pager {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 8px;
+}
+
+.section-head {
+  justify-content: space-between;
+  margin-bottom: 8px;
+  min-height: 30px;
+}
+
+.section-head h3 {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.split-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.split-panel {
+  background: #fbfcff;
+  border: 1px solid var(--alert-border-soft);
+  border-radius: 14px;
+  padding: 10px 12px;
+}
+
+.mini-tag {
+  margin: 0 4px 4px 0;
+}
+
+.separator {
+  color: #cbd5e1;
+  margin: 0 6px;
+}
+
+.mono {
+  color: var(--alert-muted);
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+.rule-name-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.rule-name-cell strong {
+  color: var(--alert-text);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.rule-name-cell span {
+  color: var(--alert-subtle);
+  font-size: 12px;
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.alert-detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.detail-head {
+  align-items: flex-start;
+  background: linear-gradient(135deg, #ffffff 0%, #f6faff 100%);
+  border: 1px solid rgba(51, 112, 255, 0.16);
+  border-radius: 10px;
+  box-shadow: 0 8px 20px rgba(31, 35, 41, 0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+  padding: 10px 12px;
+}
+
+.detail-badges {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.detail-alert-id {
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 999px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 22px;
+  padding: 0 9px;
+}
+
+.detail-title {
+  color: var(--alert-text);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.detail-fingerprint {
+  color: var(--alert-subtle);
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  word-break: break-all;
+}
+
+.alert-detail-card {
+  background: #fff;
+  border: 1px solid var(--alert-border-soft);
+  border-radius: 10px;
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.035);
+  padding: 8px;
+}
+
+.alert-detail-summary {
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+.alert-detail-summary :deep(.el-descriptions__table) {
+  border-radius: 8px;
+}
+
+.alert-detail-summary :deep(.el-descriptions__cell) {
+  border-color: #edf0f5;
+}
+
+.alert-detail-summary :deep(.el-descriptions__label) {
+  background: #f8fafc;
+  box-sizing: border-box;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 64px;
+  padding: 6px 8px;
+  text-align: left;
+  white-space: nowrap;
+  width: 64px;
+  word-break: keep-all;
+}
+
+.alert-detail-summary :deep(.el-descriptions__content) {
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 6px 8px;
+  word-break: break-word;
+}
+
+.detail-actions {
+  background: #fff;
+  border: 1px solid var(--alert-border-soft);
+  border-radius: 10px;
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.035);
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 8px;
+}
+
+.detail-actions :deep(.el-button) {
+  margin-left: 0;
+}
+
+.detail-section-title {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 7px;
+}
+
+.detail-section-title h4 {
+  color: var(--alert-text);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  margin: 0;
+}
+
+.detail-section-title span,
+.detail-empty {
+  color: var(--alert-muted);
+  font-size: 12px;
+}
+
+.field-suffix {
+  color: var(--alert-muted);
+  margin-left: 8px;
+}
+
+.mute-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.kv-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 0;
+}
+
+.alert-detail-timeline {
+  margin-top: 2px;
+  padding-left: 2px;
+}
+
+.alert-detail-timeline :deep(.el-timeline-item) {
+  padding-bottom: 10px;
+}
+
+.alert-detail-timeline :deep(.el-timeline-item__timestamp) {
+  color: #8f959e;
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.alert-detail-timeline :deep(.el-timeline-item__content) {
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.matcher-editor,
+.level-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.matcher-row,
+.level-row {
+  flex-wrap: nowrap;
+  width: 100%;
+}
+
+.matcher-row .el-input {
+  flex: 1;
+}
+
+.matcher-row .el-select {
+  width: 110px;
+}
+
+.level-row {
+  background: #fbfcff;
+  border: 1px solid var(--alert-border-soft);
+  border-radius: 12px;
+  padding: 7px 8px;
+}
+
+.level-row .el-input {
+  width: 150px;
+}
+
+.level-row .el-select {
+  min-width: 220px;
+}
+
+.alerts-page :deep(.el-input__wrapper),
+.alerts-page :deep(.el-select__wrapper) {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px var(--alert-border-soft) inset;
+}
+
+.alerts-page :deep(.el-drawer__header) {
+  margin-bottom: 8px;
+}
+
+.alerts-page :deep(.el-drawer__body) {
+  padding-top: 8px;
+}
+
+.alerts-page :deep(.alert-detail-drawer .el-drawer__header) {
+  border-bottom: 1px solid #edf0f5;
+  margin-bottom: 0;
+  padding: 14px 18px 10px;
+}
+
+.alerts-page :deep(.alert-detail-drawer .el-drawer__body) {
+  background: #f7f8fa;
+  padding: 10px 14px 14px;
+}
+
+.alerts-page :deep(.el-button--primary) {
+  --el-button-bg-color: var(--alert-primary);
+  --el-button-border-color: var(--alert-primary);
+  --el-button-hover-bg-color: #2b63db;
+  --el-button-hover-border-color: #2b63db;
+  border-radius: 10px;
+}
+
+.alerts-page :deep(.el-button:not(.is-link)) {
+  border-radius: 10px;
+}
+
+.alerts-page :deep(.el-segmented) {
+  --el-segmented-item-selected-bg-color: #ffffff;
+  --el-segmented-item-selected-color: var(--alert-primary);
+  background: #f2f3f5;
+  border-radius: 10px;
+  padding: 2px;
+}
+
+.alerts-page :deep(.el-table) {
+  --el-table-border-color: var(--alert-border-soft);
+  --el-table-header-bg-color: #fbfcff;
+  --el-table-header-text-color: var(--alert-muted);
+  --el-table-row-hover-bg-color: #f7faff;
+  border-radius: 12px;
+  color: var(--alert-text);
+  overflow: hidden;
+}
+
+.alerts-page :deep(.el-tag) {
+  border-radius: 999px;
+  font-weight: 500;
+}
+
+.alerts-page :deep(.el-dialog),
+.alerts-page :deep(.el-drawer) {
+  border-radius: 10px;
+}
+
+@media (max-width: 1100px) {
+  .alert-top-stats,
+  .split-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .hero.panel,
+  .hero-title-row,
+  .matcher-row,
+  .level-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .page-inline-desc {
+    flex-basis: 100%;
+    padding-left: 54px;
+  }
+
+  .alert-top-stats,
+  .split-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .toolbar .el-input,
+  .toolbar .el-select,
+  .group-toolbar .el-select,
+  .level-row .el-input,
+  .level-row .el-select,
+  .matcher-row .el-select {
+    min-width: 0;
+    width: 100%;
+  }
+}
+</style>

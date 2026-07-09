@@ -1,0 +1,105 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: xing-cloud-mysql
+  namespace: xing-cloud
+  labels:
+    app: xing-cloud
+    component: mysql
+spec:
+  ports:
+    - port: 3306
+      targetPort: 3306
+  selector:
+    app: xing-cloud
+    component: mysql
+  clusterIP: None
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: xing-cloud-mysql
+  namespace: xing-cloud
+  labels:
+    app: xing-cloud
+    component: mysql
+spec:
+  serviceName: xing-cloud-mysql
+  replicas: 1
+  selector:
+    matchLabels:
+      app: xing-cloud
+      component: mysql
+  template:
+    metadata:
+      labels:
+        app: xing-cloud
+        component: mysql
+    spec:
+      containers:
+        - name: mysql
+          image: swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/mysql:8.0.28
+          args:
+            - --character-set-server=utf8mb4
+            - --collation-server=utf8mb4_unicode_ci
+            - --default-authentication-plugin=mysql_native_password
+          env:
+            - name: MYSQL_DATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: xing-cloud-config
+                  key: MYSQL_DATABASE
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: xing-cloud-secret
+                  key: MYSQL_USER
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: xing-cloud-secret
+                  key: MYSQL_PASSWORD
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: xing-cloud-secret
+                  key: MYSQL_ROOT_PASSWORD
+            - name: TZ
+              valueFrom:
+                configMapKeyRef:
+                  name: xing-cloud-config
+                  key: TZ
+          ports:
+            - containerPort: 3306
+          volumeMounts:
+            - name: mysql-data
+              mountPath: /var/lib/mysql
+          readinessProbe:
+            exec:
+              command:
+                - mysqladmin
+                - ping
+                - -h127.0.0.1
+                - -uroot
+                - -p$(MYSQL_ROOT_PASSWORD)
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 10
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: 2000m
+              memory: 2Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: mysql-data
+      spec:
+        storageClassName: nfs-client
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 10Gi

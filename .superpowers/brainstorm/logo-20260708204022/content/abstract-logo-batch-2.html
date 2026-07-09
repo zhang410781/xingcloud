@@ -1,0 +1,200 @@
+<style>
+  .logo-brief { max-width: 1220px; margin: 0 auto; }
+  .logo-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+  .logo-card {
+    background: var(--bg-secondary);
+    border: 2px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: border-color .16s ease, transform .16s ease, box-shadow .16s ease;
+  }
+  .logo-card:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: 0 14px 28px rgba(15, 23, 42, .12); }
+  .logo-card.selected { border-color: var(--selected-border); box-shadow: 0 0 0 4px rgba(0, 113, 227, .12); }
+  .stage {
+    min-height: 244px;
+    display: grid;
+    gap: 18px;
+    align-content: center;
+    justify-items: center;
+    padding: 24px 18px;
+    background: linear-gradient(135deg, #f8fbff 0%, #eff8fb 52%, #f8fafc 100%);
+    border-bottom: 1px solid var(--border);
+  }
+  .mark { width: 108px; height: 108px; display: grid; place-items: center; }
+  .mark svg { width: 108px; height: 108px; overflow: visible; }
+  .brand-row { display: flex; align-items: center; justify-content: center; gap: 12px; width: 100%; }
+  .mini {
+    width: 46px;
+    height: 46px;
+    border-radius: 12px;
+    background: #0f172a;
+    display: grid;
+    place-items: center;
+  }
+  .mini svg { width: 30px; height: 30px; overflow: visible; }
+  .copy strong { display: block; font-size: 18px; color: #0f172a; line-height: 1.2; }
+  .copy span { display: block; margin-top: 4px; font-size: 12px; color: #64748b; }
+  .body { padding: 15px; }
+  .title { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .letter {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    display: grid;
+    place-items: center;
+    background: #e2e8f0;
+    color: #475569;
+    font-weight: 800;
+  }
+  .logo-card.selected .letter { background: var(--accent); color: white; }
+  .title h3 { margin: 0; }
+  .body p { margin: 0; font-size: 13px; color: var(--text-secondary); }
+  @media (max-width: 1180px) { .logo-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 680px) { .logo-grid { grid-template-columns: 1fr; } }
+</style>
+
+<section class="logo-brief">
+  <h2>XingCloud 抽象 Logo 第二批</h2>
+  <p class="subtitle">这批更偏企业级平台符号：少一点“云朵图形”，多一点智能运维、稳定性、洞察和编排的感觉。</p>
+
+  <div class="logo-grid">
+    <article class="logo-card" data-choice="e-compass" onclick="toggleSelect(this)">
+      <div class="stage">
+        <div class="mark">
+          <svg viewBox="0 0 128 128" aria-label="North Compass">
+            <defs>
+              <linearGradient id="compassA" x1="24" y1="18" x2="104" y2="110" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#7dd3fc"/>
+                <stop offset=".5" stop-color="#2f8de0"/>
+                <stop offset="1" stop-color="#1e40af"/>
+              </linearGradient>
+              <linearGradient id="compassB" x1="46" y1="34" x2="82" y2="96" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#5eead4"/>
+                <stop offset="1" stop-color="#2563eb"/>
+              </linearGradient>
+            </defs>
+            <circle cx="64" cy="64" r="43" fill="none" stroke="url(#compassA)" stroke-width="7"/>
+            <path d="M64 24 78 63l-14 41-14-41 14-39Z" fill="url(#compassB)"/>
+            <path d="M27 64h21M80 64h21M64 27v17M64 84v17" stroke="#93c5fd" stroke-width="6" stroke-linecap="round"/>
+            <circle cx="64" cy="64" r="8" fill="#f8fbff"/>
+            <circle cx="64" cy="64" r="3.5" fill="#1e40af"/>
+          </svg>
+        </div>
+        <div class="brand-row">
+          <div class="mini">
+            <svg viewBox="0 0 128 128"><circle cx="64" cy="64" r="43" fill="none" stroke="#7dd3fc" stroke-width="7"/><path d="M64 24 78 63l-14 41-14-41 14-39Z" fill="#2f75e8"/><circle cx="64" cy="64" r="8" fill="#f8fbff"/></svg>
+          </div>
+          <div class="copy"><strong>XingCloud</strong><span>North Compass</span></div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="title"><span class="letter">E</span><h3>运维罗盘</h3></div>
+        <p>表达“给复杂系统定位方向”，适合驾驶舱、SLA、风险研判这一类领导视角。</p>
+      </div>
+    </article>
+
+    <article class="logo-card" data-choice="f-pulse" onclick="toggleSelect(this)">
+      <div class="stage">
+        <div class="mark">
+          <svg viewBox="0 0 128 128" aria-label="Pulse Ring">
+            <defs>
+              <linearGradient id="pulseA" x1="24" y1="28" x2="104" y2="100" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#67e8f9"/>
+                <stop offset=".48" stop-color="#38bdf8"/>
+                <stop offset="1" stop-color="#2563eb"/>
+              </linearGradient>
+              <linearGradient id="pulseB" x1="28" y1="72" x2="100" y2="56" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#22c55e"/>
+                <stop offset="1" stop-color="#3b82f6"/>
+              </linearGradient>
+            </defs>
+            <path d="M64 21c24 0 43 19 43 43s-19 43-43 43-43-19-43-43 19-43 43-43Z" fill="none" stroke="url(#pulseA)" stroke-width="8" stroke-dasharray="78 22" stroke-linecap="round"/>
+            <path d="M25 68h20l8-20 17 39 11-24h22" fill="none" stroke="url(#pulseB)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="64" cy="64" r="9" fill="#f8fbff" stroke="#2563eb" stroke-width="5"/>
+          </svg>
+        </div>
+        <div class="brand-row">
+          <div class="mini">
+            <svg viewBox="0 0 128 128"><circle cx="64" cy="64" r="43" fill="none" stroke="#67e8f9" stroke-width="8"/><path d="M25 68h20l8-20 17 39 11-24h22" fill="none" stroke="#22c55e" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="copy"><strong>XingCloud</strong><span>Pulse Ring</span></div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="title"><span class="letter">F</span><h3>健康脉冲</h3></div>
+        <p>更像可观测性平台，天然关联监控、告警、SLA 和系统健康状态。</p>
+      </div>
+    </article>
+
+    <article class="logo-card" data-choice="g-shield" onclick="toggleSelect(this)">
+      <div class="stage">
+        <div class="mark">
+          <svg viewBox="0 0 128 128" aria-label="Reliability Shield">
+            <defs>
+              <linearGradient id="shieldA" x1="31" y1="18" x2="99" y2="110" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#8bdcf8"/>
+                <stop offset=".5" stop-color="#2f8de0"/>
+                <stop offset="1" stop-color="#1d4ed8"/>
+              </linearGradient>
+              <linearGradient id="shieldB" x1="45" y1="42" x2="83" y2="86" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#5eead4"/>
+                <stop offset="1" stop-color="#2563eb"/>
+              </linearGradient>
+            </defs>
+            <path d="M64 19 100 33v29c0 27-14 45-36 55-22-10-36-28-36-55V33l36-14Z" fill="#f8fbff" stroke="url(#shieldA)" stroke-width="7" stroke-linejoin="round"/>
+            <path d="M43 65 58 80l29-34" fill="none" stroke="url(#shieldB)" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M39 39c14 8 36 8 50 0" fill="none" stroke="#bae6fd" stroke-width="6" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="brand-row">
+          <div class="mini">
+            <svg viewBox="0 0 128 128"><path d="M64 19 100 33v29c0 27-14 45-36 55-22-10-36-28-36-55V33l36-14Z" fill="#f8fbff" stroke="#60c5f4" stroke-width="7" stroke-linejoin="round"/><path d="M43 65 58 80l29-34" fill="none" stroke="#2563eb" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="copy"><strong>XingCloud</strong><span>Reliability Shield</span></div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="title"><span class="letter">G</span><h3>可靠性护盾</h3></div>
+        <p>强调安全、可靠、稳定交付；偏企业信任感，但科技灵动度稍弱。</p>
+      </div>
+    </article>
+
+    <article class="logo-card" data-choice="h-neural" onclick="toggleSelect(this)">
+      <div class="stage">
+        <div class="mark">
+          <svg viewBox="0 0 128 128" aria-label="Neural Ops">
+            <defs>
+              <linearGradient id="neuralA" x1="22" y1="26" x2="106" y2="102" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#7dd3fc"/>
+                <stop offset=".52" stop-color="#38bdf8"/>
+                <stop offset="1" stop-color="#1e40af"/>
+              </linearGradient>
+              <linearGradient id="neuralB" x1="42" y1="36" x2="86" y2="92" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#34d399"/>
+                <stop offset="1" stop-color="#2563eb"/>
+              </linearGradient>
+            </defs>
+            <path d="M39 44 64 30l25 14v40L64 98 39 84V44Z" fill="#f8fbff" stroke="url(#neuralA)" stroke-width="7" stroke-linejoin="round"/>
+            <path d="M39 44 64 60l25-16M64 60v38M39 84l25-24 25 24" fill="none" stroke="#bae6fd" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="39" cy="44" r="7" fill="url(#neuralB)"/>
+            <circle cx="89" cy="44" r="7" fill="url(#neuralB)"/>
+            <circle cx="64" cy="60" r="8" fill="url(#neuralB)"/>
+            <circle cx="39" cy="84" r="7" fill="#38bdf8"/>
+            <circle cx="89" cy="84" r="7" fill="#2563eb"/>
+          </svg>
+        </div>
+        <div class="brand-row">
+          <div class="mini">
+            <svg viewBox="0 0 128 128"><path d="M39 44 64 30l25 14v40L64 98 39 84V44Z" fill="#f8fbff" stroke="#60c5f4" stroke-width="7" stroke-linejoin="round"/><circle cx="39" cy="44" r="7" fill="#34d399"/><circle cx="89" cy="44" r="7" fill="#38bdf8"/><circle cx="64" cy="60" r="8" fill="#2563eb"/></svg>
+          </div>
+          <div class="copy"><strong>XingCloud</strong><span>Neural Ops</span></div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="title"><span class="letter">H</span><h3>智能节点</h3></div>
+        <p>偏 AI Agent 和知识图谱，表达平台把资源、告警、日志连接成可推理网络。</p>
+      </div>
+    </article>
+  </div>
+</section>

@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: xing-cloud-config
+  namespace: xing-cloud
+data:
+  DATABASE_ENGINE: mysql
+  MYSQL_HOST: xing-cloud-mysql
+  MYSQL_PORT: "3306"
+  MYSQL_DATABASE: xing_cloud_main
+  REDIS_URL: redis://xing-cloud-redis:6379/2
+  CHANNEL_REDIS_URL: redis://xing-cloud-redis:6379/3
+  CACHE_KEY_PREFIX: xing-cloud-main
+  CLICKHOUSE_URL: http://10.132.46.52:30812
+  CLICKHOUSE_USERNAME: xinghai
+  CLICKHOUSE_TIMEZONE: Asia/Shanghai
+  PROMETHEUS_QUERY_URL: http://10.132.46.52:30003
+  DEBUG: "0"
+  CORS_ALLOW_ALL_ORIGINS: "0"
+  ALLOWED_HOSTS: "xinghai.example.com,10.132.46.52,localhost,127.0.0.1"
+  XING_CLOUD_MIGRATE: "0"
+  XING_CLOUD_SEED_TEMPLATES: "0"
+  XING_CLOUD_WAIT_FOR_DB: "1"
+  TZ: Asia/Shanghai

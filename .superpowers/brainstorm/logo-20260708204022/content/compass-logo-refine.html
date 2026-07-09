@@ -1,0 +1,203 @@
+<style>
+  .logo-brief { max-width: 1240px; margin: 0 auto; }
+  .compass-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+  .compass-card {
+    background: var(--bg-secondary);
+    border: 2px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: border-color .16s ease, transform .16s ease, box-shadow .16s ease;
+  }
+  .compass-card:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: 0 14px 28px rgba(15, 23, 42, .12); }
+  .compass-card.selected { border-color: var(--selected-border); box-shadow: 0 0 0 4px rgba(0, 113, 227, .12); }
+  .stage {
+    min-height: 252px;
+    display: grid;
+    gap: 18px;
+    align-content: center;
+    justify-items: center;
+    padding: 24px 18px;
+    background:
+      radial-gradient(circle at 28% 18%, rgba(125, 211, 252, .18), transparent 30%),
+      linear-gradient(135deg, #f8fbff 0%, #eef7fb 52%, #f8fafc 100%);
+    border-bottom: 1px solid var(--border);
+  }
+  .mark { width: 112px; height: 112px; display: grid; place-items: center; }
+  .mark svg { width: 112px; height: 112px; overflow: visible; }
+  .brand-row { display: flex; align-items: center; justify-content: center; gap: 12px; width: 100%; }
+  .mini {
+    width: 46px;
+    height: 46px;
+    border-radius: 12px;
+    background: #0f172a;
+    display: grid;
+    place-items: center;
+  }
+  .mini svg { width: 30px; height: 30px; overflow: visible; }
+  .copy strong { display: block; font-size: 18px; color: #0f172a; line-height: 1.2; }
+  .copy span { display: block; margin-top: 4px; font-size: 12px; color: #64748b; }
+  .body { padding: 15px; }
+  .title { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .letter {
+    width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center;
+    background: #e2e8f0; color: #475569; font-weight: 800;
+  }
+  .compass-card.selected .letter { background: var(--accent); color: white; }
+  .title h3 { margin: 0; }
+  .body p { margin: 0; font-size: 13px; color: var(--text-secondary); }
+  @media (max-width: 1180px) { .compass-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 680px) { .compass-grid { grid-template-columns: 1fr; } }
+</style>
+
+<section class="logo-brief">
+  <h2>运维罗盘方向深化</h2>
+  <p class="subtitle">这批都围绕“复杂系统中的方向感、健康判断、风险定位”展开。目标是既能像平台主品牌，又能承载智能运维驾驶舱的气质。</p>
+
+  <div class="compass-grid">
+    <article class="compass-card" data-choice="i-minimal-compass" onclick="toggleSelect(this)">
+      <div class="stage">
+        <div class="mark">
+          <svg viewBox="0 0 128 128" aria-label="Minimal Compass">
+            <defs>
+              <linearGradient id="miniCompassA" x1="26" y1="22" x2="102" y2="108" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#8bdcf8"/>
+                <stop offset=".52" stop-color="#2f8de0"/>
+                <stop offset="1" stop-color="#1e40af"/>
+              </linearGradient>
+              <linearGradient id="miniCompassB" x1="48" y1="30" x2="80" y2="98" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#5eead4"/>
+                <stop offset="1" stop-color="#2563eb"/>
+              </linearGradient>
+            </defs>
+            <circle cx="64" cy="64" r="43" fill="#f8fbff" stroke="url(#miniCompassA)" stroke-width="7"/>
+            <path d="M64 27 77 63 64 101 51 63 64 27Z" fill="url(#miniCompassB)"/>
+            <path d="M31 64h18M79 64h18" stroke="#93c5fd" stroke-width="6" stroke-linecap="round"/>
+            <circle cx="64" cy="64" r="8" fill="#f8fbff"/>
+            <circle cx="64" cy="64" r="3.5" fill="#1e40af"/>
+          </svg>
+        </div>
+        <div class="brand-row">
+          <div class="mini">
+            <svg viewBox="0 0 128 128"><circle cx="64" cy="64" r="43" fill="none" stroke="#7dd3fc" stroke-width="7"/><path d="M64 27 77 63 64 101 51 63 64 27Z" fill="#2f75e8"/><circle cx="64" cy="64" r="7" fill="#f8fbff"/></svg>
+          </div>
+          <div class="copy"><strong>XingCloud</strong><span>Minimal Compass</span></div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="title"><span class="letter">I</span><h3>极简罗盘</h3></div>
+        <p>最像长期品牌标志，简洁、稳、适合 favicon 和侧边栏。智能运维含义需要靠产品文案补充。</p>
+      </div>
+    </article>
+
+    <article class="compass-card" data-choice="j-sla-dial" onclick="toggleSelect(this)">
+      <div class="stage">
+        <div class="mark">
+          <svg viewBox="0 0 128 128" aria-label="SLA Dial Compass">
+            <defs>
+              <linearGradient id="slaA" x1="22" y1="22" x2="106" y2="106" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#7dd3fc"/>
+                <stop offset=".52" stop-color="#38bdf8"/>
+                <stop offset="1" stop-color="#1d4ed8"/>
+              </linearGradient>
+              <linearGradient id="slaB" x1="42" y1="42" x2="86" y2="86" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#34d399"/>
+                <stop offset="1" stop-color="#2563eb"/>
+              </linearGradient>
+            </defs>
+            <circle cx="64" cy="64" r="43" fill="#f8fbff" stroke="#dbeafe" stroke-width="8"/>
+            <path d="M64 21a43 43 0 0 1 40 58" fill="none" stroke="url(#slaA)" stroke-width="8" stroke-linecap="round"/>
+            <path d="M31 85a43 43 0 0 1-4-34" fill="none" stroke="#5eead4" stroke-width="8" stroke-linecap="round"/>
+            <path d="M64 32 75 64 64 96 53 64 64 32Z" fill="url(#slaB)"/>
+            <path d="M44 74 64 64l25-25" fill="none" stroke="#1e40af" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="64" cy="64" r="7" fill="#f8fbff"/>
+          </svg>
+        </div>
+        <div class="brand-row">
+          <div class="mini">
+            <svg viewBox="0 0 128 128"><circle cx="64" cy="64" r="43" fill="none" stroke="#dbeafe" stroke-width="8"/><path d="M64 21a43 43 0 0 1 40 58" fill="none" stroke="#38bdf8" stroke-width="8" stroke-linecap="round"/><path d="M64 32 75 64 64 96 53 64 64 32Z" fill="#2563eb"/></svg>
+          </div>
+          <div class="copy"><strong>XingCloud</strong><span>SLA Dial</span></div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="title"><span class="letter">J</span><h3>SLA 仪表罗盘</h3></div>
+        <p>和你关心的 SLA、健康状态、风险达标天然贴合。作为平台 Logo 稍微更“业务化”。</p>
+      </div>
+    </article>
+
+    <article class="compass-card" data-choice="k-cloud-compass" onclick="toggleSelect(this)">
+      <div class="stage">
+        <div class="mark">
+          <svg viewBox="0 0 128 128" aria-label="Cloud Compass">
+            <defs>
+              <linearGradient id="cloudCompassA" x1="20" y1="18" x2="110" y2="110" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#8bdcf8"/>
+                <stop offset=".5" stop-color="#38bdf8"/>
+                <stop offset="1" stop-color="#1d4ed8"/>
+              </linearGradient>
+              <linearGradient id="cloudCompassB" x1="49" y1="34" x2="79" y2="96" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#5eead4"/>
+                <stop offset="1" stop-color="#2563eb"/>
+              </linearGradient>
+            </defs>
+            <path d="M34 78c-10-1-17-9-17-19 0-11 9-19 20-19 6-13 17-20 31-18 13 2 23 12 25 25 11 3 18 11 18 22 0 12-9 21-23 21H40" fill="none" stroke="url(#cloudCompassA)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="64" cy="64" r="29" fill="#f8fbff" stroke="#bae6fd" stroke-width="6"/>
+            <path d="M64 38 74 64 64 91 54 64 64 38Z" fill="url(#cloudCompassB)"/>
+            <circle cx="64" cy="64" r="6" fill="#f8fbff"/>
+            <path d="M28 96c22 11 53 9 74-6" fill="none" stroke="#7dd3fc" stroke-width="7" stroke-linecap="round" opacity=".85"/>
+          </svg>
+        </div>
+        <div class="brand-row">
+          <div class="mini">
+            <svg viewBox="0 0 128 128"><path d="M34 78c-10-1-17-9-17-19 0-11 9-19 20-19 6-13 17-20 31-18 13 2 23 12 25 25 11 3 18 11 18 22 0 12-9 21-23 21H40" fill="none" stroke="#7dd3fc" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><path d="M64 38 74 64 64 91 54 64 64 38Z" fill="#2563eb"/></svg>
+          </div>
+          <div class="copy"><strong>XingCloud</strong><span>Cloud Compass</span></div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="title"><span class="letter">K</span><h3>云原生罗盘</h3></div>
+        <p>保留 Cloud 识别度，比单纯罗盘更贴近 XingCloud 名称；小尺寸复杂度略高。</p>
+      </div>
+    </article>
+
+    <article class="compass-card" data-choice="l-ai-compass" onclick="toggleSelect(this)">
+      <div class="stage">
+        <div class="mark">
+          <svg viewBox="0 0 128 128" aria-label="AI Compass">
+            <defs>
+              <linearGradient id="aiCompassA" x1="22" y1="20" x2="108" y2="108" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#7dd3fc"/>
+                <stop offset=".48" stop-color="#38bdf8"/>
+                <stop offset="1" stop-color="#1d4ed8"/>
+              </linearGradient>
+              <linearGradient id="aiCompassB" x1="43" y1="34" x2="86" y2="96" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#34d399"/>
+                <stop offset="1" stop-color="#2563eb"/>
+              </linearGradient>
+            </defs>
+            <circle cx="64" cy="64" r="43" fill="#f8fbff" stroke="url(#aiCompassA)" stroke-width="7"/>
+            <path d="M64 31 77 64 64 97 51 64 64 31Z" fill="url(#aiCompassB)"/>
+            <path d="M39 47 64 64l25-17M39 81l25-17 25 17" fill="none" stroke="#bae6fd" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="39" cy="47" r="5.5" fill="#38bdf8"/>
+            <circle cx="89" cy="47" r="5.5" fill="#38bdf8"/>
+            <circle cx="39" cy="81" r="5.5" fill="#5eead4"/>
+            <circle cx="89" cy="81" r="5.5" fill="#2563eb"/>
+            <circle cx="64" cy="64" r="7" fill="#f8fbff"/>
+            <circle cx="64" cy="64" r="3" fill="#1e40af"/>
+          </svg>
+        </div>
+        <div class="brand-row">
+          <div class="mini">
+            <svg viewBox="0 0 128 128"><circle cx="64" cy="64" r="43" fill="none" stroke="#7dd3fc" stroke-width="7"/><path d="M64 31 77 64 64 97 51 64 64 31Z" fill="#2563eb"/><circle cx="39" cy="47" r="5.5" fill="#38bdf8"/><circle cx="89" cy="81" r="5.5" fill="#34d399"/></svg>
+          </div>
+          <div class="copy"><strong>XingCloud</strong><span>AI Compass</span></div>
+        </div>
+      </div>
+      <div class="body">
+        <div class="title"><span class="letter">L</span><h3>智能罗盘</h3></div>
+        <p>把罗盘和智能节点结合，最贴近 AI Agent 与知识图谱；细节比 I/J 多一些。</p>
+      </div>
+    </article>
+  </div>
+</section>

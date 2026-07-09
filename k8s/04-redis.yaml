@@ -1,0 +1,79 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: xing-cloud-redis
+  namespace: xing-cloud
+  labels:
+    app: xing-cloud
+    component: redis
+spec:
+  ports:
+    - port: 6379
+      targetPort: 6379
+  selector:
+    app: xing-cloud
+    component: redis
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+  namespace: xing-cloud
+spec:
+  storageClassName: nfs-client
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xing-cloud-redis
+  namespace: xing-cloud
+  labels:
+    app: xing-cloud
+    component: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: xing-cloud
+      component: redis
+  template:
+    metadata:
+      labels:
+        app: xing-cloud
+        component: redis
+    spec:
+      containers:
+        - name: redis
+          image: swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/redis:7-alpine
+          args:
+            - redis-server
+            - --appendonly
+            - "yes"
+          ports:
+            - containerPort: 6379
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+          readinessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: redis-data
+          persistentVolumeClaim:
+            claimName: redis-data

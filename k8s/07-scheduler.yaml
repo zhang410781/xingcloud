@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xing-cloud-scheduler
+  namespace: xing-cloud
+  labels:
+    app: xing-cloud
+    component: scheduler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: xing-cloud
+      component: scheduler
+  template:
+    metadata:
+      labels:
+        app: xing-cloud
+        component: scheduler
+    spec:
+      containers:
+        - name: xing-cloud-scheduler
+          image: registry.cn-hangzhou.aliyuncs.com/xinghaik8s/ops-agent:a1.03
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: xing-cloud-config
+            - secretRef:
+                name: xing-cloud-secret
+          env:
+            - name: XING_CLOUD_MIGRATE
+              value: "0"
+            - name: XING_CLOUD_SEED_TEMPLATES
+              value: "0"
+          command:
+            - python
+            - manage.py
+            - run_host_task_scheduler
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
