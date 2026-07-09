@@ -48,6 +48,7 @@ docs/screenshots/*-smoke.png
 
 # Local dev runtime
 .codex/
+.superpowers/
 .runlogs/
 backend/run/
 backend/runtime/
