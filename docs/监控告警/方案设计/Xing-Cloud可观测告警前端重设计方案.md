@@ -26,7 +26,7 @@ Do not introduce alternate product spellings in page titles, headers, empty stat
 1. Make alert sources visible in the frontend.
 2. Make alert rule creation follow a guided workflow instead of starting with JSON.
 3. Redesign rule templates as a template catalog grouped by monitoring integration.
-4. Redesign monitoring dashboards as integration assets with JSON import/export still available.
+4. Replace the old hard-coded dashboard frontend with the new JSON dashboard engine, while keeping JSON import/export available.
 5. Keep the current platform-native direction: Prometheus metrics, ClickHouse logs, built-in SLA, K8S through Prometheus and ClickHouse.
 6. Keep existing alert event, notification, silence, inhibition, aggregation, escalation, and AIOps analysis flows.
 
@@ -37,6 +37,7 @@ Do not introduce alternate product spellings in page titles, headers, empty stat
 - Do not add customer inbound alert webhook ingestion.
 - Do not add automatic self-healing execution.
 - Do not build a drag-and-drop dashboard editor in this phase.
+- Do not keep the old hard-coded Kubernetes, Linux, and logs dashboard switcher as a frontend entry.
 - Do not replace the existing backend alert engine with Nightingale code.
 
 ## Nightingale Reference
@@ -73,7 +74,7 @@ Compatibility:
 
 - Keep `/alerts` as a redirect to `/observability/alerts`.
 - Keep existing backend API paths for alerts and alert rules.
-- Keep existing dashboard query APIs.
+- Use dashboard definition APIs as the canonical dashboard frontend path. Legacy native dashboard query APIs may remain temporarily for backend compatibility, but the frontend must not expose the old hard-coded dashboard entry.
 
 ## Page Design
 
@@ -195,11 +196,11 @@ Template examples to seed in this phase:
 
 ### 5. Monitoring Dashboards
 
-Keep the existing JSON dashboard backend and chart renderer. Redesign the frontend as a dashboard asset catalog.
+The frontend must fully move to the new JSON dashboard engine. `/observability/dashboards` should render a dashboard asset catalog and viewer backed by `ObservabilityDashboard` and `ObservabilityDashboardPanel`. The old hard-coded Kubernetes, Linux, and logs dashboard switcher should be removed from the user-facing frontend.
 
 Views:
 
-- Built-in dashboards.
+- Built-in dashboards rendered by the new JSON dashboard engine.
 - Integration dashboards.
 - Custom dashboards.
 - Import and export JSON.
@@ -219,8 +220,9 @@ Dashboard viewer:
 
 - Top filter bar: time range, metric source, log source, namespace, instance, service, log collection.
 - Integration context: show related rule templates and data source health.
-- Panel grid rendered with existing `NativeDashboardChart.vue`.
+- Panel grid rendered with `NativeDashboardChart.vue` through the JSON dashboard definition payload.
 - JSON import/export remains available.
+- Legacy dashboard presets are migrated into built-in JSON dashboard definitions instead of being shown through the old hard-coded dashboard selector.
 
 Initial dashboards:
 
@@ -258,7 +260,7 @@ New or expanded APIs:
 - `POST /api/observability/integrations/{key}/install-rules/`
   - Creates alert rules from selected templates.
 - `POST /api/observability/integrations/{key}/install-dashboards/`
-  - Imports or enables built-in dashboard definitions.
+  - Imports or enables built-in JSON dashboard definitions.
 - `POST /api/alert-rules/dry-run-draft/`
   - Optional first-phase endpoint if draft dry-run cannot be done through the existing detail endpoint.
 
@@ -267,7 +269,8 @@ Compatibility:
 - Keep `GET/POST /api/alert-rules/`.
 - Keep `POST /api/alert-rules/{id}/evaluate/`.
 - Keep `GET/POST /api/observability/dashboard-definitions/`.
-- Keep dashboard definition query/export/import endpoints.
+- Keep dashboard definition query/export/import endpoints as the only frontend dashboard query path.
+- Do not route the new frontend through `/api/observability/dashboards/query/` except for a short backend-only compatibility window.
 
 ## Data Model Design
 
@@ -288,6 +291,7 @@ Registry fields:
 - `guide_path`
 - `template_codes`
 - `dashboard_titles`
+- `dashboard_definition_ids`
 - `metric_probe_queries`
 - `log_collections`
 
@@ -340,6 +344,7 @@ Existing components to reuse:
 3. User selects dashboard.
 4. Frontend queries existing dashboard definition endpoint.
 5. Panels render through `NativeDashboardChart.vue`.
+6. No legacy hard-coded dashboard type selector is shown.
 
 ## Error Handling
 
@@ -350,7 +355,7 @@ Show clear states instead of silently failing:
 - No ClickHouse source: show `Not connected` and link to log source management.
 - Missing log collection: show collection name and setup guide.
 - Template import conflict: show existing rule and offer skip or create copy.
-- Dashboard data source missing: keep dashboard visible but mark panels as unavailable.
+- Dashboard data source missing: keep the JSON dashboard visible but mark panels as unavailable.
 - Dry-run failure: show query, source, error message, and suggested next action.
 
 ## Permissions
@@ -383,7 +388,8 @@ Frontend tests or build checks:
 - Integration catalog renders cards and status.
 - Rule wizard can create a Prometheus rule from a template.
 - Rule wizard can dry-run or show a controlled dry-run error.
-- Dashboard catalog can open built-in and imported dashboards.
+- Dashboard catalog can open built-in and imported JSON dashboards.
+- No old hard-coded Kubernetes, Linux, or logs dashboard switcher remains in the frontend.
 
 Deployment checks:
 
@@ -400,7 +406,7 @@ Phase 1:
 - Add `/observability/alerts` route and redirect `/alerts`.
 - Redesign alert rule creation as a wizard.
 - Redesign template tab as catalog.
-- Redesign dashboard page as catalog plus viewer.
+- Replace the old frontend dashboard page with the JSON dashboard catalog plus viewer.
 - Seed first middleware and platform templates.
 
 Phase 2:

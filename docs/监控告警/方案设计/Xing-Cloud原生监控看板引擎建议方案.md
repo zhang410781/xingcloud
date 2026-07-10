@@ -565,13 +565,12 @@ frontend/src/views/
 
 ---
 
-## 8. 与现有原生看板的兼容策略
+## 8. 与现有原生看板的迁移策略
 
-1. **保留原生看板** — 现有硬编码看板作为 `builtin=True` 种子数据，通过 `Dashboard` 模型读取
-2. **迁移** — 把 `observability_views.py` 中的硬编码 PromQL/SQL 迁移到 JSON 格式作为种子数据
-3. **两阶段过渡**：
-   - P0：新看板引擎 + 原有原生看板前端不删除
-   - P1：原生看板前端统一到新看板引擎渲染
+1. **不保留旧前端入口** — `/observability/dashboards` 统一切换到新看板引擎，不再展示原有服务器、K8S、日志硬编码看板切换器
+2. **迁移为内置 JSON 看板** — 把 `observability_views.py` 中的硬编码 PromQL/SQL 迁移到 JSON 格式，作为 `builtin=True` 的内置看板定义
+3. **统一渲染路径** — 前端只通过看板定义查询接口获取面板数据，并统一复用新看板渲染组件
+4. **后端兼容窗口** — 旧 `/observability/dashboards/query/` 接口可以短期保留给兼容脚本或测试，但不再作为前端入口
 
 ---
 
@@ -599,7 +598,7 @@ frontend/src/views/
 | **P0** | Dashboard + DashboardPanel 模型 + migration | 1 天 | — |
 | **P0** | CRUD API + import/export + query 接口 | 2-3 天 | 模型 |
 | **P0** | DashboardList.vue + DashboardViewer.vue (复用现有图表) | 2 天 | API |
-| **P0** | 原生看板迁移为 builtin 种子数据 | 1 天 | DashboardViewer |
+| **P0** | 原生看板迁移为 builtin JSON 种子数据，旧前端入口下线 | 1 天 | DashboardViewer |
 | **P1** | DashboardEditor.vue (拖拽布局) | 3-5 天 | vue-grid-layout |
 | **P1** | PanelEditor.vue (PromQL 编辑 + 图表配置) | 2-3 天 | 编辑器组件 |
 | **P1** | DashboardImport.vue (JSON 导入对话框) | 1 天 | import API |
