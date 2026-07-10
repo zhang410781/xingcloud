@@ -4,7 +4,7 @@
 
 **Goal:** Build the new Xing-Cloud observability frontend around monitoring integrations, explicit alert sources, guided alert rule creation, a rule template catalog, and a JSON-dashboard-only monitoring dashboard experience.
 
-**Architecture:** Backend adds a code-defined observability integration registry and install/dry-run APIs that reuse existing models. Frontend ignores old UI constraints and replaces legacy dashboard/rule entry flows with new catalog and wizard components. Dashboards are queried only through `ObservabilityDashboard` definitions in the frontend.
+**Architecture:** Backend adds a code-defined observability integration registry and install/dry-run APIs that reuse existing models. Frontend ignores old UI constraints and replaces legacy dashboard/rule entry flows with new catalog and wizard components. Dashboards are queried only through `ObservabilityDashboard` definitions; the old hard-coded dashboard query API is removed.
 
 **Tech Stack:** Django REST Framework, Django ORM, Vue 3 Composition API, Element Plus, existing Xing-Cloud CSS tokens, existing `NativeDashboardChart.vue`, Prometheus and ClickHouse query services.
 
@@ -17,8 +17,8 @@ Backend files:
 - Create `backend/ops/observability_integrations.py`: code-defined registry for MySQL, Redis, PostgreSQL, Kafka, Kubernetes, Linux Server, ClickHouse Logs, Ingress Access Logs, and SLA Risk.
 - Create `backend/ops/alert_rule_presets.py`: seed built-in alert rule templates and create rules from templates.
 - Modify `backend/ops/dashboard_presets.py`: expand built-in JSON dashboard definitions and ensure old native dashboard panels are available as JSON definitions.
-- Modify `backend/ops/observability_views.py`: add integrations API, install-rule API, install-dashboard API, draft dry-run API, and dashboard summary based on dashboard definitions.
-- Modify `backend/ops/urls.py`: add new observability integration and draft dry-run routes.
+- Modify `backend/ops/observability_views.py`: add integrations API, install-rule API, install-dashboard API, draft dry-run API, dashboard summary based on dashboard definitions, and remove old hard-coded dashboard query functions.
+- Modify `backend/ops/urls.py`: add new observability integration and draft dry-run routes, and remove the old `observability/dashboards/query/` route.
 - Modify `backend/ops/views.py`: expose `dry_run_draft` on `AlertRuleViewSet`.
 - Modify `backend/ops/tests.py`: cover registry, template install, dashboard install, draft dry-run, and dashboard-definition-only behavior.
 
@@ -26,7 +26,7 @@ Frontend files:
 
 - Modify `frontend/src/router/index.js`: add `/observability/integrations`, add `/observability/alerts`, redirect `/alerts` to `/observability/alerts`.
 - Modify `frontend/src/layout/AppLayout.vue`: add Monitoring Integrations menu entry and point Alert Center to `/observability/alerts`.
-- Modify `frontend/src/api/modules/ops.js`: add integration APIs and draft dry-run API; stop using `queryMonitoringDashboard` from the new dashboard page.
+- Modify `frontend/src/api/modules/ops.js`: add integration APIs and draft dry-run API; remove `queryMonitoringDashboard`.
 - Create `frontend/src/views/ObservabilityIntegrations.vue`: monitoring integration catalog page.
 - Replace user-facing structure in `frontend/src/views/NativeMonitoringDashboard.vue`: JSON dashboard catalog and viewer only.
 - Modify `frontend/src/views/Alerts.vue`: use new source matrix, rule wizard, and template catalog components.
@@ -573,6 +573,7 @@ git commit -m "feat: seed observability alert rule templates"
 **Files:**
 - Modify: `backend/ops/dashboard_presets.py`
 - Modify: `backend/ops/observability_views.py`
+- Modify: `backend/ops/urls.py`
 - Test: `backend/ops/tests.py`
 
 - [ ] **Step 1: Write failing dashboard install and summary tests**
@@ -597,6 +598,12 @@ def test_observability_overview_dashboard_summary_uses_json_definitions(self):
     dashboards = response.json()['modules']['dashboards']
     self.assertEqual(dashboards['source'], 'json')
     self.assertIn('Redis Overview', [item['title'] for item in dashboards['dashboards']])
+
+
+def test_old_native_dashboard_query_endpoint_is_removed(self):
+    response = self.client.post('/api/observability/dashboards/query/', {'dashboard': 'kubernetes'}, format='json')
+
+    self.assertEqual(response.status_code, 404)
 ```
 
 - [ ] **Step 2: Run tests to verify failure**
@@ -604,10 +611,10 @@ def test_observability_overview_dashboard_summary_uses_json_definitions(self):
 Run:
 
 ```bash
-python manage.py test ops.tests.ObservabilityViewsTests.test_integration_dashboard_install_enables_builtin_json_dashboard ops.tests.ObservabilityViewsTests.test_observability_overview_dashboard_summary_uses_json_definitions --verbosity 2
+python manage.py test ops.tests.ObservabilityViewsTests.test_integration_dashboard_install_enables_builtin_json_dashboard ops.tests.ObservabilityViewsTests.test_observability_overview_dashboard_summary_uses_json_definitions ops.tests.ObservabilityViewsTests.test_old_native_dashboard_query_endpoint_is_removed --verbosity 2
 ```
 
-Expected: FAIL for missing install endpoint or non-json summary.
+Expected: FAIL for missing install endpoint, non-json summary, or existing old native dashboard endpoint.
 
 - [ ] **Step 3: Expand dashboard presets**
 
@@ -667,9 +674,19 @@ Add similar minimal three-panel definitions:
 }
 ```
 
-- [ ] **Step 4: Update dashboard summary**
+- [ ] **Step 4: Update dashboard summary and remove old hard-coded query**
 
-Replace `_native_dashboard_summary()` in `backend/ops/observability_views.py` with a JSON-definition summary:
+Replace `_native_dashboard_summary()` in `backend/ops/observability_views.py` with a JSON-definition summary, then remove these old hard-coded dashboard objects and functions from the module:
+
+- `NATIVE_DASHBOARD_CATALOG`
+- `NATIVE_PROMETHEUS_DASHBOARDS`
+- `NATIVE_LOG_DASHBOARDS`
+- `NATIVE_DASHBOARD_ALIASES`
+- `_native_prometheus_dashboard`
+- `_native_log_dashboard`
+- `native_dashboard`
+
+Keep shared helpers only if dashboard definition query still uses them.
 
 ```python
 def _native_dashboard_summary():
@@ -722,12 +739,18 @@ Add URL:
 path('observability/integrations/<str:key>/install-dashboards/', observability_views.install_integration_dashboards, name='observability-integration-install-dashboards'),
 ```
 
+Remove this old URL from `backend/ops/urls.py`:
+
+```python
+path('observability/dashboards/query/', observability_views.native_dashboard, name='observability-dashboards-query'),
+```
+
 - [ ] **Step 6: Run tests**
 
 Run:
 
 ```bash
-python manage.py test ops.tests.ObservabilityViewsTests.test_integration_dashboard_install_enables_builtin_json_dashboard ops.tests.ObservabilityViewsTests.test_observability_overview_dashboard_summary_uses_json_definitions --verbosity 2
+python manage.py test ops.tests.ObservabilityViewsTests.test_integration_dashboard_install_enables_builtin_json_dashboard ops.tests.ObservabilityViewsTests.test_observability_overview_dashboard_summary_uses_json_definitions ops.tests.ObservabilityViewsTests.test_old_native_dashboard_query_endpoint_is_removed --verbosity 2
 ```
 
 Expected: PASS.
@@ -856,6 +879,12 @@ In `frontend/src/api/modules/ops.js`, add:
 export const getObservabilityIntegrations = () => request.get('/observability/integrations/')
 export const installIntegrationRules = (key, data = {}) => request.post(`/observability/integrations/${key}/install-rules/`, data)
 export const installIntegrationDashboards = (key, data = {}) => request.post(`/observability/integrations/${key}/install-dashboards/`, data)
+```
+
+Remove the old API wrapper:
+
+```javascript
+export const queryMonitoringDashboard = (data, config = {}) => request.post('/observability/dashboards/query/', data, config)
 ```
 
 - [ ] **Step 2: Change routes**
@@ -1367,10 +1396,10 @@ function buildDashboardPayload() {
 Run:
 
 ```bash
-rg -n "queryMonitoringDashboard|dashboardOptions|logVariantOptions|changeDashboard|observability/dashboards/query" frontend/src/views/NativeMonitoringDashboard.vue frontend/src/api/modules/ops.js
+rg -n "queryMonitoringDashboard|dashboardOptions|logVariantOptions|changeDashboard|observability/dashboards/query" frontend/src/views/NativeMonitoringDashboard.vue frontend/src/api/modules/ops.js backend/ops
 ```
 
-Expected: no matches in `NativeMonitoringDashboard.vue`. The API wrapper may remain in `ops.js` only for backend compatibility if other pages still import it.
+Expected: no matches. The old hard-coded dashboard query path is removed from frontend and backend.
 
 - [ ] **Step 5: Run frontend build**
 

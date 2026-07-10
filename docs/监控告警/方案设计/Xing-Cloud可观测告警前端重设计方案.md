@@ -75,7 +75,7 @@ Compatibility:
 
 - Keep `/alerts` as a redirect to `/observability/alerts`.
 - Keep existing backend API paths for alerts and alert rules.
-- Use dashboard definition APIs as the canonical dashboard frontend path. Legacy native dashboard query APIs may remain temporarily for backend compatibility, but the frontend must not expose or mimic the old hard-coded dashboard entry.
+- Use dashboard definition APIs as the only dashboard query path. Remove the legacy native dashboard query API and do not expose or mimic the old hard-coded dashboard entry.
 
 ## Page Design
 
@@ -223,7 +223,7 @@ Dashboard viewer:
 - Integration context: show related rule templates and data source health.
 - Panel grid rendered with `NativeDashboardChart.vue` through the JSON dashboard definition payload.
 - JSON import/export remains available.
-- Legacy dashboard presets are migrated into built-in JSON dashboard definitions instead of being shown through the old hard-coded dashboard selector.
+- Required dashboard presets are rebuilt as built-in JSON dashboard definitions instead of being shown through the old hard-coded dashboard selector.
 
 Initial dashboards:
 
@@ -270,8 +270,8 @@ Compatibility:
 - Keep `GET/POST /api/alert-rules/`.
 - Keep `POST /api/alert-rules/{id}/evaluate/`.
 - Keep `GET/POST /api/observability/dashboard-definitions/`.
-- Keep dashboard definition query/export/import endpoints as the only frontend dashboard query path.
-- Do not route the new frontend through `/api/observability/dashboards/query/` except for a short backend-only compatibility window.
+- Keep dashboard definition query/export/import endpoints as the only dashboard query path.
+- Remove `/api/observability/dashboards/query/` and the old hard-coded dashboard query implementation.
 
 ## Data Model Design
 
