@@ -571,6 +571,7 @@ frontend/src/views/
 2. **迁移为内置 JSON 看板** — 把 `observability_views.py` 中的硬编码 PromQL/SQL 迁移到 JSON 格式，作为 `builtin=True` 的内置看板定义
 3. **统一渲染路径** — 前端只通过看板定义查询接口获取面板数据，并统一复用新看板渲染组件
 4. **后端兼容窗口** — 旧 `/observability/dashboards/query/` 接口可以短期保留给兼容脚本或测试，但不再作为前端入口
+5. **不继承旧 UI 约束** — 新看板目录、筛选区和查看页按新信息架构实现，不需要保留旧页面布局和旧操作习惯
 
 ---
 

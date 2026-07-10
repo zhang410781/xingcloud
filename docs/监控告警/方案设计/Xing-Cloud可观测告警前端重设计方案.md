@@ -39,6 +39,7 @@ Do not introduce alternate product spellings in page titles, headers, empty stat
 - Do not build a drag-and-drop dashboard editor in this phase.
 - Do not keep the old hard-coded Kubernetes, Linux, and logs dashboard switcher as a frontend entry.
 - Do not replace the existing backend alert engine with Nightingale code.
+- Do not preserve old frontend interaction patterns as design constraints. The new observability IA, integration catalog, alert rule wizard, template catalog, and JSON dashboard catalog are the target UX.
 
 ## Nightingale Reference
 
@@ -74,7 +75,7 @@ Compatibility:
 
 - Keep `/alerts` as a redirect to `/observability/alerts`.
 - Keep existing backend API paths for alerts and alert rules.
-- Use dashboard definition APIs as the canonical dashboard frontend path. Legacy native dashboard query APIs may remain temporarily for backend compatibility, but the frontend must not expose the old hard-coded dashboard entry.
+- Use dashboard definition APIs as the canonical dashboard frontend path. Legacy native dashboard query APIs may remain temporarily for backend compatibility, but the frontend must not expose or mimic the old hard-coded dashboard entry.
 
 ## Page Design
 
@@ -408,6 +409,7 @@ Phase 1:
 - Redesign template tab as catalog.
 - Replace the old frontend dashboard page with the JSON dashboard catalog plus viewer.
 - Seed first middleware and platform templates.
+- Ignore old frontend layout constraints and implement the new IA directly.
 
 Phase 2:
 
