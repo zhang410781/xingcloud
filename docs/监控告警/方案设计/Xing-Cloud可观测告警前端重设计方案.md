@@ -1,4 +1,4 @@
-# Xing-Cloud Observability Alert UI Redesign
+# Xing-Cloud 可观测告警前端重设计方案
 
 ## Status
 
