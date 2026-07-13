@@ -34,4 +34,3 @@ router.afterEach((to) => {
 authStore.bootstrap().finally(() => {
     app.mount('#app')
 })
-

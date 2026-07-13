@@ -7,11 +7,7 @@
             <img src="@/assets/brand-mark.svg" alt="Xing-Cloud" class="brand-mark-image" />
             <div class="brand-copy">
               <strong>Xing-Cloud · AI Agent</strong>
-              <span class="brand-motto">
-                <span>思而后行</span>
-                <el-icon class="brand-motto-icon"><TrendCharts /></el-icon>
-                <span>行必有证</span>
-              </span>
+              <span>一屏观测，全程闭环</span>
             </div>
           </div>
           <router-link class="promo-link" to="/ai-agent-promo">
@@ -57,8 +53,7 @@
 
       <section class="auth-panel">
         <div class="auth-panel-inner">
-          <h2>登录工作台</h2>
-          <p class="auth-subtitle">使用平台账号进入 Xing-Cloud</p>
+          <h2>Xing-Cloud数智运维平台</h2>
 
           <el-form class="login-form" :model="form" label-position="top" @submit.prevent="handleLogin">
             <el-form-item label="用户名">
@@ -92,7 +87,7 @@
               进入工作台
             </el-button>
           </el-form>
-          <div class="default-auth-tip">默认账号：admin / Admin@123456</div>
+          <div class="default-auth-tip">默认账号：admin / xinghaik8s</div>
         </div>
       </section>
     </main>
@@ -109,7 +104,6 @@ import {
   Lock,
   Service,
   Tickets,
-  TrendCharts,
   User,
 } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
@@ -119,7 +113,7 @@ const authStore = useAuthStore()
 const loading = ref(false)
 const form = reactive({
   username: 'admin',
-  password: 'Admin@123456',
+  password: 'xinghaik8s',
 })
 
 const features = [
@@ -132,7 +126,7 @@ const features = [
   {
     title: '可观测性',
     desc: '统计系统SLA，统一查看指标、日志、链路与告警，快速定位异常和性能瓶颈。',
-    icon: TrendCharts,
+    icon: Bell,
     tone: 'observability-card',
   },
   {
@@ -177,9 +171,10 @@ async function handleLogin() {
   padding: 18px;
   overflow: hidden;
   background:
-    linear-gradient(90deg, rgba(203, 213, 225, 0.56) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(203, 213, 225, 0.52) 1px, transparent 1px),
-    linear-gradient(135deg, #f8fbff 0%, #eef5f6 48%, #f6f8fb 100%);
+    linear-gradient(90deg, rgba(91, 192, 235, 0.14) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(91, 192, 235, 0.12) 1px, transparent 1px),
+    radial-gradient(circle at 18% 18%, rgba(91, 192, 235, 0.18) 0%, rgba(91, 192, 235, 0) 32%),
+    linear-gradient(135deg, var(--nebula-white) 0%, rgba(91, 192, 235, 0.08) 50%, rgba(46, 134, 222, 0.06) 100%);
   background-size: 44px 44px, 44px 44px, auto;
 }
 
@@ -190,10 +185,10 @@ async function handleLogin() {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 420px;
   overflow: hidden;
-  border: 1px solid rgba(203, 213, 225, 0.82);
-  border-radius: 24px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 20px;
   background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 28px 78px rgba(15, 23, 42, 0.13);
+  box-shadow: 0 16px 48px rgba(15, 52, 96, 0.16);
   backdrop-filter: blur(18px);
   transform: scale(var(--auth-scale));
   transform-origin: center;
@@ -207,7 +202,7 @@ async function handleLogin() {
   min-height: 0;
   padding: 32px 38px;
   background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.88) 0%, rgba(242, 248, 255, 0.76) 52%, rgba(239, 251, 247, 0.72) 100%);
+    linear-gradient(135deg, rgba(248, 250, 252, 0.95) 0%, rgba(91, 192, 235, 0.08) 52%, rgba(46, 134, 222, 0.06) 100%);
 }
 
 .auth-overview::after {
@@ -268,20 +263,12 @@ async function handleLogin() {
   white-space: nowrap;
 }
 
-.brand-motto {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  color: #4f647f;
+.brand-copy span {
+  color: var(--nebula-gray-400);
   font-size: 12px;
   font-weight: 700;
   line-height: 1.2;
-}
-
-.brand-motto-icon {
-  font-size: 11px;
-  color: #2a79be;
-  opacity: 0.9;
+  white-space: nowrap;
 }
 
 .promo-link {
@@ -290,21 +277,21 @@ async function handleLogin() {
   gap: 7px;
   min-height: 36px;
   padding: 0 15px;
-  border: 1px solid rgba(42, 121, 190, 0.22);
-  border-radius: 12px;
+  border: 1px solid rgba(91, 192, 235, 0.24);
+  border-radius: 10px;
   background: rgba(255, 255, 255, 0.76);
-  color: #2563eb;
+  color: var(--nebula-blue);
   font-size: 12px;
   font-weight: 800;
   text-decoration: none;
-  box-shadow: 0 10px 22px rgba(42, 121, 190, 0.08);
+  box-shadow: 0 4px 12px rgba(15, 52, 96, 0.08);
   transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
 .promo-link:hover {
   transform: translateY(-1px);
-  border-color: rgba(42, 121, 190, 0.36);
-  box-shadow: 0 14px 28px rgba(42, 121, 190, 0.12);
+  border-color: rgba(91, 192, 235, 0.36);
+  box-shadow: 0 8px 24px rgba(15, 52, 96, 0.12);
 }
 
 .overview-content {
@@ -315,7 +302,7 @@ async function handleLogin() {
 
 .auth-overview h1 {
   margin: 0;
-  color: #172033;
+  color: var(--nebula-deep);
   font-size: clamp(30px, 3.2vw, 38px);
   font-weight: 760;
   line-height: 1.22;
@@ -325,7 +312,7 @@ async function handleLogin() {
 .overview-summary {
   max-width: 560px;
   margin: 14px 0 0;
-  color: #64748b;
+  color: var(--nebula-gray-400);
   font-size: 14px;
   line-height: 1.8;
 }
@@ -341,10 +328,10 @@ async function handleLogin() {
   min-height: 88px;
   gap: 12px;
   padding: 14px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  border: 1px solid rgba(226, 232, 240, 0.9);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.8);
-  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.045);
+  box-shadow: 0 4px 12px rgba(15, 52, 96, 0.06);
 }
 
 .capability-icon {
@@ -353,20 +340,20 @@ async function handleLogin() {
   display: grid;
   place-items: center;
   flex: 0 0 38px;
-  border-radius: 12px;
-  background: rgba(42, 121, 190, 0.1);
-  color: #2a79be;
+  border-radius: 10px;
+  background: rgba(91, 192, 235, 0.12);
+  color: var(--nebula-blue);
   font-size: 18px;
 }
 
 .aiops-card .capability-icon {
-  background: rgba(99, 102, 241, 0.11);
-  color: #4f46e5;
+  background: rgba(15, 52, 96, 0.08);
+  color: var(--nebula-deep);
 }
 
 .observability-card .capability-icon {
-  background: rgba(42, 121, 190, 0.11);
-  color: #2a79be;
+  background: rgba(91, 192, 235, 0.12);
+  color: var(--nebula-blue);
 }
 
 .event-card .capability-icon {
@@ -375,8 +362,8 @@ async function handleLogin() {
 }
 
 .task-card .capability-icon {
-  background: rgba(47, 181, 158, 0.13);
-  color: #178f7d;
+  background: rgba(16, 185, 129, 0.1);
+  color: var(--success);
 }
 
 .capability-body {
@@ -384,7 +371,7 @@ async function handleLogin() {
 }
 
 .capability-title {
-  color: #253041;
+  color: var(--nebula-deep);
   font-size: 14px;
   font-weight: 800;
   line-height: 1.35;
@@ -392,7 +379,7 @@ async function handleLogin() {
 
 .capability-desc {
   margin-top: 5px;
-  color: #708094;
+  color: var(--nebula-gray-400);
   font-size: 12px;
   line-height: 1.55;
 }
@@ -448,9 +435,9 @@ async function handleLogin() {
   height: 6px;
   flex: 0 0 6px;
   border-radius: 50%;
-  background: rgba(42, 121, 190, 0.42);
+  background: rgba(91, 192, 235, 0.72);
   font-style: normal;
-  box-shadow: 0 0 0 3px rgba(42, 121, 190, 0.06);
+  box-shadow: 0 0 0 3px rgba(91, 192, 235, 0.1);
 }
 
 .flow-steps span:nth-child(2) i {
@@ -459,8 +446,8 @@ async function handleLogin() {
 }
 
 .flow-steps span:nth-child(3) i {
-  background: rgba(99, 102, 241, 0.4);
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.06);
+  background: rgba(27, 79, 143, 0.56);
+  box-shadow: 0 0 0 3px rgba(27, 79, 143, 0.08);
 }
 
 .flow-steps span:nth-child(4) i {
@@ -489,22 +476,16 @@ async function handleLogin() {
 
 .auth-panel h2 {
   margin: 0;
-  color: #172033;
+  color: var(--nebula-deep);
   font-size: 34px;
   font-weight: 760;
   line-height: 1.18;
   letter-spacing: 0;
 }
 
-.auth-subtitle {
-  margin: 10px 0 28px;
-  color: #728197;
-  font-size: 14px;
-  line-height: 1.7;
-}
-
 .login-form {
   width: 100%;
+  margin-top: 28px;
 }
 
 :deep(.el-form-item) {
@@ -535,12 +516,12 @@ async function handleLogin() {
 :deep(.el-input__wrapper.is-focus) {
   background: #fbfdff;
   box-shadow:
-    0 0 0 1px #2a79be inset,
-    0 0 0 4px rgba(42, 121, 190, 0.08);
+    0 0 0 1px var(--nebula-light) inset,
+    0 0 0 4px rgba(91, 192, 235, 0.15);
 }
 
 :deep(.el-input__inner) {
-  color: #172033;
+  color: var(--nebula-deep);
   font-size: 14px;
 }
 
@@ -554,16 +535,16 @@ async function handleLogin() {
   margin-top: 4px;
   border: none;
   border-radius: 12px;
-  background: linear-gradient(135deg, #2fb59e 0%, #2a79be 100%);
-  box-shadow: 0 14px 26px rgba(42, 121, 190, 0.22);
+  background: linear-gradient(135deg, var(--nebula-light) 0%, var(--nebula-blue) 100%);
+  box-shadow: 0 4px 14px rgba(46, 134, 222, 0.35);
   font-size: 15px;
   font-weight: 800;
 }
 
 .submit-btn:hover,
 .submit-btn:focus {
-  background: linear-gradient(135deg, #33bda7 0%, #2c83ca 100%);
-  box-shadow: 0 18px 30px rgba(42, 121, 190, 0.26);
+  background: linear-gradient(135deg, #6bcaf0 0%, var(--nebula-blue) 100%);
+  box-shadow: 0 6px 20px rgba(46, 134, 222, 0.45);
 }
 
 .default-auth-tip {

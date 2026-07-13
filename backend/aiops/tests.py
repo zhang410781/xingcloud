@@ -1,5 +1,6 @@
 import json
 import importlib
+import unittest
 from datetime import timedelta
 from decimal import Decimal
 from unittest import mock
@@ -17,7 +18,7 @@ from rest_framework.test import APIClient
 from cmdb.models import CIType, ConfigItem
 from eventwall.models import EventRecord, EventSource
 from marketplace.models import ServiceDeployment, ServiceTemplate
-from ops.models import Alert, Deployment, DockerHost, GrafanaSetting, Host, HostTask, K8sCluster, LogDataSource, LogEntry, MetricDataSource, ObservabilityDataSourceLink, TaskResource, TaskResourceGroup, TracingDataSource, TransactionTicket
+from ops.models import Alert, Deployment, DockerHost, Host, HostTask, K8sCluster, LogDataSource, LogEntry, MetricDataSource, TaskResource, TaskResourceGroup, TransactionTicket
 from rbac.models import Role
 from rbac.services import ensure_builtin_rbac
 
@@ -88,7 +89,6 @@ from .services import (
     query_alert_root_cause,
     query_logs,
     query_recent_changes,
-    query_traces,
     query_workworkorders,
 )
 
@@ -125,6 +125,23 @@ class AIOpsApiTests(TestCase):
 
         self.assertTrue(any(item['name'] == 'xing-cloud.query_knowledge_graph' for item in tools))
         self.assertTrue(all('available' in item for item in tools))
+
+    def test_builtin_skill_bootstrap_renames_legacy_slug_without_duplicate_name(self):
+        legacy_skill = AIOpsSkill.objects.create(
+            name='告警证据清单',
+            slug='xingcloud-alert-evidence-checklist',
+            description='legacy slug before brand normalization',
+            source_type=AIOpsSkill.SOURCE_INLINE,
+            content='legacy content',
+            is_builtin=True,
+            is_enabled=True,
+        )
+
+        get_agent_config()
+
+        legacy_skill.refresh_from_db()
+        self.assertEqual(legacy_skill.slug, 'xing-cloud-alert-evidence-checklist')
+        self.assertEqual(AIOpsSkill.objects.filter(name='告警证据清单').count(), 1)
 
     def ensure_zhengzhou_production_knowledge_environment(self):
         cluster = K8sCluster.objects.create(
@@ -227,7 +244,7 @@ class AIOpsApiTests(TestCase):
         self.assertNotIn('query_cost_report', active_tools)
         self.assertIn('answer-formatter', {item['slug'] for item in response.data['active_skills']})
         active_skills_by_slug = {item['slug']: item for item in response.data['active_skills']}
-        alert_skill = active_skills_by_slug['sx-alert-evidence-checklist']
+        alert_skill = active_skills_by_slug['xing-cloud-alert-evidence-checklist']
         self.assertIn('category', alert_skill)
         self.assertIn('alert.root_cause', alert_skill['applicable_actions'])
         self.assertIn('query_alerts', alert_skill['builtin_tools'])
@@ -266,15 +283,15 @@ class AIOpsApiTests(TestCase):
 
         selected = _skills_for_action(active_skills, {
             'code': 'alert.root_cause',
-            'skills': ['sx-alert-evidence-checklist'],
+            'skills': ['xing-cloud-alert-evidence-checklist'],
         })
 
         selected_slugs = {item.slug for item in selected}
-        self.assertIn('sx-alert-evidence-checklist', selected_slugs)
-        self.assertIn('sx-k8s-alert-troubleshooting', selected_slugs)
-        self.assertIn('sx-log-pattern-analysis', selected_slugs)
+        self.assertIn('xing-cloud-alert-evidence-checklist', selected_slugs)
+        self.assertIn('xing-cloud-k8s-alert-troubleshooting', selected_slugs)
+        self.assertIn('xing-cloud-log-pattern-analysis', selected_slugs)
         self.assertIn('answer-formatter', selected_slugs)
-        self.assertNotIn('sx-self-heal-risk-guard', selected_slugs)
+        self.assertNotIn('xing-cloud-self-heal-risk-guard', selected_slugs)
 
     def test_skill_api_accepts_package_metadata(self):
         payload = {
@@ -459,7 +476,7 @@ class AIOpsApiTests(TestCase):
                 '我要一条 Loki 查询语句看 workorder-service warning 日志',
                 '按 trace_id 检索 workorder 错误日志',
                 '查一下 nginx access log 里 5xx 请求',
-                '生成 SLS 查询条件看工单失败',
+                '生成 ClickHouse 查询条件看工单失败',
             ],
             'k8s.diagnose': [
                 '分析下郑州生产演示k8s集群的异常工作负载',
@@ -1255,6 +1272,7 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn('is_default', response.data)
 
+    @unittest.skip('legacy Grafana model retired; native dashboard coverage lives in ops observability tests')
     def test_knowledge_graph_uses_native_dashboards_not_grafana_nodes(self):
         GrafanaSetting.objects.create(
             name='legacy-grafana',
@@ -1282,6 +1300,7 @@ class AIOpsApiTests(TestCase):
         self.assertNotIn('legacy-folder', serialized_graph)
         self.assertNotIn('legacy-dashboard', serialized_graph)
 
+    @unittest.skip('legacy trace datasource/link models retired')
     def test_knowledge_graph_only_links_observability_and_event_context(self):
         log_source = LogDataSource.objects.create(name='prod-loki', provider='loki', is_enabled=True)
         trace_source = TracingDataSource.objects.create(name='prod-tempo', provider='tempo', is_enabled=True)
@@ -1396,6 +1415,7 @@ class AIOpsApiTests(TestCase):
         self.assertIn('system:生产:郑州生产', repaired_node_ids)
         self.assertNotIn(f'system:{garbled_prod_env}:郑州生产', repaired_node_ids)
 
+    @unittest.skip('legacy trace datasource/link models retired')
     def test_knowledge_graph_uses_configured_environment_associations(self):
         log_source = LogDataSource.objects.create(name='trade-loki', provider='loki', is_enabled=True)
         other_log_source = LogDataSource.objects.create(name='other-loki', provider='loki', is_enabled=True)
@@ -1695,6 +1715,7 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(standalone_node['infra_type'], 'task_resource_host')
         self.assertEqual(standalone_node['source_environment'], resource_env.name)
 
+    @unittest.skip('legacy trace datasource/link models retired')
     def test_knowledge_environment_observability_link_scope_overrides_datasource_autolink(self):
         log_source = LogDataSource.objects.create(name='scope-loki', provider='loki', config={'url': 'http://loki'}, is_enabled=True)
         trace_source = TracingDataSource.objects.create(name='scope-tempo', provider='tempo', config={'url': 'http://tempo'}, is_enabled=True)
@@ -1863,6 +1884,7 @@ class AIOpsApiTests(TestCase):
             for edge in response.data['edges']
         ))
 
+    @unittest.skip('legacy tracing runtime retired')
     def test_knowledge_graph_discovers_services_from_tracing_without_events(self):
         trace_source = TracingDataSource.objects.create(
             name='workorder-tempo',
@@ -1890,6 +1912,7 @@ class AIOpsApiTests(TestCase):
         capability_names = {item['name'] for item in service_node.get('capabilities', [])}
         self.assertIn('tracing', capability_names)
 
+    @unittest.skip('legacy tracing runtime retired')
     def test_knowledge_graph_prefers_tracing_service_catalog_over_infrastructure_discovery(self):
         cluster = K8sCluster.objects.create(
             name='trace-first-k8s',
@@ -1923,6 +1946,7 @@ class AIOpsApiTests(TestCase):
         self.assertNotIn('api-server', service_labels)
         self.assertNotIn('redis-master', service_labels)
 
+    @unittest.skip('legacy tracing runtime retired')
     def test_knowledge_graph_maps_tracing_service_to_system_by_service_alias(self):
         trace_source = TracingDataSource.objects.create(
             name='order-tempo',
@@ -1961,6 +1985,7 @@ class AIOpsApiTests(TestCase):
         self.assertIn('service:order-prod-env:交易系统:workorder-service', node_ids)
         self.assertNotIn('service:order-prod-env:未归属系统:workorder-service', node_ids)
 
+    @unittest.skip('legacy tracing runtime retired')
     def test_knowledge_graph_does_not_duplicate_tracing_service_when_deployment_has_system(self):
         cluster = K8sCluster.objects.create(
             name='workorder-prod-k8s',
@@ -2005,6 +2030,7 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(len(service_nodes), 1)
         self.assertEqual(service_nodes[0]['system_name'], '郑州生产')
 
+    @unittest.skip('legacy tracing runtime retired')
     def test_knowledge_graph_maps_tracing_service_to_system_by_service_tags(self):
         trace_source = TracingDataSource.objects.create(
             name='workorder-tempo-owned',
@@ -2065,6 +2091,7 @@ class AIOpsApiTests(TestCase):
         self.assertIn('service:workorder-label-env:郑州生产:workorder', node_ids)
         self.assertNotIn('service:workorder-label-env:未归属系统:workorder', node_ids)
 
+    @unittest.skip('legacy tracing runtime retired')
     def test_knowledge_graph_discovers_runtime_components_from_tracing_spans(self):
         trace_source = TracingDataSource.objects.create(
             name='workorder-runtime-tempo',
@@ -2140,6 +2167,7 @@ class AIOpsApiTests(TestCase):
         self.assertIn('service_deployment', relation_types)
         self.assertNotIn('infrastructure_runtime', relation_types)
 
+    @unittest.skip('legacy trace datasource/link models retired')
     def test_knowledge_graph_links_service_to_runtime_component_from_configmap(self):
         cluster = K8sCluster.objects.create(
             name='configmap-runtime-k8s',
@@ -2211,6 +2239,7 @@ class AIOpsApiTests(TestCase):
             for edge in response.data['edges']
         ))
 
+    @unittest.skip('legacy trace datasource/link models retired')
     def test_knowledge_graph_does_not_fan_out_shared_configmap_runtime_dependencies(self):
         cluster = K8sCluster.objects.create(
             name='shared-configmap-k8s',
@@ -3044,9 +3073,9 @@ class AIOpsApiTests(TestCase):
         self.assertTrue(any(item['name'] == '知识图谱 MCP' and item['server_type'] == AIOpsMCPServer.SERVER_PLATFORM_BUILTIN for item in mcp_response.data))
         self.assertFalse(any(item['name'] == 'CMDB MCP' for item in mcp_response.data))
         self.assertTrue(any(item['name'] == 'N9E 监控 MCP' for item in mcp_response.data))
-        self.assertTrue(any(item['name'] == 'SkyWalking MCP' and item['server_type'] == AIOpsMCPServer.SERVER_STDIO for item in mcp_response.data))
-        self.assertTrue(any(item['name'] == 'Grafana MCP' and item['server_type'] == AIOpsMCPServer.SERVER_HTTP for item in mcp_response.data))
-        alert_skill = next(item for item in skill_response.data if item['slug'] == 'sx-alert-evidence-checklist')
+        self.assertFalse(any(item['name'] == 'SkyWalking MCP' for item in mcp_response.data))
+        self.assertFalse(any(item['name'] == 'Grafana MCP' for item in mcp_response.data))
+        alert_skill = next(item for item in skill_response.data if item['slug'] == 'xing-cloud-alert-evidence-checklist')
         self.assertIn('alert.root_cause', alert_skill['applicable_actions'])
         self.assertIn('query_alerts', alert_skill['builtin_tools'])
         self.assertTrue(any(item['slug'] == 'answer-formatter' for item in skill_response.data))
@@ -3593,6 +3622,44 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(result['alert']['id'], matched.id)
         self.assertIn(f'告警ID {matched.id}', result['sections'][0]['items'][2])
 
+    @mock.patch('aiops.services.build_alert_log_evidence')
+    def test_query_alert_root_cause_includes_clickhouse_log_rule_samples_without_service(self, mocked_log_evidence):
+        self.ensure_prod_knowledge_environment()
+        mocked_log_evidence.return_value = {
+            'summary': {'count': 1, 'collection': 'container-logs', 'window_minutes': 5},
+            'sections': [{'title': 'Log evidence', 'items': ['2026-07-10T16:04:06Z / ERROR / monitoring/alertmanager-main-0 / Notify for alerts failed']}],
+            'citations': [{'title': 'Log Center', 'path': '/logs/query'}],
+            'logs': [{'level': 'error', 'message': 'Notify for alerts failed', 'source': 'monitoring/alertmanager-main-0'}],
+        }
+        alert = Alert.objects.create(
+            title='Container ERROR Log Spike',
+            level='warning',
+            status=Alert.STATUS_ACTIVE,
+            source='Xing-Cloud Alert Rule',
+            source_type=Alert.SOURCE_PLATFORM,
+            message='ClickHouse container-logs count 613.0',
+            environment='prod',
+            service='',
+            labels={'collection': 'container-logs', 'alert_rule_source_type': 'clickhouse'},
+            raw_payload={
+                'rule': {
+                    'source_type': 'clickhouse',
+                    'query_config': {'collection': 'container-logs', 'window_minutes': 5, 'level': ['ERROR', 'FATAL', 'CRITICAL']},
+                },
+            },
+            is_acknowledged=False,
+        )
+        session = AIOpsChatSession.objects.create(user=self.user, title='alert-rca-clickhouse-logs')
+        user_message = AIOpsChatMessage.objects.create(session=session, role='user', content=f'analyze alert id {alert.id} logs')
+
+        result = query_alert_root_cause(session, user_message, self.user, query=f'prod analyze alert id {alert.id} logs')
+
+        self.assertEqual(result['summary']['alert_id'], alert.id)
+        self.assertEqual(result['logs']['summary']['count'], 1)
+        self.assertFalse(result['logs']['summary'].get('skipped'))
+        self.assertIn('Notify for alerts failed', '\n'.join(result['analysis']['causes']))
+        mocked_log_evidence.assert_called_once()
+
     def test_query_alerts_filters_system_test_environment_last_hour(self):
         matched = Alert.objects.create(
             title='workorder error rate high',
@@ -3995,6 +4062,7 @@ class AIOpsApiTests(TestCase):
         self.assertGreaterEqual(result['summary']['pods_abnormal'], 1)
         self.assertTrue(any('异常 Pod：' in item for item in result['sections'][0]['items']))
 
+    @unittest.skip('legacy tracing query tool retired')
     @mock.patch('aiops.services._provider_handlers')
     @mock.patch('aiops.services._resolve_provider')
     def test_query_traces_uses_live_tracing_provider(self, mocked_resolve_provider, mocked_provider_handlers):
@@ -4054,6 +4122,7 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(result['tracing']['provider'], 'skywalking')
         self.assertTrue(any('bcp-server@梧桐港-SaaS-PRO' in item for item in result['sections'][0]['items']))
 
+    @unittest.skip('legacy tracing query tool retired')
     @mock.patch('aiops.services._provider_handlers')
     @mock.patch('aiops.services._resolve_provider')
     def test_query_traces_returns_related_call_topology(self, mocked_resolve_provider, mocked_provider_handlers):
@@ -4399,7 +4468,7 @@ class AIOpsApiTests(TestCase):
         self.assertNotIn('query_traces', tool_calls)
         self.assertTrue(assistant_message['metadata']['skipped_observability_service_lookup'])
         block_titles = {item.get('title') for item in assistant_message['blocks']}
-        self.assertIn('日志与链路跳过', block_titles)
+        self.assertIn('日志查询跳过', block_titles)
         self.assertIn('指标查询', assistant_message['content'])
         self.assertNotIn('指标证据不足', assistant_message['content'])
         self.assertNotIn('查询失败', assistant_message['content'])
@@ -4453,7 +4522,7 @@ class AIOpsApiTests(TestCase):
         self.assertIn('query_alerts', tool_calls)
         self.assertIn('query_alert_metrics', tool_calls)
         self.assertIn('query_logs', tool_calls)
-        self.assertIn('query_traces', tool_calls)
+        self.assertNotIn('query_traces', tool_calls)
         self.assertEqual(assistant_message['metadata']['service'], 'workorder-service')
         self.assertFalse(assistant_message['metadata']['skipped_observability_service_lookup'])
         mocked_promql.assert_called()
@@ -4476,7 +4545,7 @@ class AIOpsApiTests(TestCase):
             level='critical',
             status=Alert.STATUS_ACTIVE,
             source='prometheus',
-            source_type=Alert.SOURCE_PROMETHEUS,
+            source_type=Alert.SOURCE_PLATFORM,
             message='Deployment order available replicas below desired replicas',
             fingerprint=fingerprint,
             environment='zhengzhou-production-demo',
@@ -4667,13 +4736,12 @@ class AIOpsApiTests(TestCase):
             alert,
             event_result={'events': [{'title': 'api-gateway rollout', 'result': 'failed'}]},
             log_result={'logs': [{'level': 'error', 'message': 'api-gateway upstream timeout'}]},
-            trace_result={'summary': {'match_count': 1, 'error_match_count': 1}, 'traces': [{'trace_id': 'trace-632'}]},
         )
 
         joined = '\n'.join((analysis.get('evidence') or []) + (analysis.get('causes') or []))
         self.assertIn('事件中心', joined)
         self.assertIn('日志中心', joined)
-        self.assertIn('链路追踪', joined)
+        self.assertNotIn('链路追踪', joined)
 
     @mock.patch('aiops.services._request_model_completion')
     def test_direct_log_analysis_accepts_local_logentry_objects(self, mocked_completion):
@@ -4759,12 +4827,12 @@ class AIOpsApiTests(TestCase):
             (f'帮我分析下告警id {alert.id} api-gateway pod CPU usage is elevated 这个告警的根因', 'direct_alert_root_cause_fastpath', {'query_alert_root_cause'}),
             ('帮我分析下郑州生产演示最新一条告警的原因', 'direct_alert_root_cause_fastpath', {'query_alert_root_cause'}),
             ('帮我分析下郑州生产演示告警', 'deterministic_alert_environment_analysis', {'query_alerts', 'query_alert_metrics'}),
-            ('分析生产郑州生产演示 api-gateway 最近异常的根因', 'deterministic_service_rca', {'query_alerts', 'query_logs', 'query_traces'}),
+            ('分析生产郑州生产演示 api-gateway 最近异常的根因', 'deterministic_service_rca', {'query_alerts', 'query_logs', 'query_events'}),
             ('分析下最近郑州生产演示的SLO情况', 'deterministic_slo_analysis', {'query_alerts'}),
             ('分析下郑州生产演示 k8s 集群的异常工作负载', 'deterministic_k8s_rca', {'query_k8s_resources', 'query_k8s_cluster_summary', 'query_alerts'}),
             ('帮我分析郑州生产演示 api-gateway 最近错误日志的原因', 'direct_logs_fastpath', {'query_logs'}),
             ('分析下 api-gateway 最近发布是否导致郑州生产演示异常', 'deterministic_change_correlation', {'query_knowledge_graph', 'query_alerts'}),
-            ('给郑州生产演示 api-gateway 告警推荐自愈方案', 'deterministic_self_heal_recommendation', {'query_alerts', 'query_logs', 'query_traces'}),
+            ('给郑州生产演示 api-gateway 告警推荐自愈方案', 'deterministic_self_heal_recommendation', {'query_alerts', 'query_logs', 'query_recent_changes'}),
         ]
         forbidden_fragments = [
             'object has no attribute',
@@ -4954,6 +5022,7 @@ class AIOpsApiTests(TestCase):
 
     @mock.patch('aiops.services._request_model_completion')
 
+    @unittest.skip('legacy trace-to-log datasource mapping retired')
     @mock.patch('aiops.services.run_log_provider_query')
     @mock.patch('aiops.services._request_model_completion')
     def test_send_message_direct_log_fastpath_uses_observability_mapping(self, mocked_completion, mocked_run_query):
@@ -5068,6 +5137,7 @@ class AIOpsApiTests(TestCase):
         self.assertFalse(_is_direct_log_question('show catalog service health'))
         self.assertFalse(_is_direct_log_question('login service status'))
 
+    @unittest.skip('legacy trace-to-log datasource mapping retired')
     @mock.patch('aiops.services.run_log_provider_query')
     @mock.patch('aiops.services._request_model_completion')
     def test_direct_log_fastpath_uses_llm_to_map_chinese_service_name(self, mocked_completion, mocked_run_query):
@@ -5162,6 +5232,7 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(payload['query'], '{container="order",namespace="zhengzhou-production"} | json | detected_level=~"warn|warning"')
         self.assertEqual(mocked_completion.call_count, 2)
 
+    @unittest.skip('legacy trace-to-log datasource mapping retired')
     @mock.patch('aiops.services.run_log_provider_query')
     @mock.patch('aiops.services._request_model_completion')
     def test_direct_log_fastpath_supports_combined_warning_and_error_levels(self, mocked_completion, mocked_run_query):
@@ -5267,6 +5338,7 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(payload['query'], '{container="order",namespace="zhengzhou-production"} | json | detected_level=~"warn|warning|error|err|fatal|critical|crit"')
         self.assertEqual(mocked_completion.call_count, 2)
 
+    @unittest.skip('legacy trace-to-log datasource mapping retired')
     @mock.patch('aiops.services.run_log_provider_query')
     @mock.patch('aiops.services._request_model_completion')
     def test_log_answer_rewrites_when_formatter_claims_no_logs_but_logs_exist(self, mocked_completion, mocked_run_query):
@@ -5369,6 +5441,7 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(assistant_message['metadata']['formatter_mode'], 'skill')
         self.assertEqual(mocked_completion.call_count, 3)
 
+    @unittest.skip('legacy trace-to-log datasource mapping retired')
     @mock.patch('aiops.services.run_log_provider_query')
     @mock.patch('aiops.services._request_model_completion')
     def test_log_answer_fallback_still_analyzes_when_formatter_never_returns_valid_analysis(self, mocked_completion, mocked_run_query):
@@ -5542,7 +5615,7 @@ class AIOpsApiTests(TestCase):
         self.assertIn('全部命名空间', assistant_message['content'])
         self.assertIn('nginx-deployment', assistant_message['content'])
         self.assertIn('web-frontend', assistant_message['content'])
-        self.assertIn('grafana', assistant_message['content'])
+        self.assertIn('redis-master', assistant_message['content'])
         mocked_completion.assert_not_called()
 
     @mock.patch('aiops.services._request_model_completion')
@@ -5679,7 +5752,7 @@ class AIOpsApiTests(TestCase):
 
         response = self.client.post(
             f'/api/aiops/sessions/{session_id}/send_message/',
-            {'content': '查看郑州生产演示 monitoring 命名空间下的 svc grafana'},
+            {'content': '查看郑州生产演示 monitoring 命名空间下的 svc prometheus'},
             format='json',
         )
 
@@ -5688,7 +5761,7 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(assistant_message['metadata']['execution_mode'], 'direct_k8s_resource_lookup')
         self.assertEqual(assistant_message['tool_calls'], ['query_k8s_resources'])
         self.assertIn('Service 列表', assistant_message['content'])
-        self.assertIn('monitoring / grafana', assistant_message['content'])
+        self.assertIn('monitoring / prometheus', assistant_message['content'])
         self.assertNotIn('query_task_resources', assistant_message['tool_calls'])
         self.assertIsNone(response.data['pending_action'])
         mocked_completion.assert_not_called()
@@ -5713,13 +5786,12 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(result['summary']['namespaces'], ['monitoring'])
         self.assertEqual(namespaces, {'monitoring'})
         self.assertIn('prometheus', names)
-        self.assertIn('grafana', names)
         self.assertNotIn('api-service', names)
 
     def test_query_k8s_resources_promotes_explicit_service_name(self):
         self.ensure_zhengzhou_production_knowledge_environment()
         session = AIOpsChatSession.objects.create(user=self.user, title='k8s-service-priority')
-        question = '查看郑州生产演示 monitoring 命名空间下的 svc grafana'
+        question = '查看郑州生产演示 monitoring 命名空间下的 svc prometheus'
         user_message = AIOpsChatMessage.objects.create(session=session, role='user', content=question)
 
         result = query_k8s_resources(
@@ -5733,7 +5805,7 @@ class AIOpsApiTests(TestCase):
 
         self.assertEqual(result['summary']['namespaces'], ['monitoring'])
         self.assertEqual(result['items'][0]['namespace'], 'monitoring')
-        self.assertEqual(result['items'][0]['name'], 'grafana')
+        self.assertEqual(result['items'][0]['name'], 'prometheus')
 
     @mock.patch('aiops.services._request_model_completion')
     def test_send_message_direct_k8s_svc_lookup_survives_mojibake_namespace_text(self, mocked_completion):
@@ -5745,6 +5817,7 @@ class AIOpsApiTests(TestCase):
 
         response = self.client.post(
             f'/api/aiops/sessions/{session_id}/send_message/',
+            {'content': '查看郑州生产演示 monitoring 命名空间下的 svc prometheus'},
             format='json',
         )
 
@@ -5752,7 +5825,7 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(assistant_message['metadata']['execution_mode'], 'direct_k8s_resource_lookup')
         self.assertEqual(assistant_message['tool_calls'], ['query_k8s_resources'])
-        self.assertIn('monitoring / grafana', assistant_message['content'])
+        self.assertIn('monitoring / prometheus', assistant_message['content'])
         self.assertIsNone(response.data['pending_action'])
         mocked_completion.assert_not_called()
 
@@ -6030,7 +6103,7 @@ class AIOpsApiTests(TestCase):
         self.assertTrue(metadata['action_trace']['hit'])
         self.assertIn('query_alerts', assistant_message['tool_calls'])
         self.assertIn('query_alert_metrics', assistant_message['tool_calls'])
-        self.assertIn('query_traces', assistant_message['tool_calls'])
+        self.assertNotIn('query_traces', assistant_message['tool_calls'])
         self.assertIn('query_knowledge_graph', assistant_message['tool_calls'])
         self.assertIn('指标查询结果', assistant_message['content'])
         self.assertIn('知识图谱概览', assistant_message['content'])
@@ -6087,9 +6160,9 @@ class AIOpsApiTests(TestCase):
         self.assertEqual(assistant_message['metadata']['execution_mode'], 'deterministic_service_rca')
         self.assertIn('query_alerts', assistant_message['tool_calls'])
         self.assertIn('query_logs', assistant_message['tool_calls'])
-        self.assertIn('query_traces', assistant_message['tool_calls'])
+        self.assertNotIn('query_traces', assistant_message['tool_calls'])
         self.assertIn('query_events', assistant_message['tool_calls'])
-        self.assertIn('郑州生产核心', assistant_message['content'])
+        self.assertIn('order release failed', assistant_message['content'])
         self.assertIn('workorder failed', assistant_message['content'])
         mocked_completion.assert_not_called()
 
@@ -6631,8 +6704,15 @@ class AIOpsApiTests(TestCase):
         mocked_completion.assert_not_called()
 
     def test_recover_masked_suggested_question(self):
+        question = '华东生产支付服务过去三十分钟 ERROR 日志有哪些共同模式'
+        config = get_agent_config()
+        config.suggested_questions = [question]
+        config.save(update_fields=['suggested_questions'])
+        masked = ''.join(char if ord(char) < 128 and char.isprintable() else '?' for char in question)
+
         self.assertEqual(
-            '郑州生产演示生产工单服务最近一小时 ERROR/WARN 日志有什么共同模式',
+            recover_masked_suggested_question(masked),
+            question,
         )
 
     @mock.patch('aiops.views.start_async_chat_processing')

@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Xing-Cloud - 品牌 UI 组件库</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'%3E%3Cellipse cx='60' cy='60' rx='38' ry='18' fill='none' stroke='%235BC0EB' stroke-width='5' transform='rotate(0 60 60)'/%3E%3Cellipse cx='60' cy='60' rx='38' ry='18' fill='none' stroke='%235BC0EB' stroke-width='5' transform='rotate(120 60 60)'/%3E%3Cellipse cx='60' cy='60' rx='38' ry='18' fill='none' stroke='%235BC0EB' stroke-width='5' transform='rotate(240 60 60)'/%3E%3Ccircle cx='60' cy='60' r='10' fill='%235BC0EB'/%3E%3Ccircle cx='98' cy='44' r='5' fill='%235BC0EB'/%3E%3Ccircle cx='22' cy='44' r='5' fill='%235BC0EB'/%3E%3Ccircle cx='60' cy='98' r='5' fill='%235BC0EB'/%3E%3C/svg%3E">
+<style>
+:root {
+  --nebula-light: #5BC0EB; --nebula-blue: #2E86DE; --nebula-dark: #1B4F8F; --nebula-deep: #0F3460;
+  --nebula-white: #F8FAFC; --nebula-gray-100: #E2E8F0; --nebula-gray-200: #CBD5E1; --nebula-gray-300: #94A3B8;
+  --nebula-gray-400: #64748B; --nebula-gray-500: #475569; --nebula-gray-600: #334155; --nebula-gray-700: #1E293B;
+  --nebula-success: #10B981; --nebula-warning: #F59E0B; --nebula-danger: #EF4444; --nebula-info: #3B82F6;
+  --font-sans: "Inter","Noto Sans SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px; --space-5:20px; --space-6:24px;
+  --space-8:32px; --space-10:40px; --space-12:48px; --space-16:64px; --space-20:80px;
+  --radius-sm:6px; --radius-md:10px; --radius-lg:14px; --radius-xl:20px; --radius-full:9999px;
+  --shadow-sm:0 1px 2px rgba(15,52,96,0.06); --shadow-md:0 4px 12px rgba(15,52,96,0.08);
+  --shadow-lg:0 8px 24px rgba(15,52,96,0.12); --shadow-xl:0 16px 48px rgba(15,52,96,0.16);
+  --transition-fast:150ms ease; --transition-normal:250ms ease; --transition-slow:350ms ease;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{font-family:var(--font-sans);font-size:16px;line-height:1.6;color:var(--nebula-gray-700);background:var(--nebula-white);-webkit-font-smoothing:antialiased}
+h1,h2,h3,h4,h5,h6{font-weight:600;line-height:1.2;color:var(--nebula-deep)}
+h1{font-size:48px}h2{font-size:36px}h3{font-size:28px}h4{font-size:22px}h5{font-size:18px}h6{font-size:16px}
+p{margin-bottom:var(--space-4);color:var(--nebula-gray-500)}
+a{color:var(--nebula-blue);text-decoration:none;transition:color var(--transition-fast)}
+a:hover{color:var(--nebula-dark)}
+.text-display{font-size:56px;font-weight:700;line-height:1.1;letter-spacing:-0.02em}
+.text-title{font-size:32px;font-weight:600}
+.text-subtitle{font-size:20px;font-weight:500;color:var(--nebula-gray-400)}
+.text-body{font-size:16px;line-height:1.7}
+.text-caption{font-size:13px;color:var(--nebula-gray-300)}
+.text-small{font-size:12px}
+.text-gradient{background:linear-gradient(135deg,var(--nebula-light),var(--nebula-blue));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.container{max-width:1200px;margin:0 auto;padding:0 var(--space-6)}
+.container-sm{max-width:800px}.container-lg{max-width:1400px}
+.grid{display:grid;gap:var(--space-6)}
+.grid-2{grid-template-columns:repeat(2,1fr)}
+.grid-3{grid-template-columns:repeat(3,1fr)}
+.grid-4{grid-template-columns:repeat(4,1fr)}
+.grid-5{grid-template-columns:repeat(5,1fr)}
+.flex{display:flex}.flex-col{flex-direction:column}.items-center{align-items:center}
+.justify-center{justify-content:center}.justify-between{justify-content:space-between}
+.gap-2{gap:var(--space-2)}.gap-4{gap:var(--space-4)}.gap-6{gap:var(--space-6)}
+
+.navbar{position:fixed;top:0;left:0;right:0;z-index:1000;background:rgba(248,250,252,0.85);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-bottom:1px solid var(--nebula-gray-100);transition:box-shadow var(--transition-normal)}
+.navbar.scrolled{box-shadow:var(--shadow-md)}
+.navbar-inner{display:flex;align-items:center;justify-content:space-between;height:72px}
+.logo-link{display:flex;align-items:center;gap:var(--space-3);text-decoration:none}
+.logo-link span{font-size:22px;font-weight:700;color:var(--nebula-deep);letter-spacing:-0.5px}
+.nav-links{display:flex;align-items:center;gap:var(--space-8);list-style:none}
+.nav-links a{font-size:15px;font-weight:500;color:var(--nebula-gray-500);padding:var(--space-2) 0;position:relative;transition:color var(--transition-fast)}
+.nav-links a::after{content:'';position:absolute;bottom:0;left:0;width:0;height:2px;background:linear-gradient(90deg,var(--nebula-light),var(--nebula-blue));transition:width var(--transition-normal)}
+.nav-links a:hover{color:var(--nebula-deep)}.nav-links a:hover::after{width:100%}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--space-2);padding:var(--space-3) var(--space-6);font-family:var(--font-sans);font-size:15px;font-weight:500;border:none;border-radius:var(--radius-md);cursor:pointer;transition:all var(--transition-fast);text-decoration:none;white-space:nowrap}
+.btn:disabled{opacity:0.5;cursor:not-allowed}
+.btn-primary{background:linear-gradient(135deg,var(--nebula-light),var(--nebula-blue));color:white;box-shadow:0 4px 14px rgba(46,134,222,0.35)}
+.btn-primary:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(46,134,222,0.45)}
+.btn-primary:active{transform:translateY(0)}
+.btn-secondary{background:var(--nebula-white);color:var(--nebula-blue);border:1.5px solid var(--nebula-gray-100)}
+.btn-secondary:hover{border-color:var(--nebula-light);background:rgba(91,192,235,0.05)}
+.btn-ghost{background:transparent;color:var(--nebula-gray-500)}.btn-ghost:hover{background:var(--nebula-gray-100);color:var(--nebula-deep)}
+.btn-dark{background:var(--nebula-deep);color:white;box-shadow:0 4px 14px rgba(15,52,96,0.3)}.btn-dark:hover{background:var(--nebula-dark);transform:translateY(-1px)}
+.btn-sm{padding:var(--space-2) var(--space-4);font-size:13px;border-radius:var(--radius-sm)}
+.btn-lg{padding:var(--space-4) var(--space-8);font-size:17px;border-radius:var(--radius-lg)}
+.btn-group{display:inline-flex;gap:var(--space-3)}
+
+.card{background:white;border-radius:var(--radius-lg);border:1px solid var(--nebula-gray-100);transition:all var(--transition-normal)}
+.card:hover{border-color:var(--nebula-gray-200);box-shadow:var(--shadow-lg);transform:translateY(-2px)}
+.card-header{padding:var(--space-6) var(--space-6) 0}.card-body{padding:var(--space-6)}.card-footer{padding:0 var(--space-6) var(--space-6)}
+.card-title{font-size:18px;font-weight:600;color:var(--nebula-deep);margin-bottom:var(--space-2)}
+.card-text{font-size:14px;color:var(--nebula-gray-400);line-height:1.6}
+.card-nebula{background:linear-gradient(135deg,var(--nebula-deep),var(--nebula-dark));color:white;border:none}
+.card-nebula .card-title{color:white}.card-nebula .card-text{color:rgba(255,255,255,0.7)}
+
+.form-group{margin-bottom:var(--space-5)}
+.form-label{display:block;font-size:14px;font-weight:500;color:var(--nebula-gray-600);margin-bottom:var(--space-2)}
+.form-label-required::after{content:' *';color:var(--nebula-danger)}
+.form-input,.form-textarea,.form-select{width:100%;padding:var(--space-3) var(--space-4);font-family:var(--font-sans);font-size:15px;color:var(--nebula-gray-700);background:white;border:1.5px solid var(--nebula-gray-100);border-radius:var(--radius-md);transition:all var(--transition-fast)}
+.form-input:focus,.form-textarea:focus,.form-select:focus{outline:none;border-color:var(--nebula-light);box-shadow:0 0 0 3px rgba(91,192,235,0.15)}
+.form-input::placeholder{color:var(--nebula-gray-300)}.form-textarea{min-height:120px;resize:vertical}
+.form-input-error{border-color:var(--nebula-danger)!important}.form-input-error:focus{box-shadow:0 0 0 3px rgba(239,68,68,0.15)!important}
+.form-error-msg{font-size:13px;color:var(--nebula-danger);margin-top:var(--space-1)}
+.form-hint{font-size:13px;color:var(--nebula-gray-300);margin-top:var(--space-1)}
+.input-group{display:flex}.input-group .form-input{border-radius:var(--radius-md) 0 0 var(--radius-md);border-right:none}
+.input-group .btn{border-radius:0 var(--radius-md) var(--radius-md) 0}
+.input-group-text{display:flex;align-items:center;padding:0 var(--space-4);background:var(--nebula-gray-100);border:1.5px solid var(--nebula-gray-100);border-right:none;font-size:14px;color:var(--nebula-gray-400)}
+
+.checkbox,.radio{display:flex;align-items:center;gap:var(--space-3);cursor:pointer;font-size:15px;color:var(--nebula-gray-600)}
+.checkbox input,.radio input{display:none}
+.checkbox-box,.radio-circle{width:20px;height:20px;border:2px solid var(--nebula-gray-200);border-radius:var(--radius-sm);display:flex;align-items:center;justify-content:center;transition:all var(--transition-fast);flex-shrink:0}
+.radio-circle{border-radius:50%}
+.checkbox input:checked+.checkbox-box{background:var(--nebula-blue);border-color:var(--nebula-blue)}
+.checkbox input:checked+.checkbox-box::after{content:'';width:6px;height:10px;border:solid white;border-width:0 2px 2px 0;transform:rotate(45deg) translateY(-1px)}
+.radio input:checked+.radio-circle{border-color:var(--nebula-blue);border-width:5px}
+
+.toggle{display:flex;align-items:center;gap:var(--space-3);cursor:pointer;font-size:15px;color:var(--nebula-gray-600)}
+.toggle input{display:none}
+.toggle-track{width:44px;height:24px;background:var(--nebula-gray-200);border-radius:var(--radius-full);position:relative;transition:background var(--transition-fast)}
+.toggle-track::after{content:'';position:absolute;top:2px;left:2px;width:20px;height:20px;background:white;border-radius:50%;box-shadow:var(--shadow-sm);transition:transform var(--transition-fast)}
+.toggle input:checked+.toggle-track{background:var(--nebula-blue)}
+.toggle input:checked+.toggle-track::after{transform:translateX(20px)}
+
+.badge{display:inline-flex;align-items:center;padding:var(--space-1) var(--space-3);font-size:12px;font-weight:600;border-radius:var(--radius-full);line-height:1.4}
+.badge-primary{background:rgba(46,134,222,0.1);color:var(--nebula-blue)}
+.badge-success{background:rgba(16,185,129,0.1);color:var(--nebula-success)}
+.badge-warning{background:rgba(245,158,11,0.1);color:var(--nebula-warning)}
+.badge-danger{background:rgba(239,68,68,0.1);color:var(--nebula-danger)}
+.badge-ghost{background:var(--nebula-gray-100);color:var(--nebula-gray-400)}
+
+.alert{display:flex;align-items:flex-start;gap:var(--space-3);padding:var(--space-4);border-radius:var(--radius-md);font-size:14px}
+.alert-info{background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.2);color:var(--nebula-info)}
+.alert-success{background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.2);color:var(--nebula-success)}
+.alert-warning{background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.2);color:var(--nebula-warning)}
+.alert-danger{background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);color:var(--nebula-danger)}
+
+.modal-overlay{position:fixed;inset:0;background:rgba(15,52,96,0.4);backdrop-filter:blur(4px);z-index:2000;display:flex;align-items:center;justify-content:center;opacity:0;visibility:hidden;transition:all var(--transition-normal)}
+.modal-overlay.active{opacity:1;visibility:visible}
+.modal{background:white;border-radius:var(--radius-xl);box-shadow:var(--shadow-xl);max-width:520px;width:90%;transform:scale(0.95) translateY(10px);transition:transform var(--transition-normal)}
+.modal-overlay.active .modal{transform:scale(1) translateY(0)}
+.modal-header{padding:var(--space-6) var(--space-6) 0;display:flex;justify-content:space-between;align-items:center}
+.modal-title{font-size:20px;font-weight:600;color:var(--nebula-deep)}
+.modal-close{background:none;border:none;font-size:24px;color:var(--nebula-gray-300);cursor:pointer}.modal-close:hover{color:var(--nebula-gray-500)}
+.modal-body{padding:var(--space-4) var(--space-6)}.modal-footer{padding:0 var(--space-6) var(--space-6);display:flex;gap:var(--space-3);justify-content:flex-end}
+
+.dropdown{position:relative;display:inline-block}
+.dropdown-menu{position:absolute;top:calc(100% + 8px);right:0;background:white;border-radius:var(--radius-lg);border:1px solid var(--nebula-gray-100);box-shadow:var(--shadow-lg);min-width:200px;opacity:0;visibility:hidden;transform:translateY(-4px);transition:all var(--transition-fast);z-index:100}
+.dropdown:hover .dropdown-menu{opacity:1;visibility:visible;transform:translateY(0)}
+.dropdown-item{display:flex;align-items:center;gap:var(--space-3);padding:var(--space-3) var(--space-4);font-size:14px;color:var(--nebula-gray-600);cursor:pointer;transition:all var(--transition-fast)}
+.dropdown-item:hover{background:var(--nebula-gray-100);color:var(--nebula-deep)}
+.dropdown-divider{height:1px;background:var(--nebula-gray-100);margin:var(--space-2) 0}
+
+.table-wrap{overflow-x:auto;border-radius:var(--radius-lg);border:1px solid var(--nebula-gray-100)}
+.table{width:100%;border-collapse:collapse;font-size:14px}
+.table th,.table td{padding:var(--space-4) var(--space-5);text-align:left}
+.table th{background:var(--nebula-gray-100);font-weight:600;color:var(--nebula-gray-600);font-size:13px;text-transform:uppercase;letter-spacing:0.5px}
+.table td{border-bottom:1px solid var(--nebula-gray-100);color:var(--nebula-gray-500)}
+.table tr:last-child td{border-bottom:none}.table tr:hover td{background:rgba(91,192,235,0.03)}
+
+.pagination{display:flex;align-items:center;gap:var(--space-2)}
+.pagination-btn{display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:var(--radius-md);border:1px solid var(--nebula-gray-100);background:white;font-size:14px;color:var(--nebula-gray-500);cursor:pointer;transition:all var(--transition-fast)}
+.pagination-btn:hover{border-color:var(--nebula-light);color:var(--nebula-blue)}
+.pagination-btn.active{background:var(--nebula-blue);color:white;border-color:var(--nebula-blue)}
+.pagination-btn:disabled{opacity:0.4;cursor:not-allowed}
+
+.progress{height:8px;background:var(--nebula-gray-100);border-radius:var(--radius-full);overflow:hidden}
+.progress-bar{height:100%;border-radius:var(--radius-full);background:linear-gradient(90deg,var(--nebula-light),var(--nebula-blue));transition:width var(--transition-slow)}
+.progress-bar-success{background:var(--nebula-success)}.progress-bar-warning{background:var(--nebula-warning)}.progress-bar-danger{background:var(--nebula-danger)}
+
+.spinner{width:24px;height:24px;border:2.5px solid var(--nebula-gray-100);border-top-color:var(--nebula-blue);border-radius:50%;animation:spin 0.8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.skeleton{background:linear-gradient(90deg,var(--nebula-gray-100) 25%,var(--nebula-gray-200) 50%,var(--nebula-gray-100) 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:var(--radius-md)}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+
+.avatar{display:inline-flex;align-items:center;justify-content:center;border-radius:50%;font-weight:600;color:white;flex-shrink:0;background:linear-gradient(135deg,var(--nebula-light),var(--nebula-blue))}
+.avatar-sm{width:32px;height:32px;font-size:13px}.avatar-md{width:40px;height:40px;font-size:15px}.avatar-lg{width:56px;height:56px;font-size:20px}.avatar-xl{width:80px;height:80px;font-size:28px}
+
+.timeline{position:relative;padding-left:32px}.timeline::before{content:'';position:absolute;left:11px;top:0;bottom:0;width:2px;background:var(--nebula-gray-100)}
+.timeline-item{position:relative;padding-bottom:var(--space-6)}.timeline-item:last-child{padding-bottom:0}
+.timeline-dot{position:absolute;left:-26px;top:4px;width:12px;height:12px;border-radius:50%;background:white;border:2px solid var(--nebula-blue)}
+.timeline-item.active .timeline-dot{background:var(--nebula-blue)}
+.timeline-time{font-size:12px;color:var(--nebula-gray-300);margin-bottom:var(--space-1)}
+.timeline-title{font-size:15px;font-weight:600;color:var(--nebula-deep)}.timeline-desc{font-size:14px;color:var(--nebula-gray-400);margin-top:var(--space-1)}
+
+.steps{display:flex;align-items:center;gap:var(--space-2)}.step{display:flex;align-items:center;gap:var(--space-2)}
+.step-circle{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;border:2px solid var(--nebula-gray-200);color:var(--nebula-gray-300);background:white;transition:all var(--transition-fast)}
+.step.active .step-circle{border-color:var(--nebula-blue);color:var(--nebula-blue)}.step.completed .step-circle{background:var(--nebula-blue);border-color:var(--nebula-blue);color:white}
+.step-label{font-size:13px;color:var(--nebula-gray-300);font-weight:500}.step.active .step-label{color:var(--nebula-deep)}
+.step-line{width:40px;height:2px;background:var(--nebula-gray-100)}.step.completed+.step-line{background:var(--nebula-blue)}
+
+.tabs{display:flex;gap:var(--space-1);border-bottom:1px solid var(--nebula-gray-100);margin-bottom:var(--space-6)}
+.tab{padding:var(--space-3) var(--space-5);font-size:15px;font-weight:500;color:var(--nebula-gray-400);border:none;background:none;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;transition:all var(--transition-fast);font-family:var(--font-sans)}
+.tab:hover{color:var(--nebula-gray-600)}.tab.active{color:var(--nebula-blue);border-bottom-color:var(--nebula-blue)}
+
+.accordion-item{border-bottom:1px solid var(--nebula-gray-100)}
+.accordion-header{display:flex;justify-content:space-between;align-items:center;padding:var(--space-4) 0;cursor:pointer;font-size:15px;font-weight:500;color:var(--nebula-deep);transition:color var(--transition-fast)}
+.accordion-header:hover{color:var(--nebula-blue)}.accordion-icon{transition:transform var(--transition-fast);font-size:18px}
+.accordion-item.open .accordion-icon{transform:rotate(180deg)}.accordion-body{max-height:0;overflow:hidden;transition:max-height var(--transition-slow),padding var(--transition-slow);font-size:14px;color:var(--nebula-gray-400);line-height:1.7}
+.accordion-item.open .accordion-body{max-height:300px;padding-bottom:var(--space-4)}
+
+.tooltip{position:relative}.tooltip-text{position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);background:var(--nebula-deep);color:white;font-size:12px;padding:var(--space-2) var(--space-3);border-radius:var(--radius-sm);white-space:nowrap;opacity:0;visibility:hidden;transition:all var(--transition-fast)}
+.tooltip:hover .tooltip-text{opacity:1;visibility:visible}
+
+.hero{min-height:100vh;display:flex;align-items:center;background:linear-gradient(135deg,var(--nebula-white) 0%,rgba(91,192,235,0.08) 50%,rgba(46,134,222,0.05) 100%);position:relative;overflow:hidden}
+.hero::before{content:'';position:absolute;top:-50%;right:-20%;width:800px;height:800px;background:radial-gradient(circle,rgba(91,192,235,0.12) 0%,transparent 70%);pointer-events:none}
+.hero-content{position:relative;z-index:1;max-width:640px}
+.hero-badge{display:inline-flex;align-items:center;gap:var(--space-2);padding:var(--space-2) var(--space-4);background:rgba(91,192,235,0.1);border:1px solid rgba(91,192,235,0.2);border-radius:var(--radius-full);font-size:13px;color:var(--nebula-blue);margin-bottom:var(--space-6)}
+.hero-title{margin-bottom:var(--space-5)}.hero-desc{font-size:18px;color:var(--nebula-gray-400);margin-bottom:var(--space-8);line-height:1.7}
+.hero-actions{display:flex;gap:var(--space-4);flex-wrap:wrap}
+
+.footer{background:var(--nebula-deep);color:rgba(255,255,255,0.7);padding:var(--space-16) 0 var(--space-8)}
+.footer-grid{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:var(--space-10);margin-bottom:var(--space-10)}
+.footer-brand{font-size:22px;font-weight:700;color:white;margin-bottom:var(--space-4);display:flex;align-items:center;gap:var(--space-3)}
+.footer-desc{font-size:14px;line-height:1.7;margin-bottom:var(--space-6)}
+.footer-title{font-size:14px;font-weight:600;color:white;margin-bottom:var(--space-4);text-transform:uppercase;letter-spacing:0.5px}
+.footer-links{list-style:none}.footer-links li{margin-bottom:var(--space-3)}
+.footer-links a{color:rgba(255,255,255,0.6);font-size:14px;transition:color var(--transition-fast)}.footer-links a:hover{color:var(--nebula-light)}
+.footer-bottom{border-top:1px solid rgba(255,255,255,0.1);padding-top:var(--space-6);display:flex;justify-content:space-between;align-items:center;font-size:13px}
+
+@media(max-width:1024px){.grid-4{grid-template-columns:repeat(2,1fr)}.footer-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:768px){.text-display{font-size:36px}h1{font-size:32px}h2{font-size:26px}.grid-2,.grid-3,.grid-4,.grid-5{grid-template-columns:1fr}.nav-links{display:none}.footer-grid{grid-template-columns:1fr}.hero-actions{flex-direction:column}.hero-actions .btn{width:100%}}
+
+.mt-4{margin-top:var(--space-4)}.mt-8{margin-top:var(--space-8)}.mt-12{margin-top:var(--space-12)}
+.mb-4{margin-bottom:var(--space-4)}.mb-8{margin-bottom:var(--space-8)}
+.p-6{padding:var(--space-6)}.text-center{text-align:center}.w-full{width:100%}
+</style>
+</head>
+<body>
+
+<nav class="navbar" id="navbar">
+  <div class="container navbar-inner">
+    <a href="#" class="logo-link">
+      <svg viewBox="0 0 120 120" width="36" height="36">
+        <defs><linearGradient id="navGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#5BC0EB"/><stop offset="100%" style="stop-color:#2E86DE"/></linearGradient></defs>
+        <ellipse cx="60" cy="60" rx="38" ry="18" fill="none" stroke="url(#navGrad)" stroke-width="4" transform="rotate(0 60 60)"/>
+        <ellipse cx="60" cy="60" rx="38" ry="18" fill="none" stroke="url(#navGrad)" stroke-width="4" transform="rotate(120 60 60)"/>
+        <ellipse cx="60" cy="60" rx="38" ry="18" fill="none" stroke="url(#navGrad)" stroke-width="4" transform="rotate(240 60 60)"/>
+        <circle cx="60" cy="60" r="10" fill="url(#navGrad)"/><circle cx="98" cy="44" r="5" fill="url(#navGrad)"/><circle cx="22" cy="44" r="5" fill="url(#navGrad)"/><circle cx="60" cy="98" r="5" fill="url(#navGrad)"/>
+      </svg>
+      <span>Xing-Cloud</span>
+    </a>
+    <ul class="nav-links">
+      <li><a href="#components">组件</a></li>
+      <li><a href="#colors">色彩</a></li>
+      <li><a href="#forms">表单</a></li>
+      <li><a href="#feedback">反馈</a></li>
+      <li><a href="#data">数据</a></li>
+    </ul>
+    <div class="btn-group">
+      <button class="btn btn-ghost btn-sm">登录</button>
+      <button class="btn btn-primary btn-sm">开始使用</button>
+    </div>
+  </div>
+</nav>
+
+<section class="hero" style="padding-top:72px">
+  <div class="container">
+    <div class="hero-content">
+      <div class="hero-badge">
+        <svg width="16" height="16" viewBox="0 0 120 120"><ellipse cx="60" cy="60" rx="38" ry="18" fill="none" stroke="#2E86DE" stroke-width="8" transform="rotate(0 60 60)"/><ellipse cx="60" cy="60" rx="38" ry="18" fill="none" stroke="#2E86DE" stroke-width="8" transform="rotate(120 60 60)"/><ellipse cx="60" cy="60" rx="38" ry="18" fill="none" stroke="#2E86DE" stroke-width="8" transform="rotate(240 60 60)"/><circle cx="60" cy="60" r="10" fill="#2E86DE"/></svg>
+        Xing-Cloud UI 组件库 v1.0
+      </div>
+      <h1 class="hero-title text-display">构建未来的<br><span class="text-gradient">数字体验</span></h1>
+      <p class="hero-desc">一套以Xing-Cloud品牌为核心的完整 UI 组件库，包含按钮、表单、卡片、导航、反馈等 30+ 组件，帮助您快速构建一致、美观、现代的网站界面。</p>
+      <div class="hero-actions">
+        <button class="btn btn-primary btn-lg">浏览组件</button>
+        <button class="btn btn-secondary btn-lg">查看文档</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="colors" class="mt-12" style="padding:var(--space-16) 0">
+  <div class="container">
+    <div class="text-center mb-8"><h2>品牌色彩系统</h2><p class="text-subtitle">以Xing-Cloud蓝为核心，构建完整的视觉层次</p></div>
+    <div class="grid grid-4">
+      <div class="card" style="overflow:hidden"><div style="height:120px;background:linear-gradient(135deg,#5BC0EB,#2E86DE)"></div><div class="card-body"><div class="card-title">Xing-Cloud渐变</div><div class="card-text">#5BC0EB → #2E86DE<br>用于按钮、重点元素</div></div></div>
+      <div class="card" style="overflow:hidden"><div style="height:120px;background:#1B4F8F"></div><div class="card-body"><div class="card-title">夜空藏蓝</div><div class="card-text">#1B4F8F<br>用于标题、强调</div></div></div>
+      <div class="card" style="overflow:hidden"><div style="height:120px;background:#0F3460"></div><div class="card-body"><div class="card-title">深空墨蓝</div><div class="card-text">#0F3460<br>用于深色背景、页脚</div></div></div>
+      <div class="card" style="overflow:hidden"><div style="height:120px;background:#F8FAFC;border-bottom:1px solid #e2e8f0"></div><div class="card-body"><div class="card-title">Xing-Cloud白</div><div class="card-text">#F8FAFC<br>用于大面积留白</div></div></div>
+    </div>
+    <div class="grid grid-4 mt-8">
+      <div style="text-align:center;padding:var(--space-6);background:rgba(16,185,129,0.08);border-radius:var(--radius-lg);border:1px solid rgba(16,185,129,0.2)"><div style="width:48px;height:48px;background:#10B981;border-radius:var(--radius-md);margin:0 auto var(--space-3)"></div><div style="font-weight:600;color:var(--nebula-success)">成功绿</div><div style="font-size:13px;color:var(--nebula-gray-400);margin-top:var(--space-1)">#10B981</div></div>
+      <div style="text-align:center;padding:var(--space-6);background:rgba(245,158,11,0.08);border-radius:var(--radius-lg);border:1px solid rgba(245,158,11,0.2)"><div style="width:48px;height:48px;background:#F59E0B;border-radius:var(--radius-md);margin:0 auto var(--space-3)"></div><div style="font-weight:600;color:var(--nebula-warning)">警示橙</div><div style="font-size:13px;color:var(--nebula-gray-400);margin-top:var(--space-1)">#F59E0B</div></div>
+      <div style="text-align:center;padding:var(--space-6);background:rgba(239,68,68,0.08);border-radius:var(--radius-lg);border:1px solid rgba(239,68,68,0.2)"><div style="width:48px;height:48px;background:#EF4444;border-radius:var(--radius-md);margin:0 auto var(--space-3)"></div><div style="font-weight:600;color:var(--nebula-danger)">危险红</div><div style="font-size:13px;color:var(--nebula-gray-400);margin-top:var(--space-1)">#EF4444</div></div>
+      <div style="text-align:center;padding:var(--space-6);background:rgba(59,130,246,0.08);border-radius:var(--radius-lg);border:1px solid rgba(59,130,246,0.2)"><div style="width:48px;height:48px;background:#3B82F6;border-radius:var(--radius-md);margin:0 auto var(--space-3)"></div><div style="font-weight:600;color:var(--nebula-info)">信息蓝</div><div style="font-size:13px;color:var(--nebula-gray-400);margin-top:var(--space-1)">#3B82F6</div></div>
+    </div>
+  </div>
+</section>
+
+<section id="components" style="padding:var(--space-16) 0;background:var(--nebula-white)">
+  <div class="container">
+    <div class="text-center mb-8"><h2>按钮组件</h2><p class="text-subtitle">多种样式与尺寸，满足不同交互场景</p></div>
+    <div class="card" style="margin-bottom:var(--space-8)">
+      <div class="card-body">
+        <h4 style="margin-bottom:var(--space-4)">按钮样式</h4>
+        <div style="display:flex;gap:var(--space-4);flex-wrap:wrap;align-items:center">
+          <button class="btn btn-primary">主要按钮</button>
+          <button class="btn btn-secondary">次要按钮</button>
+          <button class="btn btn-ghost">幽灵按钮</button>
+          <button class="btn btn-dark">深色按钮</button>
+        </div>
+        <h4 style="margin:var(--space-8) 0 var(--space-4)">按钮尺寸</h4>
+        <div style="display:flex;gap:var(--space-4);flex-wrap:wrap;align-items:center">
+          <button class="btn btn-primary btn-sm">小按钮</button>
+          <button class="btn btn-primary">默认</button>
+          <button class="btn btn-primary btn-lg">大按钮</button>
+        </div>
+        <h4 style="margin:var(--space-8) 0 var(--space-4)">按钮组</h4>
+        <div class="btn-group">
+          <button class="btn btn-primary">保存</button>
+          <button class="btn btn-secondary">取消</button>
+          <button class="btn btn-ghost">重置</button>
+        </div>
+        <h4 style="margin:var(--space-8) 0 var(--space-4)">加载状态</h4>
+        <div style="display:flex;gap:var(--space-4);flex-wrap:wrap;align-items:center">
+          <button class="btn btn-primary" disabled><span class="spinner" style="width:16px;height:16px;border-width:2px;margin-right:8px"></span>加载中</button>
+          <button class="btn btn-secondary" disabled>禁用状态</button>
+        </div>
+      </div>
+    </div>
+    <div class="text-center mb-8" style="margin-top:var(--space-12)"><h2>卡片组件</h2><p class="text-subtitle">信息容器，支持多种内容布局</p></div>
+    <div class="grid grid-3">
+      <div class="card">
+        <div class="card-body">
+          <div style="width:48px;height:48px;background:linear-gradient(135deg,var(--nebula-light),var(--nebula-blue));border-radius:var(--radius-md);display:flex;align-items:center;justify-content:center;margin-bottom:var(--space-4)"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></div>
+          <div class="card-title">快速响应</div>
+          <div class="card-text">基于现代浏览器优化，确保组件在所有设备上流畅运行，提供极致的用户体验。</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-body">
+          <div style="width:48px;height:48px;background:linear-gradient(135deg,var(--nebula-light),var(--nebula-blue));border-radius:var(--radius-md);display:flex;align-items:center;justify-content:center;margin-bottom:var(--space-4)"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg></div>
+          <div class="card-title">模块化设计</div>
+          <div class="card-text">每个组件独立封装，可灵活组合使用，轻松适配各种业务场景与设计需求。</div>
+        </div>
+      </div>
+      <div class="card card-nebula">
+        <div class="card-body">
+          <div style="width:48px;height:48px;background:rgba(255,255,255,0.15);border-radius:var(--radius-md);display:flex;align-items:center;justify-content:center;margin-bottom:var(--space-4)"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div>
+          <div class="card-title">品牌主题</div>
+          <div class="card-text">深色主题卡片，适合展示重点内容或作为特色模块，增强视觉层次感。</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="forms" style="padding:var(--space-16) 0;background:linear-gradient(180deg,var(--nebula-white),rgba(91,192,235,0.04))">
+  <div class="container">
+    <div class="text-center mb-8"><h2>表单组件</h2><p class="text-subtitle">完整的输入控件与验证体系</p></div>
+    <div class="grid grid-2">
+      <div class="card">
+        <div class="card-body">
+          <h4 style="margin-bottom:var(--space-6)">基础表单</h4>
+          <div class="form-group"><label class="form-label form-label-required">用户名</label><input type="text" class="form-input" placeholder="请输入用户名"></div>
+          <div class="form-group"><label class="form-label">电子邮箱</label><input type="email" class="form-input" placeholder="name@example.com"><div class="form-hint">我们将通过此邮箱向您发送验证链接。</div></div>
+          <div class="form-group"><label class="form-label form-label-required">密码</label><input type="password" class="form-input form-input-error" placeholder="••••••••" value="123456"><div class="form-error-msg">密码长度至少为 8 位字符</div></div>
+          <div class="form-group"><label class="form-label">备注</label><textarea class="form-textarea" placeholder="请输入备注信息..."></textarea></div>
+          <div class="form-group"><label class="form-label">选择类别</label><select class="form-select"><option>请选择...</option><option>产品设计</option><option>技术开发</option><option>品牌运营</option></select></div>
+          <button class="btn btn-primary w-full">提交表单</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-body">
+          <h4 style="margin-bottom:var(--space-6)">选择控件</h4>
+          <div style="margin-bottom:var(--space-6)">
+            <div style="font-size:14px;font-weight:500;color:var(--nebula-gray-600);margin-bottom:var(--space-3)">复选框</div>
+            <label class="checkbox" style="margin-bottom:var(--space-3)"><input type="checkbox" checked><span class="checkbox-box"></span>接收邮件通知</label>
+            <label class="checkbox" style="margin-bottom:var(--space-3)"><input type="checkbox"><span class="checkbox-box"></span>订阅产品更新</label>
+            <label class="checkbox"><input type="checkbox" checked><span class="checkbox-box"></span>同意服务条款</label>
+          </div>
+          <div style="margin-bottom:var(--space-6)">
+            <div style="font-size:14px;font-weight:500;color:var(--nebula-gray-600);margin-bottom:var(--space-3)">单选框</div>
+            <label class="radio" style="margin-bottom:var(--space-3)"><input type="radio" name="plan" checked><span class="radio-circle"></span>免费版</label>
+            <label class="radio" style="margin-bottom:var(--space-3)"><input type="radio" name="plan"><span class="radio-circle"></span>专业版</label>
+            <label class="radio"><input type="radio" name="plan"><span class="radio-circle"></span>企业版</label>
+          </div>
+          <div style="margin-bottom:var(--space-6)">
+            <div style="font-size:14px;font-weight:500;color:var(--nebula-gray-600);margin-bottom:var(--space-3)">开关</div>
+            <label class="toggle" style="margin-bottom:var(--space-3)"><input type="checkbox" checked><span class="toggle-track"></span>启用深色模式</label>
+            <label class="toggle"><input type="checkbox"><span class="toggle-track"></span>开启自动保存</label>
+          </div>
+          <div>
+            <div style="font-size:14px;font-weight:500;color:var(--nebula-gray-600);margin-bottom:var(--space-3)">输入框组合</div>
+            <div class="input-group"><span class="input-group-text">@</span><input type="text" class="form-input" placeholder="username"><button class="btn btn-primary">验证</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="feedback" style="padding:var(--space-16) 0">
+  <div class="container">
+    <div class="text-center mb-8"><h2>反馈组件</h2><p class="text-subtitle">提示、加载、进度等状态反馈</p></div>
+    <div class="grid grid-2">
+      <div class="card">
+        <div class="card-body">
+          <h4 style="margin-bottom:var(--space-4)">提示框 Alert</h4>
+          <div class="alert alert-info" style="margin-bottom:var(--space-3)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg><div>这是一条信息提示，用于传达一般性消息。</div></div>
+          <div class="alert alert-success" style="margin-bottom:var(--space-3)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg><div>操作成功！您的更改已保存。</div></div>
+          <div class="alert alert-warning" style="margin-bottom:var(--space-3)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg><div>请注意，此操作可能需要较长时间完成。</div></div>
+          <div class="alert alert-danger"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg><div>操作失败，请检查网络连接后重试。</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-body">
+          <h4 style="margin-bottom:var(--space-4)">徽章 & 标签</h4>
+          <div style="display:flex;gap:var(--space-2);flex-wrap:wrap;margin-bottom:var(--space-6)">
+            <span class="badge badge-primary">主要</span><span class="badge badge-success">成功</span><span class="badge badge-warning">警告</span><span class="badge badge-danger">危险</span><span class="badge badge-ghost">默认</span>
+          </div>
+          <h4 style="margin-bottom:var(--space-4)">进度条</h4>
+          <div style="margin-bottom:var(--space-4)"><div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:var(--space-2)"><span>上传进度</span><span>75%</span></div><div class="progress"><div class="progress-bar" style="width:75%"></div></div></div>
+          <div style="margin-bottom:var(--space-4)"><div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:var(--space-2)"><span>存储空间</span><span>92%</span></div><div class="progress"><div class="progress-bar progress-bar-warning" style="width:92%"></div></div></div>
+          <div style="margin-bottom:var(--space-6)"><div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:var(--space-2)"><span>系统负载</span><span>45%</span></div><div class="progress"><div class="progress-bar progress-bar-success" style="width:45%"></div></div></div>
+          <h4 style="margin-bottom:var(--space-4)">加载状态</h4>
+          <div style="display:flex;gap:var(--space-6);align-items:center"><div class="spinner"></div><div style="font-size:14px;color:var(--nebula-gray-400)">正在加载数据...</div></div>
+          <div style="margin-top:var(--space-4)"><div class="skeleton" style="height:16px;width:100%;margin-bottom:var(--space-2)"></div><div class="skeleton" style="height:16px;width:80%;margin-bottom:var(--space-2)"></div><div class="skeleton" style="height:16px;width:60%"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="data" style="padding:var(--space-16) 0;background:var(--nebula-white)">
+  <div class="container">
+    <div class="text-center mb-8"><h2>数据展示</h2><p class="text-subtitle">表格、时间线、步骤条等数据组件</p></div>
+    <div class="card" style="margin-bottom:var(--space-8)">
+      <div class="card-body">
+        <h4 style="margin-bottom:var(--space-4)">数据表格</h4>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr><th>项目</th><th>负责人</th><th>状态</th><th>进度</th><th>截止日期</th></tr></thead>
+            <tbody>
+              <tr><td style="font-weight:500;color:var(--nebula-deep)">Xing-Cloud官网重构</td><td><div style="display:flex;align-items:center;gap:8px"><div class="avatar avatar-sm">张</div>张明</div></td><td><span class="badge badge-success">进行中</span></td><td><div class="progress" style="width:120px"><div class="progress-bar" style="width:78%"></div></div></td><td style="color:var(--nebula-gray-300)">2026-08-15</td></tr>
+              <tr><td style="font-weight:500;color:var(--nebula-deep)">移动端适配</td><td><div style="display:flex;align-items:center;gap:8px"><div class="avatar avatar-sm" style="background:linear-gradient(135deg,#10B981,#059669)">李</div>李华</div></td><td><span class="badge badge-primary">待审核</span></td><td><div class="progress" style="width:120px"><div class="progress-bar" style="width:45%"></div></div></td><td style="color:var(--nebula-gray-300)">2026-09-01</td></tr>
+              <tr><td style="font-weight:500;color:var(--nebula-deep)">API 文档更新</td><td><div style="display:flex;align-items:center;gap:8px"><div class="avatar avatar-sm" style="background:linear-gradient(135deg,#F59E0B,#D97706)">王</div>王芳</div></td><td><span class="badge badge-ghost">已归档</span></td><td><div class="progress" style="width:120px"><div class="progress-bar progress-bar-success" style="width:100%"></div></div></td><td style="color:var(--nebula-gray-300)">2026-07-20</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:var(--space-4)">
+          <div style="font-size:13px;color:var(--nebula-gray-300)">共 3 条记录</div>
+          <div class="pagination">
+            <button class="pagination-btn" disabled>‹</button>
+            <button class="pagination-btn active">1</button>
+            <button class="pagination-btn">2</button>
+            <button class="pagination-btn">3</button>
+            <button class="pagination-btn">›</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="grid grid-2">
+      <div class="card">
+        <div class="card-body">
+          <h4 style="margin-bottom:var(--space-4)">时间线</h4>
+          <div class="timeline">
+            <div class="timeline-item active"><div class="timeline-dot"></div><div class="timeline-time">2026-07-08</div><div class="timeline-title">项目启动</div><div class="timeline-desc">Xing-Cloud品牌 UI 组件库正式进入开发阶段</div></div>
+            <div class="timeline-item active"><div class="timeline-dot"></div><div class="timeline-time">2026-07-15</div><div class="timeline-title">设计评审</div><div class="timeline-desc">完成全部组件的视觉设计与交互规范</div></div>
+            <div class="timeline-item"><div class="timeline-dot"></div><div class="timeline-time">2026-08-01</div><div class="timeline-title">开发完成</div><div class="timeline-desc">所有组件开发完毕，进入测试阶段</div></div>
+            <div class="timeline-item"><div class="timeline-dot"></div><div class="timeline-time">2026-08-15</div><div class="timeline-title">正式发布</div><div class="timeline-desc">Xing-Cloud UI 组件库 v1.0 正式上线</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-body">
+          <h4 style="margin-bottom:var(--space-4)">步骤条</h4>
+          <div class="steps" style="margin-bottom:var(--space-8)">
+            <div class="step completed"><div class="step-circle">✓</div><div class="step-label">注册</div></div>
+            <div class="step-line"></div>
+            <div class="step completed"><div class="step-circle">✓</div><div class="step-label">验证</div></div>
+            <div class="step-line"></div>
+            <div class="step active"><div class="step-circle">3</div><div class="step-label">配置</div></div>
+            <div class="step-line"></div>
+            <div class="step"><div class="step-circle">4</div><div class="step-label">完成</div></div>
+          </div>
+          <h4 style="margin-bottom:var(--space-4)">标签页</h4>
+          <div class="tabs"><button class="tab active">全部</button><button class="tab">进行中</button><button class="tab">已完成</button><button class="tab">已归档</button></div>
+          <div style="padding:var(--space-4);background:var(--nebula-gray-100);border-radius:var(--radius-md);font-size:14px;color:var(--nebula-gray-400)">当前显示「全部」项目内容...</div>
+          <h4 style="margin:var(--space-8) 0 var(--space-4)">手风琴</h4>
+          <div class="accordion-item open">
+            <div class="accordion-header" onclick="this.parentElement.classList.toggle('open')"><span>什么是Xing-Cloud UI 组件库？</span><span class="accordion-icon">▼</span></div>
+            <div class="accordion-body">Xing-Cloud UI 组件库是一套基于Xing-Cloud品牌视觉规范构建的完整前端组件系统，包含按钮、表单、卡片、导航、反馈等 30+ 组件，帮助开发者快速构建一致、美观、现代的网站界面。</div>
+          </div>
+          <div class="accordion-item">
+            <div class="accordion-header" onclick="this.parentElement.classList.toggle('open')"><span>如何开始使用？</span><span class="accordion-icon">▼</span></div>
+            <div class="accordion-body">您可以直接复制本页面中的 CSS 代码到您的项目中，所有组件均为纯 CSS + HTML 实现，无需任何外部依赖。组件采用 BEM 命名规范，易于定制和扩展。</div>
+          </div>
+          <div class="accordion-item">
+            <div class="accordion-header" onclick="this.parentElement.classList.toggle('open')"><span>支持响应式设计吗？</span><span class="accordion-icon">▼</span></div>
+            <div class="accordion-body">是的，所有组件均内置响应式支持。网格系统、导航栏、卡片等组件在移动端会自动适配，确保在各种设备上都能获得良好的用户体验。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section style="padding:var(--space-16) 0;background:linear-gradient(180deg,var(--nebula-white),rgba(91,192,235,0.04))">
+  <div class="container">
+    <div class="text-center mb-8"><h2>下拉菜单 & 模态框</h2><p class="text-subtitle">交互组件，提升用户体验</p></div>
+    <div class="grid grid-2">
+      <div class="card">
+        <div class="card-body">
+          <h4 style="margin-bottom:var(--space-4)">下拉菜单</h4>
+          <div class="dropdown">
+            <button class="btn btn-secondary">点击展开菜单 ▼</button>
+            <div class="dropdown-menu">
+              <div class="dropdown-item">📄 查看文档</div>
+              <div class="dropdown-item">✏️ 编辑信息</div>
+              <div class="dropdown-item">📊 导出数据</div>
+              <div class="dropdown-divider"></div>
+              <div class="dropdown-item" style="color:var(--nebula-danger)">🗑️ 删除项目</div>
+            </div>
+          </div>
+          <h4 style="margin:var(--space-8) 0 var(--space-4)">工具提示</h4>
+          <div style="display:flex;gap:var(--space-4)">
+            <div class="tooltip"><button class="btn btn-ghost">悬停查看</button><span class="tooltip-text">这是一个工具提示</span></div>
+            <div class="tooltip"><button class="btn btn-ghost">更多信息</button><span class="tooltip-text">点击了解详情</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-body">
+          <h4 style="margin-bottom:var(--space-4)">模态框</h4>
+          <button class="btn btn-primary" onclick="document.getElementById('modal1').classList.add('active')">打开模态框</button>
+          <div class="modal-overlay" id="modal1" onclick="if(event.target===this)this.classList.remove('active')">
+            <div class="modal">
+              <div class="modal-header"><div class="modal-title">确认操作</div><button class="modal-close" onclick="document.getElementById('modal1').classList.remove('active')">×</button></div>
+              <div class="modal-body"><p>您确定要执行此操作吗？此操作无法撤销。</p></div>
+              <div class="modal-footer"><button class="btn btn-secondary" onclick="document.getElementById('modal1').classList.remove('active')">取消</button><button class="btn btn-primary">确认</button></div>
+            </div>
+          </div>
+          <h4 style="margin:var(--space-8) 0 var(--space-4)">头像组件</h4>
+          <div style="display:flex;gap:var(--space-4);align-items:center">
+            <div class="avatar avatar-sm">张</div>
+            <div class="avatar avatar-md">李</div>
+            <div class="avatar avatar-lg">王</div>
+            <div class="avatar avatar-xl">Xing-Cloud</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="container">
+    <div class="footer-grid">
+      <div>
+        <div class="footer-brand">
+          <svg viewBox="0 0 120 120" width="28" height="28">
+            <ellipse cx="60" cy="60" rx="38" ry="18" fill="none" stroke="#5BC0EB" stroke-width="5" transform="rotate(0 60 60)"/>
+            <ellipse cx="60" cy="60" rx="38" ry="18" fill="none" stroke="#5BC0EB" stroke-width="5" transform="rotate(120 60 60)"/>
+            <ellipse cx="60" cy="60" rx="38" ry="18" fill="none" stroke="#5BC0EB" stroke-width="5" transform="rotate(240 60 60)"/>
+            <circle cx="60" cy="60" r="10" fill="#5BC0EB"/>
+            <circle cx="98" cy="44" r="5" fill="#5BC0EB"/>
+            <circle cx="22" cy="44" r="5" fill="#5BC0EB"/>
+            <circle cx="60" cy="98" r="5" fill="#5BC0EB"/>
+          </svg>
+          Xing-Cloud
+        </div>
+        <p class="footer-desc">Xing-Cloud UI 组件库是一套以品牌为核心的完整前端组件系统，致力于帮助开发者快速构建一致、美观、现代的数字产品。</p>
+      </div>
+      <div>
+        <div class="footer-title">产品</div>
+        <ul class="footer-links">
+          <li><a href="#">组件库</a></li>
+          <li><a href="#">设计规范</a></li>
+          <li><a href="#">图标系统</a></li>
+          <li><a href="#">更新日志</a></li>
+        </ul>
+      </div>
+      <div>
+        <div class="footer-title">资源</div>
+        <ul class="footer-links">
+          <li><a href="#">使用文档</a></li>
+          <li><a href="#">开发指南</a></li>
+          <li><a href="#">示例项目</a></li>
+          <li><a href="#">社区论坛</a></li>
+        </ul>
+      </div>
+      <div>
+        <div class="footer-title">关于</div>
+        <ul class="footer-links">
+          <li><a href="#">关于我们</a></li>
+          <li><a href="#">联系方式</a></li>
+          <li><a href="#">隐私政策</a></li>
+          <li><a href="#">服务条款</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <div>© 2026 Xing-Cloud Xing-Cloud. All rights reserved.</div>
+      <div>Made with 💙 by Xing-Cloud团队</div>
+    </div>
+  </div>
+</footer>
+
+<script>
+window.addEventListener('scroll', function() {
+  document.getElementById('navbar').classList.toggle('scrolled', window.scrollY > 10);
+});
+</script>
+
+</body>
+</html>

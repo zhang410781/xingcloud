@@ -1,6 +1,9 @@
+import base64
 import hashlib
+import hmac
 import json
 import re
+import time
 from collections import Counter, defaultdict
 from datetime import timedelta
 
@@ -35,6 +38,12 @@ CARD_ACTIONS = ['claim', 'mute']
 class SafeFormatDict(dict):
     def __missing__(self, key):
         return ''
+
+
+class NotificationDeliveryError(RuntimeError):
+    def __init__(self, message, response_body=''):
+        super().__init__(message)
+        self.response_body = response_body
 
 
 def _text(value, default=''):
@@ -397,13 +406,7 @@ def _render(value, alert, action='fire'):
 
 
 def _default_title(alert, action='fire'):
-    prefix = {
-        'fire': '告警触发',
-        'resolved': '告警恢复',
-        'escalation': '告警升级',
-        'test': '告警测试',
-    }.get(action, '告警通知')
-    return f'[{prefix}] {alert.title}'
+    return alert.title
 
 
 def _default_body(alert, action='fire'):
@@ -457,6 +460,26 @@ def _post_json(url, payload, timeout=8, headers=None):
     if response.status_code >= 400:
         raise RuntimeError(f'HTTP {response.status_code}: {text}')
     return text
+
+
+def _feishu_sign(secret):
+    timestamp = str(int(time.time()))
+    string_to_sign = f'{timestamp}\n{secret}'
+    digest = hmac.new(string_to_sign.encode('utf-8'), digestmod=hashlib.sha256).digest()
+    return timestamp, base64.b64encode(digest).decode('utf-8')
+
+
+def _post_feishu_json(url, payload, timeout=8):
+    response_body = _post_json(url, payload, timeout=timeout)
+    try:
+        data = json.loads(response_body)
+    except (TypeError, ValueError):
+        return response_body
+    code = data.get('code')
+    if code not in (None, 0, '0'):
+        message = data.get('msg') or data.get('message') or response_body
+        raise NotificationDeliveryError(f'Feishu API error {code}: {message}', response_body=response_body)
+    return response_body
 
 
 def _channel_url(channel):
@@ -557,8 +580,13 @@ def send_alert_notification(channel, alert, recipients, action='fire', rule=None
                         ],
                     },
                 }
+                secret = _text(config.get('secret') or config.get('sign_secret'))
+                if secret:
+                    timestamp, sign = _feishu_sign(secret)
+                    payload['timestamp'] = timestamp
+                    payload['sign'] = sign
                 request_summary['buttons'] = [item['action'] for item in buttons]
-                response_body = _post_json(url, payload, timeout=channel.timeout_seconds)
+                response_body = _post_feishu_json(url, payload, timeout=channel.timeout_seconds)
         elif channel.channel_type == AlertNotificationChannel.CHANNEL_WECOM:
             url = _channel_url(channel)
             if not url:
@@ -571,6 +599,10 @@ def send_alert_notification(channel, alert, recipients, action='fire', rule=None
         else:
             status = AlertNotificationLog.STATUS_SKIPPED
             response_body = '未知通知渠道'
+    except NotificationDeliveryError as exc:
+        status = AlertNotificationLog.STATUS_ERROR
+        response_body = exc.response_body
+        error_message = str(exc)
     except Exception as exc:
         status = AlertNotificationLog.STATUS_ERROR
         error_message = str(exc)

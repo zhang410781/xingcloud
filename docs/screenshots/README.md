@@ -4,7 +4,7 @@
 
 ## 当前保留截图
 
-- `xing-cloud-operation-flow.png`：XingCloud 运转逻辑总览图。
+- `xing-cloud-operation-flow.png`：Xing-Cloud 运转逻辑总览图。
 - `智能助手.png`：AIOps 智能助手页面截图。
 - `知识图谱.png`：知识图谱页面截图。
 - `事件中心.png`：事件中心页面截图。

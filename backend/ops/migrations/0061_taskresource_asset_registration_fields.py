@@ -1,4 +1,4 @@
-# Generated for XingCloud asset registration fields.
+# Generated for Xing-Cloud asset registration fields.
 
 from django.db import migrations, models
 

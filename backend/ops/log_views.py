@@ -1175,6 +1175,32 @@ def _clickhouse_search_condition(query, search_fields):
     return ' AND '.join(clauses)
 
 
+def _normalize_clickhouse_levels(payload):
+    levels = payload.get('levels')
+    if levels in (None, ''):
+        levels = payload.get('level') or payload.get('log_level')
+    if isinstance(levels, str):
+        levels = [item.strip() for item in levels.split(',')]
+    elif not isinstance(levels, (list, tuple, set)):
+        levels = [levels] if levels not in (None, '') else []
+    normalized = []
+    for item in levels:
+        text = str(item or '').strip()
+        if text and text.lower() not in {'*', 'all', 'any'}:
+            normalized.append(text.upper())
+    return normalized
+
+
+def _clickhouse_numeric_filter(value, field, operator):
+    if value is None or str(value).strip() == '':
+        return ''
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return ''
+    return f'{field} {operator} {number}'
+
+
 def _clickhouse_recommend_fields(columns):
     column_map = {item.get('name'): item for item in columns if item.get('name')}
     names = list(column_map.keys())
@@ -1369,6 +1395,19 @@ def _query_clickhouse(config, payload):
     search_condition = _clickhouse_search_condition(query, payload.get('search_fields') or collection.get('search_fields') or config.get('search_fields'))
     if search_condition:
         conditions.append(search_condition)
+    level_field = payload.get('level_field') or collection.get('level_field') or config.get('level_field') or ''
+    if level_field:
+        level_identifier = _clickhouse_identifier(level_field, 'level field')
+        levels = _normalize_clickhouse_levels(payload)
+        if levels:
+            level_values = ','.join(_clickhouse_literal(item) for item in levels)
+            conditions.append(f'upper(toString({level_identifier})) IN ({level_values})')
+        status_min_filter = _clickhouse_numeric_filter(payload.get('status_min'), level_identifier, '>=')
+        if status_min_filter:
+            conditions.append(status_min_filter)
+        status_max_filter = _clickhouse_numeric_filter(payload.get('status_max'), level_identifier, '<=')
+        if status_max_filter:
+            conditions.append(status_max_filter)
 
     limit = _sanitize_limit(payload.get('limit'))
     sql = (

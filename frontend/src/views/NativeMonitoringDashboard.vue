@@ -5,59 +5,22 @@
         <div class="hero-title-row">
           <span class="hero-icon"><el-icon><Histogram /></el-icon></span>
           <h2>监控看板</h2>
-          <p class="page-inline-desc">平台原生服务器、K8S 集群与日志看板，统一展示关键运行指标。</p>
+          <p class="page-inline-desc">Xing-Cloud JSON 看板引擎统一渲染基础设施、K8S、日志和中间件监控。</p>
         </div>
       </div>
       <div class="hero-actions">
-        <el-button size="small" @click="loadDataSources" :loading="loadingSources">
-          <el-icon><RefreshRight /></el-icon>
-          刷新数据源
-        </el-button>
-        <el-button size="small" type="primary" @click="loadDashboard" :loading="loadingDashboard">
-          <el-icon><DataAnalysis /></el-icon>
-          刷新看板
-        </el-button>
+        <el-button size="small" :icon="RefreshRight" :loading="loadingSources" @click="loadDataSources">刷新数据源</el-button>
+        <el-button size="small" :icon="Upload" @click="importVisible = true">导入 JSON</el-button>
+        <el-button size="small" :icon="Download" :disabled="!activeDefinitionId" @click="exportActiveDashboard">导出 JSON</el-button>
+        <el-button size="small" type="primary" :icon="DataAnalysis" :loading="loadingDashboard" @click="loadDashboard">刷新看板</el-button>
       </div>
     </section>
 
-    <ObservabilityRouteTabs group="boards" />
+    <ObservabilityRouteTabs group="observability" />
 
-    <section class="panel dashboard-definition-bar">
-      <div class="definition-selector">
-        <span>JSON 看板定义</span>
-        <el-select v-model="activeDefinitionId" size="small" filterable clearable placeholder="选择内置或导入的看板定义" @change="loadDashboard">
-          <el-option v-for="item in dashboardDefinitions" :key="item.id" :label="item.title" :value="item.id">
-            <span>{{ item.title }}</span>
-            <small>{{ (item.tags || []).join(' / ') }}</small>
-          </el-option>
-        </el-select>
-      </div>
-      <div class="definition-actions">
-        <el-button size="small" :loading="loadingDefinitions" @click="loadDashboardDefinitions">
-          <el-icon><RefreshRight /></el-icon>
-          刷新定义
-        </el-button>
-        <el-button size="small" @click="openImportDashboard">导入 JSON</el-button>
-        <el-button size="small" :disabled="!activeDefinitionId" @click="exportActiveDashboard">导出 JSON</el-button>
-      </div>
-    </section>
+    <DashboardCatalog v-model="activeDefinitionId" :dashboards="dashboardDefinitions" />
 
     <section class="panel native-monitor-control">
-      <div class="dashboard-switcher">
-        <button
-          v-for="item in dashboardOptions"
-          :key="item.key"
-          type="button"
-          class="dashboard-switch"
-          :class="{ active: filters.dashboard === item.key }"
-          @click="changeDashboard(item.key)"
-        >
-          <el-icon><component :is="item.icon" /></el-icon>
-          <span>{{ item.label }}</span>
-          <small>{{ item.hint }}</small>
-        </button>
-      </div>
-
       <div class="native-filter-grid">
         <div class="native-filter-item">
           <span>时间范围</span>
@@ -72,39 +35,29 @@
             :shortcuts="timeShortcuts"
           />
         </div>
-        <div v-if="isMetricDashboard" class="native-filter-item">
+        <div class="native-filter-item">
           <span>指标数据源</span>
-          <el-select v-model="filters.metricDatasourceId" size="small" filterable clearable placeholder="自动选择默认 Prometheus">
+          <el-select v-model="filters.metricDatasourceId" size="small" filterable clearable placeholder="默认 Prometheus">
             <el-option v-for="item in metricDataSources" :key="item.id" :label="sourceLabel(item)" :value="item.id" />
           </el-select>
         </div>
-        <template v-else>
-          <div class="native-filter-item">
-            <span>日志数据源</span>
-            <el-select v-model="filters.logDatasourceId" size="small" filterable clearable placeholder="选择 ClickHouse 日志源">
-              <el-option v-for="item in clickHouseSources" :key="item.id" :label="sourceLabel(item)" :value="item.id" />
-            </el-select>
-          </div>
-          <div class="native-filter-item">
-            <span>日志看板</span>
-            <el-segmented v-model="filters.logVariant" :options="logVariantOptions" size="small" />
-          </div>
-        </template>
+        <div class="native-filter-item">
+          <span>日志数据源</span>
+          <el-select v-model="filters.logDatasourceId" size="small" filterable clearable placeholder="ClickHouse 日志源">
+            <el-option v-for="item in clickHouseSources" :key="item.id" :label="sourceLabel(item)" :value="item.id" />
+          </el-select>
+        </div>
       </div>
 
-      <div v-if="filters.dashboard === 'logs'" class="native-filter-grid native-filter-grid--secondary">
-        <template v-if="filters.logVariant === 'container'">
-          <el-input v-model.trim="filters.namespace" size="small" placeholder="命名空间，多个用逗号分隔" clearable />
-          <el-input v-model.trim="filters.node" size="small" placeholder="节点，多个用逗号分隔" clearable />
-          <el-input v-model.trim="filters.podName" size="small" placeholder="Pod，多个用逗号分隔" clearable />
-          <el-input v-model.trim="filters.logLevel" size="small" placeholder="日志级别，例如 ERROR,INFO" clearable />
-        </template>
-        <template v-else>
-          <el-input v-model.trim="filters.domain" size="small" placeholder="域名，多个用逗号分隔" clearable />
-          <el-input v-model.trim="filters.serverIp" size="small" placeholder="服务 IP，多个用逗号分隔" clearable />
-          <el-input v-model.trim="filters.status" size="small" placeholder="状态码，例如 200,500" clearable />
-          <el-input v-model.trim="filters.clientIp" size="small" placeholder="客户端 IP，多个用逗号分隔" clearable />
-        </template>
+      <div class="native-filter-grid native-filter-grid--secondary">
+        <el-input v-model.trim="filters.namespace" size="small" placeholder="命名空间，多个用逗号分隔" clearable />
+        <el-input v-model.trim="filters.node" size="small" placeholder="节点，多个用逗号分隔" clearable />
+        <el-input v-model.trim="filters.podName" size="small" placeholder="Pod，多个用逗号分隔" clearable />
+        <el-input v-model.trim="filters.logLevel" size="small" placeholder="日志级别，例如 ERROR,INFO" clearable />
+        <el-input v-model.trim="filters.domain" size="small" placeholder="域名，多个用逗号分隔" clearable />
+        <el-input v-model.trim="filters.serverIp" size="small" placeholder="服务 IP，多个用逗号分隔" clearable />
+        <el-input v-model.trim="filters.status" size="small" placeholder="状态码，例如 200,500" clearable />
+        <el-input v-model.trim="filters.clientIp" size="small" placeholder="客户端 IP，多个用逗号分隔" clearable />
       </div>
     </section>
 
@@ -117,11 +70,11 @@
       :title="dashboardError"
     />
 
-    <section v-loading="loadingDashboard" class="native-dashboard-stage">
+    <section v-loading="loadingDashboard || loadingDefinitions" class="native-dashboard-stage">
       <div class="native-dashboard-head">
         <div>
-          <h3>{{ dashboardMeta.title || activeDashboardOption.label }}</h3>
-          <p>{{ dashboardMeta.description || activeDashboardOption.hint }}</p>
+          <h3>{{ dashboardMeta.title || activeDefinition?.title || '请选择看板定义' }}</h3>
+          <p>{{ dashboardMeta.description || activeDefinition?.description || '没有看板定义时，请导入 JSON 看板或启用内置看板。' }}</p>
         </div>
         <div class="dashboard-meta-pills">
           <span>{{ formatTimeRange(filters.timeRange) }}</span>
@@ -138,8 +91,14 @@
         </div>
       </div>
 
-      <div v-if="!panels.length && !loadingDashboard" class="panel native-empty-panel">
-        <el-empty description="暂无看板数据，请选择数据源后刷新" :image-size="90" />
+      <div v-if="!activeDefinitionId && !loadingDefinitions" class="panel native-empty-panel">
+        <el-empty description="暂无看板定义，请导入 JSON 看板或启用内置看板" :image-size="96">
+          <el-button @click="importVisible = true">导入 JSON</el-button>
+        </el-empty>
+      </div>
+
+      <div v-else-if="!panels.length && !loadingDashboard" class="panel native-empty-panel">
+        <el-empty description="当前看板暂无数据，请检查数据源后刷新" :image-size="90" />
       </div>
 
       <div v-if="statPanels.length" class="native-stat-grid">
@@ -193,14 +152,18 @@
         </article>
       </div>
     </section>
+
+    <JsonAssetImportDialog v-model="importVisible" @submit="importDashboardJson" />
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { DataAnalysis, Histogram, Monitor, RefreshRight, Search } from '@element-plus/icons-vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { DataAnalysis, Download, Histogram, RefreshRight, Upload } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
+import DashboardCatalog from '@/components/observability/DashboardCatalog.vue'
+import JsonAssetImportDialog from '@/components/observability/JsonAssetImportDialog.vue'
 import NativeDashboardChart from '@/components/observability/NativeDashboardChart.vue'
 import {
   exportDashboardDefinition,
@@ -209,19 +172,7 @@ import {
   getMetricDataSources,
   importDashboardDefinition,
   queryDashboardDefinition,
-  queryMonitoringDashboard,
 } from '@/api/modules/ops'
-
-const dashboardOptions = [
-  { key: 'server', label: '服务器看板', hint: '服务器 CPU、内存、磁盘、网络', icon: Monitor },
-  { key: 'kubernetes', label: 'K8S 集群看板', hint: '节点、Pod、命名空间、资源用量', icon: Histogram },
-  { key: 'logs', label: '日志看板', hint: '容器日志与 WEB 请求日志', icon: Search },
-]
-
-const logVariantOptions = [
-  { label: '容器日志', value: 'container' },
-  { label: 'WEB 请求', value: 'web' },
-]
 
 const timeShortcuts = [
   { text: '最近 15 分钟', value: () => [new Date(Date.now() - 15 * 60 * 1000), new Date()] },
@@ -235,6 +186,7 @@ const timeShortcuts = [
 const loadingSources = ref(false)
 const loadingDefinitions = ref(false)
 const loadingDashboard = ref(false)
+const importVisible = ref(false)
 const dashboardError = ref('')
 const metricDataSources = ref([])
 const logDataSources = ref([])
@@ -244,8 +196,6 @@ const dashboardPayload = ref({})
 const initialized = ref(false)
 
 const filters = reactive({
-  dashboard: 'kubernetes',
-  logVariant: 'container',
   metricDatasourceId: '',
   logDatasourceId: '',
   timeRange: [new Date(Date.now() - 60 * 60 * 1000), new Date()],
@@ -259,9 +209,8 @@ const filters = reactive({
   clientIp: '',
 })
 
-const activeDashboardOption = computed(() => dashboardOptions.find((item) => item.key === filters.dashboard) || dashboardOptions[1])
-const isMetricDashboard = computed(() => filters.dashboard !== 'logs')
 const clickHouseSources = computed(() => logDataSources.value.filter((item) => item.provider === 'clickhouse'))
+const activeDefinition = computed(() => dashboardDefinitions.value.find((item) => String(item.id) === String(activeDefinitionId.value)))
 const dashboardMeta = computed(() => dashboardPayload.value.dashboard || {})
 const panels = computed(() => Array.isArray(dashboardPayload.value.panels) ? dashboardPayload.value.panels : [])
 const statPanels = computed(() => panels.value.filter((panel) => panel.type === 'stat'))
@@ -270,26 +219,25 @@ const tablePanels = computed(() => panels.value.filter((panel) => ['table', 'log
 const okPanelCount = computed(() => panels.value.filter((panel) => panel.status !== 'warning').length)
 const currentMetricDatasource = computed(() => mergeDatasource(dashboardPayload.value.metric_datasource, metricDataSources.value, filters.metricDatasourceId))
 const currentLogDatasource = computed(() => mergeDatasource(dashboardPayload.value.log_datasource, clickHouseSources.value, filters.logDatasourceId))
-const currentDatasource = computed(() => (isMetricDashboard.value ? currentMetricDatasource.value : currentLogDatasource.value))
 const sourceSummary = computed(() => {
-  const source = currentDatasource.value
-  if (!source) return isMetricDashboard.value ? '未选择指标数据源' : '未选择日志数据源'
-  return source.is_default ? `${source.name}（默认）` : source.name
+  const metric = currentMetricDatasource.value?.name || '指标源未选择'
+  const log = currentLogDatasource.value?.name || '日志源未选择'
+  return `${metric} / ${log}`
 })
-const sourceStatusItems = computed(() => {
-  const source = currentDatasource.value
-  const sourceKind = isMetricDashboard.value ? 'Prometheus 指标源' : 'ClickHouse 日志源'
-  const scope = [source?.environment, source?.cluster_name].filter(Boolean).join(' / ') || '全局'
-  return [
-    { label: '看板类型', value: activeDashboardOption.value.label, detail: dashboardMeta.value.source_type || activeDashboardOption.value.hint },
-    { label: '当前数据源', value: source?.name || '未选择', detail: source ? `${sourceKind} / ${scope}` : sourceKind },
-    { label: '查询窗口', value: formatTimeRange(filters.timeRange), detail: `${okPanelCount.value}/${panels.value.length || 0} 个面板正常` },
-  ]
-})
+const sourceStatusItems = computed(() => [
+  { label: '看板定义', value: activeDefinition.value?.title || '未选择', detail: activeDefinition.value?.is_builtin ? '内置 JSON 看板' : '自定义 JSON 看板' },
+  { label: '指标数据源', value: currentMetricDatasource.value?.name || '未选择', detail: sourceScope(currentMetricDatasource.value) },
+  { label: '日志数据源', value: currentLogDatasource.value?.name || '未选择', detail: sourceScope(currentLogDatasource.value) },
+])
 
 function sourceLabel(item) {
   const extras = [item.environment, item.cluster_name].filter(Boolean).join(' / ')
   return extras ? `${item.name}（${extras}）` : item.name
+}
+
+function sourceScope(source) {
+  if (!source) return '等待选择'
+  return [source.environment, source.cluster_name].filter(Boolean).join(' / ') || '全局'
 }
 
 function mergeDatasource(primary, list, selectedId) {
@@ -309,32 +257,21 @@ function toTimestampMs(value) {
 }
 
 function buildDashboardPayload() {
-  const payload = {
-    dashboard: filters.dashboard,
+  return {
     start_ms: toTimestampMs(filters.timeRange?.[0]),
     end_ms: toTimestampMs(filters.timeRange?.[1]),
     step: 60,
+    metric_datasource_id: filters.metricDatasourceId || undefined,
+    log_datasource_id: filters.logDatasourceId || undefined,
+    namespace: commaList(filters.namespace),
+    node: commaList(filters.node),
+    pod_name: commaList(filters.podName),
+    log_level: commaList(filters.logLevel),
+    domain: commaList(filters.domain),
+    server_ip: commaList(filters.serverIp),
+    status: commaList(filters.status),
+    client_ip: commaList(filters.clientIp),
   }
-  payload.metric_datasource_id = filters.metricDatasourceId || undefined
-  payload.log_datasource_id = filters.logDatasourceId || undefined
-  if (isMetricDashboard.value) {
-    payload.metric_datasource_id = filters.metricDatasourceId || undefined
-  } else {
-    payload.log_datasource_id = filters.logDatasourceId || undefined
-    payload.log_dashboard = filters.logVariant
-    if (filters.logVariant === 'container') {
-      payload.namespace = commaList(filters.namespace)
-      payload.node = commaList(filters.node)
-      payload.pod_name = commaList(filters.podName)
-      payload.log_level = commaList(filters.logLevel)
-    } else {
-      payload.domain = commaList(filters.domain)
-      payload.server_ip = commaList(filters.serverIp)
-      payload.status = commaList(filters.status)
-      payload.client_ip = commaList(filters.clientIp)
-    }
-  }
-  return payload
 }
 
 async function loadDataSources() {
@@ -344,8 +281,8 @@ async function loadDataSources() {
       getMetricDataSources({ is_enabled: true }, { skipErrorMessage: true }),
       getLogDataSources({ is_enabled: true }, { skipErrorMessage: true }),
     ])
-    metricDataSources.value = Array.isArray(metrics.value) ? metrics.value : metrics.value?.results || []
-    logDataSources.value = Array.isArray(logs.value) ? logs.value : logs.value?.results || []
+    metricDataSources.value = listOf(metrics.value)
+    logDataSources.value = listOf(logs.value)
     if (!filters.metricDatasourceId && metricDataSources.value.length) {
       filters.metricDatasourceId = metricDataSources.value.find((item) => item.is_default)?.id || metricDataSources.value[0].id
     }
@@ -361,7 +298,7 @@ async function loadDashboardDefinitions() {
   loadingDefinitions.value = true
   try {
     const response = await getDashboardDefinitions({ is_enabled: true })
-    dashboardDefinitions.value = Array.isArray(response) ? response : response?.results || []
+    dashboardDefinitions.value = listOf(response)
     if (!activeDefinitionId.value && dashboardDefinitions.value.length) {
       activeDefinitionId.value = dashboardDefinitions.value[0].id
     }
@@ -370,24 +307,12 @@ async function loadDashboardDefinitions() {
   }
 }
 
-async function openImportDashboard() {
-  try {
-    const { value } = await ElMessageBox.prompt('粘贴看板 JSON 定义', '导入看板', {
-      inputType: 'textarea',
-      inputPlaceholder: '{"title":"...","panels":[...]}',
-      confirmButtonText: '导入',
-      cancelButtonText: '取消',
-    })
-    const definition = JSON.parse(value)
-    const created = await importDashboardDefinition(definition)
-    ElMessage.success('看板定义已导入')
-    await loadDashboardDefinitions()
-    activeDefinitionId.value = created.id
-    await loadDashboard()
-  } catch (error) {
-    if (error === 'cancel' || error === 'close') return
-    ElMessage.error(error.response?.data?.detail || error.message || '导入失败')
-  }
+async function importDashboardJson(definition) {
+  const created = await importDashboardDefinition(definition)
+  ElMessage.success('看板定义已导入')
+  await loadDashboardDefinitions()
+  activeDefinitionId.value = created.id
+  await loadDashboard()
 }
 
 async function exportActiveDashboard() {
@@ -404,12 +329,13 @@ async function exportActiveDashboard() {
 
 async function loadDashboard() {
   dashboardError.value = ''
+  if (!activeDefinitionId.value) {
+    dashboardPayload.value = {}
+    return
+  }
   loadingDashboard.value = true
   try {
-    const payload = buildDashboardPayload()
-    dashboardPayload.value = activeDefinitionId.value
-      ? await queryDashboardDefinition(activeDefinitionId.value, payload, { timeout: 60000 })
-      : await queryMonitoringDashboard(payload, { timeout: 60000 })
+    dashboardPayload.value = await queryDashboardDefinition(activeDefinitionId.value, buildDashboardPayload(), { timeout: 60000 })
   } catch (error) {
     dashboardPayload.value = {}
     dashboardError.value = error.response?.data?.detail || error.message || '看板数据加载失败'
@@ -418,14 +344,12 @@ async function loadDashboard() {
   }
 }
 
-function changeDashboard(key) {
-  activeDefinitionId.value = ''
-  filters.dashboard = key
-  loadDashboard()
-}
-
 function reloadDashboardIfReady() {
   if (initialized.value) loadDashboard()
+}
+
+function listOf(response) {
+  return Array.isArray(response) ? response : (response?.results || [])
 }
 
 function tableRows(panel) {
@@ -480,8 +404,21 @@ function panelTone(panel) {
   return 'is-ok'
 }
 
+watch(activeDefinitionId, () => reloadDashboardIfReady())
+
 watch(
-  () => [filters.metricDatasourceId, filters.logDatasourceId, filters.logVariant],
+  () => [
+    filters.metricDatasourceId,
+    filters.logDatasourceId,
+    filters.namespace,
+    filters.node,
+    filters.podName,
+    filters.logLevel,
+    filters.domain,
+    filters.serverIp,
+    filters.status,
+    filters.clientIp,
+  ],
   () => reloadDashboardIfReady(),
 )
 
@@ -516,165 +453,44 @@ onMounted(async () => {
   gap: 16px;
 }
 
-.hero-title-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.hero-title-row h2 {
-  margin: 0;
-  font-size: 22px;
-  color: #0f172a;
-}
-
-.hero-icon {
-  width: 34px;
-  height: 34px;
-  display: inline-grid;
-  place-items: center;
-  border-radius: 8px;
-  background: #e0f2fe;
-  color: #0369a1;
-}
-
-.page-inline-desc {
-  margin: 0;
-  color: #64748b;
-  font-size: 13px;
-}
-
-.hero-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
 .native-monitor-control {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.dashboard-definition-bar {
-  align-items: center;
-  display: flex;
+  display: grid;
   gap: 12px;
-  justify-content: space-between;
-}
-
-.definition-selector {
-  align-items: center;
-  display: grid;
-  gap: 8px;
-  grid-template-columns: 110px minmax(260px, 420px);
-}
-
-.definition-selector > span {
-  color: #475569;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.definition-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-end;
-}
-
-.dashboard-switcher {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.dashboard-switch {
-  min-height: 82px;
-  border: 1px solid #dbe3ef;
-  background: #fff;
-  border-radius: 8px;
-  padding: 12px;
-  display: grid;
-  grid-template-columns: 28px 1fr;
-  grid-template-areas: "icon title" "icon hint";
-  gap: 3px 10px;
-  text-align: left;
-  color: #334155;
-  cursor: pointer;
-}
-
-.dashboard-switch :deep(.el-icon) {
-  grid-area: icon;
-  align-self: center;
-  font-size: 22px;
-  color: #2563eb;
-}
-
-.dashboard-switch span {
-  grid-area: title;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.dashboard-switch small {
-  grid-area: hint;
-  color: #64748b;
-  line-height: 1.4;
-}
-
-.dashboard-switch.active {
-  border-color: #2563eb;
-  background: #eff6ff;
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.08);
 }
 
 .native-filter-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  align-items: end;
+  grid-template-columns: repeat(3, minmax(220px, 1fr));
+  gap: 12px;
 }
 
 .native-filter-grid--secondary {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(180px, 1fr));
 }
 
 .native-filter-item {
-  display: flex;
-  flex-direction: column;
+  display: grid;
   gap: 6px;
 }
 
-.native-filter-item > span {
-  color: #475569;
+.native-filter-item span {
+  color: #64748b;
   font-size: 12px;
-  font-weight: 700;
-}
-
-.native-filter-item :deep(.el-select),
-.native-filter-item :deep(.el-date-editor) {
-  width: 100%;
-}
-
-.native-monitor-alert {
-  margin: 0;
 }
 
 .native-dashboard-stage {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  min-height: 260px;
+  min-height: 320px;
 }
 
 .native-dashboard-head {
   display: flex;
-  justify-content: space-between;
-  gap: 14px;
   align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 4px 2px;
 }
 
 .native-dashboard-head h3 {
@@ -684,9 +500,8 @@ onMounted(async () => {
 }
 
 .native-dashboard-head p {
-  margin: 4px 0 0;
+  margin: 6px 0 0;
   color: #64748b;
-  font-size: 13px;
 }
 
 .dashboard-meta-pills {
@@ -697,104 +512,80 @@ onMounted(async () => {
 }
 
 .dashboard-meta-pills span {
-  background: #f1f5f9;
-  border: 1px solid #e2e8f0;
+  padding: 6px 10px;
   border-radius: 999px;
-  padding: 5px 9px;
-  color: #475569;
+  background: #eff6ff;
+  color: #1d4ed8;
   font-size: 12px;
 }
 
 .native-source-strip {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
+  gap: 12px;
 }
 
 .native-source-item {
-  min-height: 72px;
-  border: 1px solid #e2e8f0;
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid rgba(226, 232, 240, 0.86);
   border-radius: 8px;
-  background: #f8fafc;
-  padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  min-width: 0;
+  background: #fff;
 }
 
-.native-source-item span {
+.native-source-item span,
+.native-source-item small {
   color: #64748b;
   font-size: 12px;
-  font-weight: 700;
 }
 
 .native-source-item strong {
   color: #0f172a;
-  font-size: 15px;
-  line-height: 1.25;
-  overflow-wrap: anywhere;
-}
-
-.native-source-item small {
-  color: #64748b;
-  line-height: 1.35;
-  overflow-wrap: anywhere;
 }
 
 .native-empty-panel {
-  min-height: 240px;
   display: grid;
   place-items: center;
+  min-height: 280px;
 }
 
 .native-stat-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
 }
 
 .native-stat-card {
-  display: flex;
-  flex-direction: column;
+  display: grid;
   gap: 8px;
-  min-height: 112px;
-  border-left: 4px solid #2563eb;
+  padding: 14px;
+  border-radius: 8px;
 }
 
-.native-stat-card span {
+.native-stat-card span,
+.native-stat-card small {
   color: #64748b;
-  font-size: 13px;
 }
 
 .native-stat-card strong {
   color: #0f172a;
   font-size: 28px;
-  line-height: 1;
-}
-
-.native-stat-card small {
-  color: #64748b;
-  line-height: 1.4;
 }
 
 .native-stat-card.is-danger {
-  border-left-color: #dc2626;
+  border-color: rgba(239, 68, 68, 0.2);
 }
 
-.native-stat-card.is-caution {
-  border-left-color: #d97706;
-}
-
+.native-stat-card.is-caution,
 .native-stat-card.is-warning {
-  border-left-color: #f59e0b;
-  background: #fffbeb;
+  border-color: rgba(245, 158, 11, 0.24);
 }
 
 .native-panel-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 14px;
 }
 
 .native-panel-grid--wide {
@@ -803,6 +594,8 @@ onMounted(async () => {
 
 .native-data-panel {
   min-width: 0;
+  padding: 14px;
+  border-radius: 8px;
 }
 
 .native-panel-head {
@@ -820,35 +613,32 @@ onMounted(async () => {
 }
 
 .native-panel-head span {
-  display: inline-block;
-  margin-top: 3px;
+  display: block;
+  margin-top: 4px;
   color: #64748b;
   font-size: 12px;
 }
 
 .native-panel-warning {
-  min-height: 220px;
+  min-height: 260px;
   display: grid;
   place-items: center;
   color: #b45309;
   background: #fffbeb;
-  border: 1px solid #fde68a;
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 18px;
-  text-align: center;
 }
 
 .native-table-wrap {
   overflow: auto;
   border: 1px solid #e2e8f0;
-  border-radius: 6px;
+  border-radius: 8px;
 }
 
 .native-table-wrap table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 760px;
-  font-size: 12px;
+  min-width: 720px;
 }
 
 .native-table-wrap th,
@@ -856,62 +646,34 @@ onMounted(async () => {
   padding: 9px 10px;
   border-bottom: 1px solid #e2e8f0;
   text-align: left;
-  color: #334155;
+  color: #475569;
+  font-size: 12px;
   vertical-align: top;
-  max-width: 320px;
-  overflow-wrap: anywhere;
 }
 
 .native-table-wrap th {
   background: #f8fafc;
-  color: #475569;
+  color: #334155;
   font-weight: 700;
-  white-space: nowrap;
 }
 
 .native-table-empty {
-  padding: 30px;
+  padding: 28px;
   text-align: center;
   color: #94a3b8;
 }
 
-@media (max-width: 1100px) {
-  .dashboard-definition-bar {
+@media (max-width: 920px) {
+  .native-monitor-hero,
+  .native-dashboard-head {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .definition-selector {
-    grid-template-columns: 1fr;
-  }
-
-  .dashboard-switcher,
   .native-filter-grid,
   .native-filter-grid--secondary,
-  .native-source-strip,
-  .native-stat-grid,
-  .native-panel-grid {
-    grid-template-columns: 1fr 1fr;
-  }
-}
-
-@media (max-width: 720px) {
-  .native-monitor-hero,
-  .native-dashboard-head {
-    flex-direction: column;
-  }
-
-  .dashboard-switcher,
-  .native-filter-grid,
-  .native-filter-grid--secondary,
-  .native-source-strip,
-  .native-stat-grid,
-  .native-panel-grid {
+  .native-source-strip {
     grid-template-columns: 1fr;
-  }
-
-  .dashboard-meta-pills {
-    justify-content: flex-start;
   }
 }
 </style>

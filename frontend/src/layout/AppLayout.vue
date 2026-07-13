@@ -7,7 +7,7 @@
         </div>
         <div class="logo-copy">
           <span class="logo-text">Xing-Cloud</span>
-          <span class="logo-subtext">AI Agent</span>
+          <span class="logo-subtext">一屏观测，全程闭环</span>
         </div>
       </div>
 
@@ -232,9 +232,11 @@ const menuItems = [
     icon: 'DataLine',
     children: [
       { path: '/observability/overview', title: '平台总览', icon: 'DataLine', anyPermissions: observabilityOverviewPermissions },
+      { path: '/observability/alerts', title: '告警中心', icon: 'Bell', anyPermissions: ['ops.alert.view', 'ops.alert.config.view'] },
       { path: '/observability/dashboards', title: '监控看板', icon: 'Histogram', anyPermissions: observabilityBoardPermissions },
-      { path: '/logs', title: '日志中心', icon: 'Search', anyPermissions: ['ops.log.query', 'ops.log.datasource.view'] },
-      { path: '/alerts', title: '告警中心', icon: 'Bell', anyPermissions: ['ops.alert.view', 'ops.alert.config.view'] },
+      { path: '/observability/metrics', title: '指标查询', icon: 'DataAnalysis', anyPermissions: ['ops.metric.query', 'ops.metric.datasource.view'] },
+      { path: '/logs/query', title: '日志查询', icon: 'Search', anyPermissions: ['ops.log.query', 'ops.log.datasource.view'] },
+      { path: '/observability/datasources', title: '数据源', icon: 'DataBoard', anyPermissions: ['ops.metric.datasource.view', 'ops.log.datasource.view'] },
     ],
   },
   {
@@ -262,6 +264,7 @@ const menuItems = [
     icon: 'Files',
     children: [
       { path: '/assets/registration', title: '资产登记', icon: 'Monitor', anyPermissions: ['ops.task.resource.view', 'ops.task.resource.manage'] },
+      { path: '/assets/middleware', title: '中间件资产', icon: 'Coin', anyPermissions: ['ops.middleware.view', 'ops.middleware.manage'] },
     ],
   },
   {
@@ -303,11 +306,11 @@ const observabilityBoardPaths = new Set([
 const observabilityLogPaths = new Set([
   '/logs',
   '/logs/query',
-  '/logs/datasources',
 ])
 const observabilityDatasourcePaths = new Set([
   '/observability/datasources',
   '/observability/metrics/datasources',
+  '/logs/datasources',
 ])
 
 
@@ -354,11 +357,17 @@ const normalizedMenuPath = computed(() => {
   if (observabilityBoardPaths.has(route.path)) {
     return '/observability/dashboards'
   }
-  if (observabilityLogPaths.has(route.path)) {
-    return '/logs'
+  if (route.path === '/alerts' || route.path === '/observability/alerts') {
+    return '/observability/alerts'
   }
-  if (observabilityDatasourcePaths.has(route.path) || route.path === '/observability/query' || route.path === '/observability/metrics') {
-    return '/observability/overview'
+  if (observabilityLogPaths.has(route.path)) {
+    return '/logs/query'
+  }
+  if (observabilityDatasourcePaths.has(route.path) || (route.path === '/observability/metrics' && route.query.tab === 'datasources')) {
+    return '/observability/datasources'
+  }
+  if (route.path === '/observability/query' || route.path === '/observability/metrics') {
+    return '/observability/metrics'
   }
   return route.path
 })
@@ -409,7 +418,7 @@ const notificationSections = computed(() => {
   }
   const sectionRouteMap = {
     approval: '/workworkorders/releases',
-    alert: '/alerts',
+    alert: '/observability/alerts',
     event: '/events/wall',
   }
   return sectionOrder
@@ -448,7 +457,7 @@ function buildAlertNotificationItem(item) {
     title: item.title || '告警中心通知',
     description: item.message || item.source || '请进入告警中心查看详情',
     time: item.created_at,
-    route: '/alerts',
+    route: '/observability/alerts',
     tag: meta.tag,
     tagType: meta.tagType,
     dotTone: item.level === 'critical' ? 'danger' : item.level === 'warning' ? 'warning' : 'info',
@@ -680,8 +689,8 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .brand-mark {
-  width: 24px;
-  height: 24px;
+  width: 29px;
+  height: 29px;
   display: block;
 }
 
@@ -693,9 +702,9 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.78);
   color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.2s ease;
@@ -706,29 +715,29 @@ onBeforeUnmount(() => {
   min-width: 102px;
   padding: 0 12px;
   gap: 6px;
-  color: #5b7fc7;
-  border-color: rgba(96, 165, 250, 0.22);
-  background: linear-gradient(135deg, rgba(239, 246, 255, 0.92) 0%, rgba(236, 253, 245, 0.74) 100%);
-  box-shadow: 0 8px 18px rgba(59, 130, 246, 0.08);
+  color: var(--nebula-blue);
+  border-color: rgba(91, 192, 235, 0.24);
+  background: linear-gradient(135deg, rgba(91, 192, 235, 0.1) 0%, rgba(46, 134, 222, 0.08) 100%);
+  box-shadow: 0 4px 12px rgba(15, 52, 96, 0.08);
   font-size: 13px;
   font-weight: 700;
 }
 
 .promo-trigger:hover {
-  color: #3f6fbd;
-  border-color: rgba(96, 165, 250, 0.36);
-  background: linear-gradient(135deg, rgba(219, 234, 254, 0.98) 0%, rgba(209, 250, 229, 0.84) 100%);
+  color: var(--nebula-dark);
+  border-color: rgba(91, 192, 235, 0.36);
+  background: linear-gradient(135deg, rgba(91, 192, 235, 0.16) 0%, rgba(46, 134, 222, 0.12) 100%);
   transform: translateY(-1px);
-  box-shadow: 0 12px 24px rgba(59, 130, 246, 0.12);
+  box-shadow: 0 8px 24px rgba(15, 52, 96, 0.12);
 }
 
 .assistant-trigger {
   position: relative;
   overflow: hidden;
-  color: #3b82f6;
-  border-color: rgba(96, 165, 250, 0.22);
-  background: linear-gradient(135deg, rgba(239, 246, 255, 0.92) 0%, rgba(255, 247, 237, 0.72) 100%);
-  box-shadow: 0 8px 18px rgba(59, 130, 246, 0.08);
+  color: var(--nebula-blue);
+  border-color: rgba(91, 192, 235, 0.24);
+  background: linear-gradient(135deg, rgba(91, 192, 235, 0.1) 0%, rgba(248, 250, 252, 0.86) 100%);
+  box-shadow: 0 4px 12px rgba(15, 52, 96, 0.08);
 }
 
 .assistant-trigger::after {
@@ -736,22 +745,22 @@ onBeforeUnmount(() => {
   position: absolute;
   inset: 6px;
   border-radius: 9px;
-  border: 1px solid rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(91, 192, 235, 0.14);
   pointer-events: none;
 }
 
 .assistant-trigger:hover {
-  color: #2563eb;
-  border-color: rgba(96, 165, 250, 0.34);
-  background: linear-gradient(135deg, rgba(219, 234, 254, 0.96) 0%, rgba(255, 237, 213, 0.82) 100%);
+  color: var(--nebula-dark);
+  border-color: rgba(91, 192, 235, 0.34);
+  background: linear-gradient(135deg, rgba(91, 192, 235, 0.16) 0%, rgba(46, 134, 222, 0.1) 100%);
   transform: translateY(-1px);
-  box-shadow: 0 12px 24px rgba(59, 130, 246, 0.12);
+  box-shadow: 0 8px 24px rgba(15, 52, 96, 0.12);
 }
 
 .notice-trigger:hover {
-  color: #356fc8;
-  border-color: rgba(96, 165, 250, 0.26);
-  background: rgba(239, 246, 255, 0.86);
+  color: var(--nebula-blue);
+  border-color: rgba(91, 192, 235, 0.26);
+  background: rgba(91, 192, 235, 0.1);
 }
 
 .notice-panel {
@@ -944,9 +953,9 @@ onBeforeUnmount(() => {
 }
 
 .user-avatar {
-  background: linear-gradient(135deg, #72c1b5 0%, #5f90c1 58%, #506ba5 100%);
+  background: linear-gradient(135deg, var(--nebula-light) 0%, var(--nebula-blue) 100%);
   color: #ffffff;
-  box-shadow: 0 8px 18px rgba(80, 107, 165, 0.18);
+  box-shadow: 0 8px 18px rgba(46, 134, 222, 0.18);
 }
 
 .fade-enter-active,

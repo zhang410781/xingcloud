@@ -7,7 +7,7 @@
 瀛樺偍绫伙細`nfs-client`
 IngressClass锛歚nginx`
 
-骞冲彴榛樿瓒呯骇鐢ㄦ埛淇濇寔椤圭洰榛樿鍊硷細`admin / Admin@123456`銆?MySQL 鐢ㄦ埛銆丮ySQL 瀵嗙爜銆丮ySQL root 瀵嗙爜浣跨敤锛歚xinghai / xinghaik8s`銆?K8S 闆嗙兢浣跨敤 Docker锛屼笉闇€瑕侀澶?`imagePullSecrets`銆?
+骞冲彴榛樿瓒呯骇鐢ㄦ埛淇濇寔椤圭洰榛樿鍊硷細`admin / xinghaik8s`銆?MySQL 鐢ㄦ埛銆丮ySQL 瀵嗙爜銆丮ySQL root 瀵嗙爜浣跨敤锛歚xinghai / xinghaik8s`銆?K8S 闆嗙兢浣跨敤 Docker锛屼笉闇€瑕侀澶?`imagePullSecrets`銆?
 ## 鍩虹闀滃儚
 
 绾夸笂鏋勫缓榛樿浣跨敤鍗庝负浜?SWR 闀滃儚锛?
@@ -122,3 +122,4 @@ kubectl port-forward -n xing-cloud svc/xing-cloud-app 8000:8000 --address 0.0.0.
 ```text
 http://10.132.46.52:8000
 ```
+

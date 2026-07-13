@@ -59,10 +59,21 @@ kubectl apply -f 01-configmap.yaml
 kubectl apply -f 02-secret.yaml
 kubectl apply -f 03-mysql.yaml
 kubectl apply -f 04-redis.yaml
+if kubectl get crd servicemonitors.monitoring.coreos.com >/dev/null 2>&1; then
+  kubectl apply -f 08-monitoring.yaml
+else
+  echo "==> Skipping middleware monitoring: ServiceMonitor CRD is not installed"
+fi
 
 echo "==> Waiting for database and redis"
 kubectl rollout status statefulset/xing-cloud-mysql -n "${NAMESPACE}" --timeout=300s
 kubectl rollout status deployment/xing-cloud-redis -n "${NAMESPACE}" --timeout=180s
+if kubectl get deployment xing-cloud-mysql-exporter -n "${NAMESPACE}" >/dev/null 2>&1; then
+  kubectl rollout status deployment/xing-cloud-mysql-exporter -n "${NAMESPACE}" --timeout=180s
+fi
+if kubectl get deployment xing-cloud-redis-exporter -n "${NAMESPACE}" >/dev/null 2>&1; then
+  kubectl rollout status deployment/xing-cloud-redis-exporter -n "${NAMESPACE}" --timeout=180s
+fi
 
 echo "==> Running one-shot init job"
 kubectl delete job xing-cloud-init -n "${NAMESPACE}" --ignore-not-found

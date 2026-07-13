@@ -455,7 +455,7 @@ class _AIOpsAuditTraceMixin:
                     'risk_level': normalized_trace.get('risk_level') or 'draft',
                     'risk_level_display': normalized_trace.get('risk_level_display') or '草稿',
                     'status': normalized_trace.get('status') or 'matched',
-                    'skills': normalized_trace.get('skills') or ['sx-task-template-selection', 'answer-formatter'],
+                    'skills': normalized_trace.get('skills') or ['xing-cloud-task-template-selection', 'answer-formatter'],
                     'allowed_tools': normalized_trace.get('allowed_tools') or ['query_task_resources', 'generate_host_task', 'query_knowledge_graph'],
                     'inferred': True,
                 })
@@ -480,7 +480,7 @@ class _AIOpsAuditTraceMixin:
                 'risk_level': 'draft',
                 'risk_level_display': '草稿',
                 'status': 'matched',
-                'skills': ['sx-task-template-selection', 'answer-formatter'],
+                'skills': ['xing-cloud-task-template-selection', 'answer-formatter'],
                 'allowed_tools': ['query_task_resources', 'generate_host_task', 'query_knowledge_graph'],
                 'inferred': True,
             }

@@ -4,7 +4,7 @@ from ops.ops_scheduler import run_ops_scheduler_loop, run_ops_scheduler_once
 
 
 class Command(BaseCommand):
-    help = 'Run XingCloud unified ops scheduler: host tasks, datasource health checks, and alert rule evaluation.'
+    help = 'Run Xing-Cloud unified ops scheduler: host tasks, datasource health checks, and alert rule evaluation.'
 
     def add_arguments(self, parser):
         parser.add_argument('--once', action='store_true', help='Run one scheduler scan and exit')

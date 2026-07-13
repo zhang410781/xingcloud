@@ -2,7 +2,7 @@
 from django.test import TestCase
 
 from .models import PermissionDefinition, Role, UserGroup
-from .services import DEMO_ACCOUNT_MUTATION_MESSAGE, ensure_builtin_rbac, get_user_effective_permissions
+from .services import DEMO_ACCOUNT_MUTATION_MESSAGE, ensure_builtin_rbac, ensure_default_superuser, get_user_effective_permissions
 
 
 User = get_user_model()
@@ -29,6 +29,26 @@ class RbacPermissionTests(TestCase):
 
         denied = self.client.get('/api/hosts/')
         self.assertEqual(denied.status_code, 403)
+
+    def test_default_superuser_uses_xinghaik8s_password(self):
+        ensure_default_superuser()
+
+        user = User.objects.get(username='admin')
+
+        self.assertTrue(user.is_superuser)
+        self.assertTrue(user.check_password('xinghaik8s'))
+
+    def test_default_admin_is_reset_even_when_other_superuser_exists(self):
+        User.objects.create_superuser(username='legacy-root', password='OldPass@123')
+        admin = User.objects.get(username='admin')
+        admin.set_password('OldPass@123')
+        admin.save(update_fields=['password'])
+
+        ensure_default_superuser()
+
+        user = User.objects.get(username='admin')
+        self.assertTrue(user.is_superuser)
+        self.assertTrue(user.check_password('xinghaik8s'))
 
     def test_view_only_user_cannot_create_users(self):
         role = Role.objects.create(code='user-auditor', name='User Auditor')

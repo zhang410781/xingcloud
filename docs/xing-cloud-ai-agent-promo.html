@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8" />
@@ -102,7 +102,7 @@ body {
 }
 
 .brand::after {
-    content: "鎬濊€屽悗琛?琛屽繀鏈夎瘉";
+    content: "一屏观测，全程闭环";
     grid-column: 2;
     color: var(--muted);
     font-size: clamp(0.58rem, 0.8vw, 0.72rem);
@@ -1131,7 +1131,7 @@ h1, h2, h3, p { margin: 0; }
 </section>
 
 <script>
-class Xing-CloudDeck {
+class ProductDeck {
     constructor() {
         this.slides = Array.from(document.querySelectorAll(".slide"));
         this.current = 0;
@@ -1206,9 +1206,7 @@ class Xing-CloudDeck {
     }
 }
 
-window.addEventListener("DOMContentLoaded", () => new Xing-CloudDeck());
+window.addEventListener("DOMContentLoaded", () => new ProductDeck());
 </script>
 </body>
 </html>
-
-

@@ -8,6 +8,7 @@ from rest_framework.response import Response
 
 from rbac.permissions import build_rbac_permission
 from rbac.services import DEMO_ACCOUNT_MUTATION_MESSAGE, is_demo_account
+from .observability_views import execute_promql_query
 
 MIDDLEWARE_DEMO_CACHE_KEY = 'ops:middleware:demo:state'
 MIDDLEWARE_DEMO_CACHE_TTL = 86400
@@ -173,6 +174,120 @@ def _module_status(alerts):
     return 'warning' if alerts else 'healthy'
 
 
+def _promql_values(payload):
+    results = []
+    if isinstance(payload, dict):
+        results = payload.get('result') or payload.get('results') or []
+    values = []
+    for item in results:
+        value = item.get('value') if isinstance(item, dict) else None
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            raw_value = value[1]
+        else:
+            raw_value = value
+        try:
+            values.append(float(raw_value))
+        except (TypeError, ValueError):
+            continue
+    return values
+
+
+def _query_promql_value(query, *, reducer=max):
+    payload = execute_promql_query(query, range_query=False, prefer_metric_datasource=True)
+    values = _promql_values(payload)
+    if not values:
+        return None
+    value = reducer(values)
+    return int(value) if float(value).is_integer() else value
+
+
+def _unavailable_monitoring(message):
+    return {
+        'status': 'not_connected',
+        'up': None,
+        'message': message,
+        'source': 'prometheus',
+    }
+
+
+def _mysql_monitoring_payload():
+    try:
+        up = _query_promql_value('mysql_up')
+        connections = _query_promql_value('mysql_global_status_threads_connected')
+        max_connections = _query_promql_value('mysql_global_variables_max_connections')
+    except Exception as exc:
+        return _unavailable_monitoring(str(exc) or 'Prometheus 查询失败')
+    status = 'healthy' if up and up > 0 else 'critical'
+    return {
+        'status': status,
+        'up': up,
+        'connections': connections,
+        'max_connections': max_connections,
+        'message': 'mysqld_exporter 已接入' if status == 'healthy' else 'mysqld_exporter 未返回可用样本',
+        'source': 'prometheus',
+        'queries': [
+            'mysql_up',
+            'mysql_global_status_threads_connected',
+            'mysql_global_variables_max_connections',
+        ],
+    }
+
+
+def _redis_monitoring_payload():
+    try:
+        up = _query_promql_value('redis_up')
+    except Exception as exc:
+        return _unavailable_monitoring(str(exc) or 'Prometheus 查询失败')
+    status = 'healthy' if up and up > 0 else 'critical'
+    return {
+        'status': status,
+        'up': up,
+        'message': 'redis_exporter 已接入' if status == 'healthy' else 'redis_exporter 未返回可用样本',
+        'source': 'prometheus',
+        'queries': ['redis_up'],
+    }
+
+
+def _build_database_payload():
+    mysql_monitoring = _mysql_monitoring_payload()
+    assets = [
+        {
+            'name': 'xing-cloud-mysql',
+            'engine': 'MySQL',
+            'environment': 'xing-cloud',
+            'status': mysql_monitoring['status'],
+            'metrics': 'mysqld_exporter',
+            'logs': 'ClickHouse 容器日志',
+            'monitoring': mysql_monitoring,
+        },
+        {
+            'name': '业务 PostgreSQL',
+            'engine': 'PostgreSQL',
+            'environment': '预留',
+            'status': 'framework_ready',
+            'metrics': 'postgres_exporter',
+            'logs': 'ClickHouse 容器日志',
+            'monitoring': {
+                'status': 'not_connected',
+                'up': None,
+                'message': '已预留 PostgreSQL 监控框架，待接入 postgres_exporter',
+                'source': 'framework',
+            },
+        },
+    ]
+    warning_count = sum(1 for item in assets if item['monitoring']['status'] in {'critical', 'warning'})
+    monitored_count = sum(1 for item in assets if item['monitoring']['status'] == 'healthy')
+    return {
+        'summary': {
+            'asset_count': len(assets),
+            'monitored_count': monitored_count,
+            'warning_count': warning_count,
+            'module_status': 'warning' if warning_count else 'healthy',
+        },
+        'assets': assets,
+    }
+
+
 def _build_redis_alerts(data):
     alerts = []
     replica = next((item for item in data['instances'] if item['replication_delay_ms'] >= 100), None)
@@ -210,16 +325,20 @@ def _build_payload(state):
     redis_alerts = _build_redis_alerts(state['redis'])
     rocketmq_alerts = _build_rocketmq_alerts(state['rocketmq'])
     es_alerts = _build_es_alerts(state['elasticsearch'])
+    database = _build_database_payload()
+    redis_monitoring = _redis_monitoring_payload()
     return {
         'updated_at': state['updated_at'],
         'overview': {
             'modules': [
+                {'key': 'database', 'label': '数据库', 'status': database['summary']['module_status'], 'alert_count': database['summary']['warning_count']},
                 {'key': 'redis', 'label': 'Redis', 'status': _module_status(redis_alerts), 'alert_count': len(redis_alerts)},
                 {'key': 'rocketmq', 'label': 'RocketMQ', 'status': _module_status(rocketmq_alerts), 'alert_count': len(rocketmq_alerts)},
                 {'key': 'elasticsearch', 'label': 'Elasticsearch', 'status': _module_status(es_alerts), 'alert_count': len(es_alerts)},
             ]
         },
-        'redis': {'summary': {'cluster_count': len(state['redis']['clusters']), 'instance_count': len(state['redis']['instances']), 'warning_count': len(redis_alerts), 'peak_qps': max(item['qps'] for item in state['redis']['instances']), 'hot_key_count': len(state['redis']['hot_keys']), 'module_status': _module_status(redis_alerts)}, 'alerts': redis_alerts, 'clusters': state['redis']['clusters'], 'instances': state['redis']['instances'], 'hot_keys': state['redis']['hot_keys'], 'events': state['redis']['events']},
+        'database': database,
+        'redis': {'summary': {'cluster_count': len(state['redis']['clusters']), 'instance_count': len(state['redis']['instances']), 'warning_count': len(redis_alerts), 'peak_qps': max(item['qps'] for item in state['redis']['instances']), 'hot_key_count': len(state['redis']['hot_keys']), 'module_status': _module_status(redis_alerts)}, 'monitoring': redis_monitoring, 'alerts': redis_alerts, 'clusters': state['redis']['clusters'], 'instances': state['redis']['instances'], 'hot_keys': state['redis']['hot_keys'], 'events': state['redis']['events']},
         'rocketmq': {'summary': {'cluster_count': len(state['rocketmq']['clusters']), 'broker_count': len(state['rocketmq']['brokers']), 'warning_count': len(rocketmq_alerts), 'peak_tps': max(item['tps'] for item in state['rocketmq']['brokers']), 'topic_count': len(state['rocketmq']['topics']), 'module_status': _module_status(rocketmq_alerts)}, 'alerts': rocketmq_alerts, 'clusters': state['rocketmq']['clusters'], 'brokers': state['rocketmq']['brokers'], 'consumer_groups': state['rocketmq']['consumer_groups'], 'topics': state['rocketmq']['topics'], 'events': state['rocketmq']['events']},
         'elasticsearch': {'summary': {'cluster_count': len(state['elasticsearch']['clusters']), 'node_count': len(state['elasticsearch']['nodes']), 'warning_count': len(es_alerts), 'peak_qps': max(item['qps'] for item in state['elasticsearch']['clusters']), 'index_count': len(state['elasticsearch']['indices']), 'module_status': _module_status(es_alerts)}, 'alerts': es_alerts, 'clusters': state['elasticsearch']['clusters'], 'nodes': state['elasticsearch']['nodes'], 'indices': state['elasticsearch']['indices'], 'tasks': state['elasticsearch']['tasks'], 'events': state['elasticsearch']['events']},
     }

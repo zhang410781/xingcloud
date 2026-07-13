@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="fade-in workbench-page-shell K8s-page-shell">
     <section class="hero panel K8s-hero">
       <div class="release-hero-copy">
@@ -683,7 +683,7 @@
       </div>
     </template>
 <!-- ============ 集群弹窗 ============ -->
-    <el-dialog v-model="clusterDialogVisible" :title="editingClusterId ? '编辑 Kubernetes 集群' : '添加已有 Kubernetes 集群到 XingCloud'" width="94%" style="max-width:1180px;" top="3vh" append-to-body destroy-on-close class="cluster-import-dialog">
+    <el-dialog v-model="clusterDialogVisible" :title="editingClusterId ? '编辑 Kubernetes 集群' : '添加已有 Kubernetes 集群到 Xing-Cloud'" width="94%" style="max-width:1180px;" top="3vh" append-to-body destroy-on-close class="cluster-import-dialog">
       <el-form :model="clusterForm" label-width="110px" class="kuboard-import-form">
         <div class="kuboard-version-note">
           <strong>支持的 Kubernetes 版本</strong>

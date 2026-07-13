@@ -141,9 +141,30 @@ def _clickhouse_sql(rule, datasource, collection):
     window_minutes = _window_minutes(query_config.get('window_minutes') or query_config.get('window') or condition.get('window_minutes') or 5)
     filters = [f'{time_field} >= now() - INTERVAL {max(window_minutes, 1)} MINUTE']
 
-    level = str(condition.get('level') or condition.get('log_level') or '').strip()
-    if level:
-        filters.append(f'upper(toString({level_identifier})) = upper({_sql_literal(level)})')
+    levels = query_config.get('levels') or query_config.get('level') or query_config.get('log_level') or condition.get('levels') or condition.get('level') or condition.get('log_level')
+    if isinstance(levels, (list, tuple, set)):
+        normalized_levels = [str(item).strip().upper() for item in levels if str(item or '').strip()]
+        if normalized_levels:
+            level_values = ','.join(_sql_literal(item) for item in normalized_levels)
+            filters.append(f'upper(toString({level_identifier})) IN ({level_values})')
+    else:
+        level = str(levels or '').strip()
+        if level:
+            filters.append(f'upper(toString({level_identifier})) = upper({_sql_literal(level)})')
+
+    status_min = query_config.get('status_min')
+    if status_min is None:
+        status_min = condition.get('status_min')
+    status_max = query_config.get('status_max')
+    if status_max is None:
+        status_max = condition.get('status_max')
+    try:
+        if status_min is not None and str(status_min).strip() != '':
+            filters.append(f'{level_identifier} >= {int(status_min)}')
+        if status_max is not None and str(status_max).strip() != '':
+            filters.append(f'{level_identifier} <= {int(status_max)}')
+    except (TypeError, ValueError):
+        pass
 
     keyword = str(condition.get('keyword') or query_config.get('keyword') or '').strip()
     message_fields = [item.strip() for item in str(collection.get('message_fields') or 'message,log_message').split(',') if item.strip()]

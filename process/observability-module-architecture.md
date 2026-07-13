@@ -1,4 +1,4 @@
-# XingCloud 可观测性模块架构
+# Xing-Cloud 可观测性模块架构
 
 ## 当前边界
 

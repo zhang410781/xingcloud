@@ -1,0 +1,321 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prometheus-k8s
+  namespace: xing-cloud
+  labels:
+    app.kubernetes.io/component: prometheus
+    app.kubernetes.io/instance: k8s
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: kube-prometheus
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - services
+      - endpoints
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - extensions
+      - networking.k8s.io
+    resources:
+      - ingresses
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prometheus-k8s
+  namespace: xing-cloud
+  labels:
+    app.kubernetes.io/component: prometheus
+    app.kubernetes.io/instance: k8s
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: kube-prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: prometheus-k8s
+subjects:
+  - kind: ServiceAccount
+    name: prometheus-k8s
+    namespace: monitoring
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xing-cloud-mysql-exporter
+  namespace: xing-cloud
+  labels:
+    app: xing-cloud
+    component: mysql-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: xing-cloud
+      component: mysql-exporter
+  template:
+    metadata:
+      labels:
+        app: xing-cloud
+        component: mysql-exporter
+    spec:
+      containers:
+        - name: mysqld-exporter
+          image: swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/prom/mysqld-exporter:v0.14.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --no-collect.slave_status
+          env:
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: xing-cloud-secret
+                  key: MYSQL_USER
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: xing-cloud-secret
+                  key: MYSQL_PASSWORD
+            - name: DATA_SOURCE_NAME
+              value: "$(MYSQL_USER):$(MYSQL_PASSWORD)@(xing-cloud-mysql.xing-cloud.svc.cluster.local:3306)/"
+          ports:
+            - name: metrics
+              containerPort: 9104
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: xing-cloud-mysql-metrics
+  namespace: xing-cloud
+  labels:
+    app: xing-cloud
+    component: mysql-exporter
+spec:
+  ports:
+    - name: metrics
+      port: 9104
+      targetPort: metrics
+  selector:
+    app: xing-cloud
+    component: mysql-exporter
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: xing-cloud-mysql
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: kube-prometheus
+    prometheus: k8s
+spec:
+  namespaceSelector:
+    matchNames:
+      - xing-cloud
+  selector:
+    matchLabels:
+      app: xing-cloud
+      component: mysql-exporter
+  endpoints:
+    - port: metrics
+      interval: 30s
+      scrapeTimeout: 10s
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xing-cloud-redis-exporter
+  namespace: xing-cloud
+  labels:
+    app: xing-cloud
+    component: redis-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: xing-cloud
+      component: redis-exporter
+  template:
+    metadata:
+      labels:
+        app: xing-cloud
+        component: redis-exporter
+    spec:
+      containers:
+        - name: redis-exporter
+          image: swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/bitnami/redis-exporter:1.52.0-debian-11-r5
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: REDIS_ADDR
+              value: redis://xing-cloud-redis.xing-cloud.svc.cluster.local:6379
+          ports:
+            - name: metrics
+              containerPort: 9121
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: xing-cloud-redis-metrics
+  namespace: xing-cloud
+  labels:
+    app: xing-cloud
+    component: redis-exporter
+spec:
+  ports:
+    - name: metrics
+      port: 9121
+      targetPort: metrics
+  selector:
+    app: xing-cloud
+    component: redis-exporter
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: xing-cloud-redis
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: kube-prometheus
+    prometheus: k8s
+spec:
+  namespaceSelector:
+    matchNames:
+      - xing-cloud
+  selector:
+    matchLabels:
+      app: xing-cloud
+      component: redis-exporter
+  endpoints:
+    - port: metrics
+      interval: 30s
+      scrapeTimeout: 10s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: xing-cloud-mysql-rules
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: kube-prometheus
+    prometheus: k8s
+    role: alert-rules
+spec:
+  groups:
+    - name: xing-cloud.mysql.rules
+      rules:
+        - alert: Xing_CloudMySQLDown
+          expr: mysql_up{namespace="xing-cloud"} == 0
+          for: 1m
+          labels:
+            severity: critical
+            level: P0
+            product: middleware
+          annotations:
+            summary: "Xing-Cloud MySQL is unavailable"
+            description: "MySQL exporter cannot connect to {{ $labels.instance }} for more than 1 minute."
+            runbook: "Check xing-cloud-mysql pod status, exporter logs, service endpoints and database credentials."
+        - alert: Xing_CloudMySQLConnectionsHigh
+          expr: mysql_global_status_threads_connected{namespace="xing-cloud"} / mysql_global_variables_max_connections{namespace="xing-cloud"} > 0.8
+          for: 5m
+          labels:
+            severity: warning
+            level: P1
+            product: middleware
+          annotations:
+            summary: "Xing-Cloud MySQL connection usage is high"
+            description: "Connection usage is above 80% on {{ $labels.instance }}."
+            runbook: "Inspect processlist, application connection pools and max_connections."
+        - alert: Xing_CloudMySQLSlowQueriesIncreasing
+          expr: rate(mysql_global_status_slow_queries{namespace="xing-cloud"}[5m]) > 1
+          for: 5m
+          labels:
+            severity: warning
+            level: P1
+            product: middleware
+          annotations:
+            summary: "Xing-Cloud MySQL slow queries are increasing"
+            description: "Slow query rate is above 1/s on {{ $labels.instance }}."
+            runbook: "Enable or inspect slow query logs and explain high-cost SQL."
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: xing-cloud-redis-rules
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: kube-prometheus
+    prometheus: k8s
+    role: alert-rules
+spec:
+  groups:
+    - name: xing-cloud.redis.rules
+      rules:
+        - alert: Xing_CloudRedisDown
+          expr: redis_up{namespace="xing-cloud"} == 0
+          for: 1m
+          labels:
+            severity: critical
+            level: P0
+            product: middleware
+          annotations:
+            summary: "Xing-Cloud Redis is unavailable"
+            description: "Redis exporter cannot connect to {{ $labels.instance }} for more than 1 minute."
+            runbook: "Check xing-cloud-redis pod status, exporter logs and service endpoints."
+        - alert: Xing_CloudRedisMemoryHigh
+          expr: redis_memory_max_bytes{namespace="xing-cloud"} > 0 and redis_memory_used_bytes{namespace="xing-cloud"} / redis_memory_max_bytes{namespace="xing-cloud"} > 0.85
+          for: 5m
+          labels:
+            severity: warning
+            level: P1
+            product: middleware
+          annotations:
+            summary: "Xing-Cloud Redis memory usage is high"
+            description: "Redis memory usage is above 85% on {{ $labels.instance }}."
+            runbook: "Check hot keys, eviction policy and memory limits."
+        - alert: Xing_CloudRedisRejectedConnections
+          expr: increase(redis_rejected_connections_total{namespace="xing-cloud"}[5m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+            level: P1
+            product: middleware
+          annotations:
+            summary: "Xing-Cloud Redis rejected client connections"
+            description: "Redis rejected connections increased on {{ $labels.instance }}."
+            runbook: "Check maxclients, client connection pools and network errors."

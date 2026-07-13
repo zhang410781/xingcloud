@@ -1555,10 +1555,49 @@ class AlertRecipientGroupSerializer(serializers.ModelSerializer):
 
 class AlertNotificationChannelSerializer(serializers.ModelSerializer):
     channel_type_display = serializers.CharField(source='get_channel_type_display', read_only=True)
+    SECRET_KEYS = {'secret', 'sign_secret'}
+    SECRET_MASK = '******'
 
     class Meta:
         model = AlertNotificationChannel
         fields = '__all__'
+
+    def _normalize_config(self, config, instance=None):
+        if not isinstance(config, dict):
+            return config
+        normalized = dict(config)
+        previous = instance.config if instance and isinstance(instance.config, dict) else {}
+        for key in self.SECRET_KEYS:
+            value = normalized.get(key)
+            if value in ('', None, self.SECRET_MASK):
+                if previous.get(key):
+                    normalized[key] = previous[key]
+                else:
+                    normalized.pop(key, None)
+            elif key not in normalized and previous.get(key):
+                normalized[key] = previous[key]
+        return normalized
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        config = data.get('config')
+        if isinstance(config, dict):
+            config = dict(config)
+            for key in self.SECRET_KEYS:
+                if config.get(key):
+                    config[key] = self.SECRET_MASK
+            data['config'] = config
+        return data
+
+    def create(self, validated_data):
+        if 'config' in validated_data:
+            validated_data['config'] = self._normalize_config(validated_data.get('config'))
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        if 'config' in validated_data:
+            validated_data['config'] = self._normalize_config(validated_data.get('config'), instance=instance)
+        return super().update(instance, validated_data)
 
 
 class AlertAggregationRuleSerializer(serializers.ModelSerializer):

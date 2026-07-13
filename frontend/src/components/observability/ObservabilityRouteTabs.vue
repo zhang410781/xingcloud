@@ -22,7 +22,7 @@ import { useAuthStore } from '@/stores/auth'
 const props = defineProps({
   group: {
     type: String,
-    required: true,
+    default: 'observability',
   },
 })
 
@@ -30,18 +30,31 @@ const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 
+const overviewPermissions = [
+  'ops.dashboard.view',
+  'ops.monitor.dashboard.view',
+  'ops.metric.query',
+  'ops.metric.datasource.view',
+  'ops.log.query',
+  'ops.log.datasource.view',
+  'ops.alert.view',
+  'ops.alert.config.view',
+]
+
+const mainTabs = [
+  { key: 'overview', title: '总览', icon: 'DataLine', path: '/observability/overview', anyPermissions: overviewPermissions },
+  { key: 'alerts', title: '告警中心', icon: 'Bell', path: '/observability/alerts', anyPermissions: ['ops.alert.view', 'ops.alert.config.view'] },
+  { key: 'dashboards', title: '监控看板', icon: 'Histogram', path: '/observability/dashboards', permission: 'ops.monitor.dashboard.view' },
+  { key: 'metrics-query', title: '指标查询', icon: 'DataAnalysis', path: '/observability/metrics', permission: 'ops.metric.query' },
+  { key: 'logs-query', title: '日志查询', icon: 'Search', path: '/logs/query', permission: 'ops.log.query' },
+  { key: 'datasources', title: '数据源', icon: 'DataBoard', path: '/observability/datasources', anyPermissions: ['ops.metric.datasource.view', 'ops.log.datasource.view'] },
+]
+
 const tabGroups = {
-  boards: [
-    { key: 'dashboards', title: '监控看板', icon: 'Histogram', path: '/observability/dashboards', permission: 'ops.monitor.dashboard.view' },
-  ],
-  query: [
-    { key: 'metrics-query', title: '指标查询', icon: 'DataAnalysis', path: '/observability/metrics', permission: 'ops.metric.query' },
-    { key: 'logs-query', title: '日志查询', icon: 'Search', path: '/logs/query', permission: 'ops.log.query' },
-  ],
-  datasources: [
-    { key: 'metric-datasources', title: '指标数据源', icon: 'DataBoard', path: '/observability/metrics', query: { tab: 'datasources' }, permission: 'ops.metric.datasource.view' },
-    { key: 'log-datasources', title: '日志数据源', icon: 'DataBoard', path: '/logs/datasources', permission: 'ops.log.datasource.view' },
-  ],
+  observability: mainTabs,
+  boards: mainTabs,
+  query: mainTabs,
+  datasources: mainTabs,
 }
 
 function canAccess(tab) {
@@ -50,20 +63,20 @@ function canAccess(tab) {
   return true
 }
 
-const visibleTabs = computed(() => (tabGroups[props.group] || []).filter(canAccess))
+const visibleTabs = computed(() => (tabGroups[props.group] || mainTabs).filter(canAccess))
 
 function isActiveTab(tab) {
-  if (tab.path !== route.path) return false
-  if (tab.query?.tab) return route.query.tab === tab.query.tab
-  if (route.path === '/observability/metrics' && route.query.tab === 'datasources') return false
-  return true
+  if (tab.path === '/observability/datasources') {
+    return route.path === '/observability/datasources' || route.path === '/logs/datasources' || route.query.tab === 'datasources'
+  }
+  if (tab.path === '/logs/query') {
+    return route.path === '/logs/query'
+  }
+  return route.path === tab.path
 }
 
 function goTab(tab) {
-  router.push({
-    path: tab.path,
-    query: tab.query || {},
-  })
+  router.push({ path: tab.path, query: tab.query || {} })
 }
 </script>
 

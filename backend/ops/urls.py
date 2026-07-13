@@ -5,6 +5,7 @@ from . import loki_views
 from . import log_views
 from . import docker_views
 from . import k8s_views
+from . import middleware_views
 from . import observability_views
 
 router = DefaultRouter()
@@ -57,11 +58,15 @@ urlpatterns = [
     path('docker/containers/<str:container_id>/remove/', docker_views.container_remove, name='docker-container-remove'),
     path('docker/containers/<str:container_id>/logs/', docker_views.container_logs, name='docker-container-logs'),
     path('docker/containers/<str:container_id>/inspect/', docker_views.container_inspect, name='docker-container-inspect'),
+    path('middleware/overview/', middleware_views.middleware_overview, name='middleware-overview'),
+    path('middleware/action/', middleware_views.middleware_action, name='middleware-action'),
     path('observability/overview/', observability_views.observability_overview, name='observability-overview'),
+    path('observability/integrations/', observability_views.observability_integrations, name='observability-integrations'),
+    path('observability/integrations/<str:key>/install-rules/', observability_views.install_integration_rules, name='observability-integration-install-rules'),
+    path('observability/integrations/<str:key>/install-dashboards/', observability_views.install_integration_dashboards, name='observability-integration-install-dashboards'),
     path('observability/sla/summary/', observability_views.sla_summary, name='observability-sla-summary'),
     path('observability/metrics/query/', observability_views.metrics_promql_query, name='observability-metrics-query'),
     path('observability/metrics/series-names/', observability_views.metrics_series_names, name='observability-metrics-series-names'),
-    path('observability/dashboards/query/', observability_views.native_dashboard, name='observability-dashboards-query'),
 
     path('', include(router.urls)),
 ]

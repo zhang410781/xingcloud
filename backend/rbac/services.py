@@ -9,7 +9,7 @@ from .registry import BUILTIN_ROLES, PERMISSION_DEFINITIONS
 
 User = get_user_model()
 DEFAULT_ADMIN_USERNAME = 'admin'
-DEFAULT_ADMIN_PASSWORD = 'Admin@123456'
+DEFAULT_ADMIN_PASSWORD = 'xinghaik8s'
 DEFAULT_ADMIN_EMAIL = 'admin@example.com'
 DEMO_ACCOUNT_USERNAME = 'demo'
 DEMO_ACCOUNT_MUTATION_MESSAGE = '演示账号无实际操作权限。'
@@ -61,14 +61,33 @@ def ensure_builtin_rbac():
 
 @transaction.atomic
 def ensure_default_superuser():
-    if User.objects.filter(is_superuser=True).exists():
-        return
-
-    user = User.objects.create_superuser(
+    user, created = User.objects.get_or_create(
         username=DEFAULT_ADMIN_USERNAME,
-        email=DEFAULT_ADMIN_EMAIL,
-        password=DEFAULT_ADMIN_PASSWORD,
+        defaults={
+            'email': DEFAULT_ADMIN_EMAIL,
+            'is_staff': True,
+            'is_superuser': True,
+        },
     )
+    if created:
+        user.set_password(DEFAULT_ADMIN_PASSWORD)
+    else:
+        changed = False
+        if not user.is_staff:
+            user.is_staff = True
+            changed = True
+        if not user.is_superuser:
+            user.is_superuser = True
+            changed = True
+        if user.email != DEFAULT_ADMIN_EMAIL:
+            user.email = DEFAULT_ADMIN_EMAIL
+            changed = True
+        if not user.check_password(DEFAULT_ADMIN_PASSWORD):
+            user.set_password(DEFAULT_ADMIN_PASSWORD)
+            changed = True
+        if not changed:
+            pass
+    user.save()
     role = Role.objects.filter(code='platform-admin').first()
     if role:
         role.users.add(user)

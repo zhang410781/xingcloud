@@ -55,19 +55,19 @@ NATIVE_DASHBOARD_NODES = [
     {
         'key': 'server',
         'label': '服务器看板',
-        'description': 'XingCloud 原生服务器监控看板，展示 CPU、内存、磁盘、网络与节点排行。',
+        'description': 'Xing-Cloud 原生服务器监控看板，展示 CPU、内存、磁盘、网络与节点排行。',
         'source_type': 'prometheus',
     },
     {
         'key': 'kubernetes',
         'label': 'K8S 集群看板',
-        'description': 'XingCloud 原生 K8S 监控看板，展示节点、Pod、命名空间与资源用量。',
+        'description': 'Xing-Cloud 原生 K8S 监控看板，展示节点、Pod、命名空间与资源用量。',
         'source_type': 'prometheus',
     },
     {
         'key': 'logs',
         'label': '日志看板',
-        'description': 'XingCloud 原生日志看板，展示容器日志与 WEB 请求日志趋势、排行和明细。',
+        'description': 'Xing-Cloud 原生日志看板，展示容器日志与 WEB 请求日志趋势、排行和明细。',
         'source_type': 'clickhouse',
     },
 ]
@@ -2252,7 +2252,7 @@ def build_knowledge_graph(params=None):
             node_id,
             dashboard['label'],
             'dashboard',
-            'XingCloud 原生看板',
+            'Xing-Cloud 原生看板',
             route='/observability/dashboards',
             status='enabled',
             metric=1,
@@ -2260,7 +2260,6 @@ def build_knowledge_graph(params=None):
             dashboard_key=dashboard['key'],
             source_type=dashboard['source_type'],
         )
-        native_dashboard_node_ids.append(node_id)
         add_edge(_node_key('capability', 'dashboards'), node_id, '内置看板', 'capability_dashboard')
         if use_knowledge_env:
             for environment in selected_env:

@@ -1,4 +1,4 @@
-from urllib.parse import quote
+﻿from urllib.parse import quote
 
 import re
 from datetime import datetime, timedelta, timezone as datetime_timezone
@@ -18,9 +18,11 @@ from eventwall.models import EventRecord
 from eventwall.services import record_event
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from rbac.services import user_has_permissions
+from .alert_rule_presets import ensure_builtin_alert_rule_templates, install_rules_from_templates
 from .dashboard_presets import ensure_builtin_dashboards
 from .datasource_health import datasource_health_payload
-from .models import Alert, Deployment, LogDataSource, LogEntry, MetricDataSource, ObservabilityDashboard
+from .models import Alert, AlertRule, AlertRuleTemplate, Deployment, LogDataSource, LogEntry, MetricDataSource, ObservabilityDashboard
+from .observability_integrations import get_integration, list_integrations
 from .sla import build_sla_summary
 from .serializers import (
     AlertSerializer,
@@ -32,7 +34,7 @@ def _deny_if_missing_any(request, codes):
     allowed = any(user_has_permissions(request.user, [code]) for code in codes)
     if allowed:
         return None
-    return Response({'detail': f"缺少权限: {', '.join(codes)}"}, status=403)
+    return Response({'detail': f"缂哄皯鏉冮檺: {', '.join(codes)}"}, status=403)
 
 
 def _has_permission(request, code):
@@ -183,9 +185,9 @@ def _select_metric_datasource(metric_datasource_id='', environment=''):
         try:
             datasource = MetricDataSource.objects.get(pk=datasource_id)
         except (MetricDataSource.DoesNotExist, ValueError) as exc:
-            raise ValueError('指标数据源不存在') from exc
+            raise ValueError('鎸囨爣鏁版嵁婧愪笉瀛樺湪') from exc
         if not datasource.is_enabled:
-            raise ValueError('指标数据源已停用')
+            raise ValueError('鎸囨爣鏁版嵁婧愬凡鍋滅敤')
         return datasource
 
     queryset = MetricDataSource.objects.filter(is_enabled=True)
@@ -221,7 +223,7 @@ def _resolve_metric_datasource_client(metric_datasource_id='', environment=''):
     if not query_url or _is_example_url(query_url):
         return {
             'ready': False,
-            'warning': '指标数据源未配置 Prometheus 地址',
+            'warning': '鎸囨爣鏁版嵁婧愭湭閰嶇疆 Prometheus 鍦板潃',
             'metric_datasource': _metric_datasource_payload(datasource),
         }
     timeout = _config_int(_metric_config_value(config, 'timeout', 'prometheus.timeout', default=6), 6)
@@ -291,7 +293,7 @@ def _prometheus_query(client, query, at_time=None):
         raise RuntimeError(f'Prometheus HTTP {response.status_code}')
     body = response.json()
     if body.get('status') != 'success':
-        raise RuntimeError(body.get('error') or 'Prometheus 查询失败')
+        raise RuntimeError(body.get('error') or 'Prometheus 鏌ヨ澶辫触')
     return ((body.get('data') or {}).get('result') or [])
 
 
@@ -314,7 +316,7 @@ def _prometheus_query_range(client, query, start_time, end_time, step):
         raise RuntimeError(f'Prometheus HTTP {response.status_code}')
     body = response.json()
     if body.get('status') != 'success':
-        raise RuntimeError(body.get('error') or 'Prometheus 查询失败')
+        raise RuntimeError(body.get('error') or 'Prometheus 鏌ヨ澶辫触')
     data = body.get('data') or {}
     return data.get('result') or [], data.get('resultType') or ''
 
@@ -339,7 +341,7 @@ def _prometheus_label_values(client, label_name, *, match_expr='', start_time=No
         raise RuntimeError(f'Prometheus HTTP {response.status_code}')
     body = response.json()
     if body.get('status') != 'success':
-        raise RuntimeError(body.get('error') or 'Prometheus 标签查询失败')
+        raise RuntimeError(body.get('error') or 'Prometheus 鏍囩鏌ヨ澶辫触')
     values = (body.get('data') or []) if isinstance(body.get('data'), list) else []
     return [str(item) for item in values if item not in (None, '')][:limit]
 
@@ -423,9 +425,9 @@ def _promql_result_sample(results, limit=5):
 def execute_promql_query(query, *, range_query=False, start_time=None, end_time=None, step=60, metric_datasource_id='', environment='', prefer_metric_datasource=False):
     query = str(query or '').strip()
     if not query:
-        raise ValueError('PromQL 不能为空')
+        raise ValueError('PromQL 涓嶈兘涓虹┖')
     if len(query) > 2000:
-        raise ValueError('PromQL 过长')
+        raise ValueError('PromQL 杩囬暱')
 
     client = None
     if prefer_metric_datasource or metric_datasource_id or environment:
@@ -433,7 +435,7 @@ def execute_promql_query(query, *, range_query=False, start_time=None, end_time=
     if client is None:
         client = _resolve_prometheus_client()
     if not client.get('ready'):
-        raise RuntimeError(client.get('warning') or 'Prometheus 数据源未就绪')
+        raise RuntimeError(client.get('warning') or 'Prometheus 鏁版嵁婧愭湭灏辩华')
 
     now = timezone.now()
     end_dt = _parse_promql_datetime(end_time, now)
@@ -463,116 +465,27 @@ def execute_promql_query(query, *, range_query=False, start_time=None, end_time=
     }
 
 
-NATIVE_PROMETHEUS_DASHBOARDS = {
-    'server': {
-        'title': '服务器看板',
-        'description': '服务器 CPU、内存、磁盘、网络与节点资源排行。',
-        'panels': [
-            {'key': 'server-node-total', 'title': '服务器数', 'type': 'stat', 'unit': '台', 'query': 'count(node_uname_info) or count(up{job=~"node.*|node-exporter"})'},
-            {'key': 'server-cpu-usage', 'title': 'CPU 使用率', 'type': 'stat', 'unit': '%', 'decimals': 1, 'query': '(1 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m]))) * 100'},
-            {'key': 'server-memory-usage', 'title': '内存使用率', 'type': 'stat', 'unit': '%', 'decimals': 1, 'query': '(1 - sum(node_memory_MemAvailable_bytes) / sum(node_memory_MemTotal_bytes)) * 100'},
-            {'key': 'server-disk-usage', 'title': '根分区磁盘使用率', 'type': 'stat', 'unit': '%', 'decimals': 1, 'query': '(1 - sum(node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay|squashfs"}) / sum(node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay|squashfs"})) * 100'},
-            {'key': 'server-node-cpu-top', 'title': '节点 CPU Top', 'type': 'bar', 'unit': '%', 'label': 'instance', 'query': 'topk(10, sum by(instance) (rate(node_cpu_seconds_total{mode!="idle"}[5m])) / sum by(instance) (rate(node_cpu_seconds_total[5m])) * 100)'},
-            {'key': 'server-node-memory-top', 'title': '节点内存 Top', 'type': 'bar', 'unit': '%', 'label': 'instance', 'query': 'topk(10, (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100)'},
-            {'key': 'server-node-disk-top', 'title': '节点磁盘 Top', 'type': 'bar', 'unit': '%', 'label': 'instance', 'query': 'topk(10, (1 - node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay|squashfs"}) * 100)'},
-            {'key': 'server-network-throughput', 'title': '节点网络吞吐', 'type': 'timeseries', 'unit': 'B/s', 'label': 'instance', 'query': 'sum by(instance) (rate(node_network_receive_bytes_total{device!~"lo|veth.*|cali.*|flannel.*|vxlan.*"}[5m]) + rate(node_network_transmit_bytes_total{device!~"lo|veth.*|cali.*|flannel.*|vxlan.*"}[5m]))'},
-        ],
-    },
-    'kubernetes': {
-        'title': 'K8S 集群看板',
-        'description': '集群节点、命名空间、Pod 状态、资源用量与存储网络概览。',
-        'panels': [
-            {'key': 'cluster-node-total', 'title': '集群节点总数', 'type': 'stat', 'unit': '个', 'query': 'count(kube_node_info)'},
-            {'key': 'cluster-namespace-total', 'title': '命名空间总数', 'type': 'stat', 'unit': '个', 'query': 'count(count by(namespace)(kube_pod_info))'},
-            {'key': 'cluster-running-pods', 'title': '运行中 Pod', 'type': 'stat', 'unit': '个', 'query': 'count(kube_pod_status_phase{phase="Running"} == 1) or vector(0)'},
-            {'key': 'cluster-abnormal-pods', 'title': '异常 Pod', 'type': 'stat', 'unit': '个', 'query': 'count(kube_pod_status_phase{phase=~"Pending|Failed|Unknown"} == 1) or vector(0)'},
-            {'key': 'cluster-cpu-usage', 'title': '集群 CPU 使用率', 'type': 'stat', 'unit': '%', 'decimals': 1, 'query': 'sum(rate(container_cpu_usage_seconds_total{namespace!=""}[5m])) / sum(kube_node_status_allocatable{resource="cpu"}) * 100'},
-            {'key': 'cluster-memory-usage', 'title': '集群内存使用率', 'type': 'stat', 'unit': '%', 'decimals': 1, 'query': 'sum(container_memory_usage_bytes{namespace!=""}) / sum(kube_node_status_allocatable{resource="memory"}) * 100'},
-            {'key': 'node-cpu-usage', 'title': '节点 CPU 使用率', 'type': 'timeseries', 'unit': '%', 'label': 'instance', 'query': 'sum by(instance) (rate(node_cpu_seconds_total{mode!="idle"}[5m])) / sum by(instance) (rate(node_cpu_seconds_total[5m])) * 100'},
-            {'key': 'node-memory-usage', 'title': '节点内存使用率', 'type': 'timeseries', 'unit': '%', 'label': 'instance', 'query': '(1 - sum by(instance) (node_memory_MemAvailable_bytes) / sum by(instance) (node_memory_MemTotal_bytes)) * 100'},
-            {'key': 'pod-restarts-top', 'title': 'Pod 重启次数 Top 10', 'type': 'bar', 'unit': '次', 'label': 'pod', 'query': 'topk(10, sum by(pod, namespace) (increase(kube_pod_container_status_restarts_total[24h])))'},
-            {'key': 'pod-phase-distribution', 'title': 'Pod 状态分布', 'type': 'bar', 'unit': '个', 'label': 'phase', 'query': 'count by(phase) (kube_pod_status_phase == 1)'},
-            {'key': 'namespace-pod-count', 'title': '命名空间 Pod 数量', 'type': 'bar', 'unit': '个', 'label': 'namespace', 'query': 'sort_desc(count by(namespace) (kube_pod_info))'},
-            {'key': 'pod-cpu-top', 'title': 'CPU 使用量 Top 10 Pod', 'type': 'bar', 'unit': 'core', 'label': 'pod', 'query': 'topk(10, sum by(pod, namespace) (rate(container_cpu_usage_seconds_total{pod!=""}[5m])))'},
-            {'key': 'pod-memory-top', 'title': '内存使用量 Top 10 Pod', 'type': 'bar', 'unit': 'bytes', 'label': 'pod', 'query': 'topk(10, sum by(pod, namespace) (container_memory_working_set_bytes{pod!=""}))'},
-        ],
-    },
-}
-
-NATIVE_DASHBOARD_ALIASES = {
-    'infrastructure': 'server',
-}
-
-NATIVE_DASHBOARD_CATALOG = [
-    {
-        'key': 'server',
-        'title': '服务器看板',
-        'type': 'server',
-        'source_type': 'prometheus',
-        'description': '查看服务器 CPU、内存、磁盘、网络与节点资源排行。',
-    },
-    {
-        'key': 'kubernetes',
-        'title': 'K8S 集群看板',
-        'type': 'kubernetes',
-        'source_type': 'prometheus',
-        'description': '查看集群节点、命名空间、Pod 状态与资源用量。',
-    },
-    {
-        'key': 'logs',
-        'title': '日志看板',
-        'type': 'logs',
-        'source_type': 'clickhouse',
-        'description': '查看容器日志与 WEB 请求日志的趋势、排行和明细。',
-        'variants': ['container', 'web'],
-    },
-]
-
-
 def _native_dashboard_summary():
+    ensure_builtin_dashboards()
+    dashboards = ObservabilityDashboard.objects.filter(is_enabled=True).prefetch_related('panels').order_by('-is_builtin', 'title')
+    items = [
+        {
+            'id': item.id,
+            'title': item.title,
+            'description': item.description,
+            'tags': item.tags,
+            'is_builtin': item.is_builtin,
+            'panel_count': item.panels.count(),
+        }
+        for item in dashboards
+    ]
     return {
         'configured': True,
-        'source': 'native',
-        'dashboard_count': len(NATIVE_DASHBOARD_CATALOG),
-        'types': [item['type'] for item in NATIVE_DASHBOARD_CATALOG],
-        'dashboards': NATIVE_DASHBOARD_CATALOG,
+        'source': 'json',
+        'dashboard_count': len(items),
+        'types': ['json'],
+        'dashboards': items,
     }
-
-
-NATIVE_LOG_DASHBOARDS = {
-    'container': {
-        'title': '容器日志看板',
-        'description': 'K8S 容器日志总量、级别、节点、命名空间、Pod 与最近日志。',
-        'default_collection': 'container-logs',
-        'panels': [
-            {'key': 'container-log-total', 'title': '日志总量', 'type': 'stat', 'unit': '条', 'sql': 'SELECT count() AS value FROM {table} WHERE {time_filter} {filters}'},
-            {'key': 'container-error-total', 'title': '错误数', 'type': 'stat', 'unit': '条', 'sql': "SELECT countIf(log_level IN ('ERROR','FATAL','CRITICAL','error','fatal','critical')) AS value FROM {table} WHERE {time_filter} {filters}"},
-            {'key': 'container-pod-total', 'title': 'Pod 数', 'type': 'stat', 'unit': '个', 'sql': 'SELECT uniq(pod_name) AS value FROM {table} WHERE {time_filter} {filters}'},
-            {'key': 'container-node-total', 'title': '节点数', 'type': 'stat', 'unit': '个', 'sql': "SELECT uniq(node_name) AS value FROM {table} WHERE node_name != '' AND {time_filter} {filters}"},
-            {'key': 'container-log-level-trend', 'title': '日志级别趋势', 'type': 'timeseries', 'unit': '条', 'sql': "SELECT toStartOfMinute({time_field}) AS time, log_level AS name, count() AS value FROM {table} WHERE {time_filter} AND log_level != '' {filters} GROUP BY time, name ORDER BY time"},
-            {'key': 'container-log-by-node', 'title': '日志量 - 按节点', 'type': 'bar', 'unit': '条', 'sql': "SELECT node_name AS name, count() AS value FROM {table} WHERE node_name != '' AND {time_filter} {filters} GROUP BY name ORDER BY value DESC LIMIT 20"},
-            {'key': 'container-log-by-pod', 'title': '日志量 - 按 Pod', 'type': 'bar', 'unit': '条', 'sql': "SELECT pod_name AS name, count() AS value FROM {table} WHERE pod_name != '' AND {time_filter} {filters} GROUP BY name ORDER BY value DESC LIMIT 20"},
-            {'key': 'container-log-by-namespace', 'title': '日志量 - 按命名空间', 'type': 'bar', 'unit': '条', 'sql': "SELECT namespace AS name, count() AS value FROM {table} WHERE namespace != '' AND {time_filter} {filters} GROUP BY name ORDER BY value DESC LIMIT 20"},
-            {'key': 'container-recent-logs', 'title': '最近容器日志', 'type': 'logs', 'unit': '', 'sql': 'SELECT toDateTime({time_field}) AS time, log_message AS body, log_level AS level, node_name, namespace, pod_name, container_name FROM {table} WHERE {time_filter} {filters} ORDER BY {time_field} DESC LIMIT 100'},
-        ],
-    },
-    'web': {
-        'title': 'WEB 请求日志看板',
-        'description': 'NGINX/Ingress 请求 QPS、延迟、状态码、慢接口与来源分布。',
-        'default_collection': 'ingress-access',
-        'panels': [
-            {'key': 'web-request-total', 'title': '请求总量', 'type': 'stat', 'unit': '次', 'sql': 'SELECT count() AS value FROM {table} WHERE {time_filter} {filters}'},
-            {'key': 'web-error-total', 'title': '5XX 请求', 'type': 'stat', 'unit': '次', 'sql': 'SELECT countIf(status >= 500) AS value FROM {table} WHERE {time_filter} {filters}'},
-            {'key': 'web-avg-latency', 'title': '平均响应时间', 'type': 'stat', 'unit': 'ms', 'decimals': 1, 'sql': 'SELECT avg(responsetime) * 1000 AS value FROM {table} WHERE {time_filter} {filters}'},
-            {'key': 'web-qps', 'title': 'QPS 趋势', 'type': 'timeseries', 'unit': 'qps', 'sql': 'SELECT toStartOfMinute({time_field}) AS time, count() / 60 AS value, server_ip AS name FROM {table} WHERE {time_filter} {filters} GROUP BY time, name ORDER BY time'},
-            {'key': 'web-latency', 'title': '响应时间趋势', 'type': 'timeseries', 'unit': 'ms', 'sql': 'SELECT toStartOfMinute({time_field}) AS time, avg(responsetime) * 1000 AS value, server_ip AS name FROM {table} WHERE {time_filter} {filters} GROUP BY time, name ORDER BY time'},
-            {'key': 'web-status-distribution', 'title': '状态码分布', 'type': 'bar', 'unit': '次', 'sql': "SELECT toString(status) AS name, count() AS value FROM {table} WHERE {time_filter} {filters} GROUP BY name ORDER BY value DESC"},
-            {'key': 'web-slow-paths', 'title': '慢请求路径 Top 20', 'type': 'bar', 'unit': 'ms', 'sql': 'SELECT top_path AS name, avg(responsetime) * 1000 AS value FROM {table} WHERE {time_filter} {filters} GROUP BY name HAVING count() > 0 ORDER BY value DESC LIMIT 20'},
-            {'key': 'web-client-top', 'title': '用户 IP 请求量 Top 20', 'type': 'table', 'unit': '', 'sql': 'SELECT client_ip AS client_ip, count() AS pv, count(DISTINCT path) AS url_count, avg(responsetime) * 1000 AS avg_latency_ms FROM {table} WHERE {time_filter} {filters} GROUP BY client_ip ORDER BY pv DESC LIMIT 20'},
-            {'key': 'web-path-top', 'title': 'URI 请求数 Top 30', 'type': 'table', 'unit': '', 'sql': 'SELECT path AS path, count() AS pv, count(DISTINCT client_ip) AS uv, avg(responsetime) * 1000 AS avg_latency_ms FROM {table} WHERE {time_filter} {filters} GROUP BY path ORDER BY pv DESC LIMIT 30'},
-        ],
-    },
-}
 
 
 def _native_now_ms():
@@ -705,90 +618,6 @@ def _native_panel_response(panel, data=None, status_text='ok', error=''):
     }
 
 
-def _native_prometheus_dashboard(request_data, start_ms, end_ms):
-    request_data = dict(request_data or {})
-    dashboard_key = str(request_data.get('dashboard') or 'kubernetes').strip() or 'kubernetes'
-    dashboard_key = NATIVE_DASHBOARD_ALIASES.get(dashboard_key, dashboard_key)
-    definition = NATIVE_PROMETHEUS_DASHBOARDS.get(dashboard_key) or NATIVE_PROMETHEUS_DASHBOARDS['kubernetes']
-    datasource = _select_metric_datasource(
-        metric_datasource_id=request_data.get('metric_datasource_id') or request_data.get('datasource_id') or '',
-        environment=request_data.get('environment') or '',
-    )
-    if datasource:
-        request_data['metric_datasource_id'] = datasource.id
-    panels = []
-    for panel in definition['panels']:
-        try:
-            panels.append(_native_panel_response(panel, _native_prometheus_panel(panel, request_data, start_ms, end_ms)))
-        except Exception as exc:
-            panels.append(_native_panel_response(panel, {}, 'warning', str(exc)))
-    return {
-        'dashboard': {
-            'key': dashboard_key if dashboard_key in NATIVE_PROMETHEUS_DASHBOARDS else 'kubernetes',
-            'title': definition['title'],
-            'description': definition['description'],
-            'source_type': 'prometheus',
-        },
-        'metric_datasource': _metric_datasource_payload(datasource),
-        'panels': panels,
-    }
-
-
-def _native_sql_literal(value):
-    escaped = str(value or '').replace('\\', '\\\\').replace("'", "\\'")
-    return f"'{escaped}'"
-
-
-def _native_sql_in_filter(field, values):
-    if values in (None, '', [], ()):
-        return ''
-    if not isinstance(values, (list, tuple)):
-        values = [values]
-    cleaned = [str(item).strip() for item in values if str(item).strip() and str(item).strip() != '$__all']
-    if not cleaned:
-        return ''
-    return f' AND {field} IN ({", ".join(_native_sql_literal(item) for item in cleaned)})'
-
-
-def _native_clickhouse_filters(variant, request_data):
-    if variant == 'container':
-        return ''.join([
-            _native_sql_in_filter('node_name', request_data.get('node') or request_data.get('nodes')),
-            _native_sql_in_filter('pod_name', request_data.get('pod_name') or request_data.get('pods')),
-            _native_sql_in_filter('namespace', request_data.get('namespace') or request_data.get('namespaces')),
-            _native_sql_in_filter('log_level', request_data.get('log_level') or request_data.get('levels')),
-        ])
-    return ''.join([
-        _native_sql_in_filter('server_ip', request_data.get('server_ip') or request_data.get('server_ips')),
-        _native_sql_in_filter('domain', request_data.get('domain') or request_data.get('domains')),
-        _native_sql_in_filter('status', request_data.get('status') or request_data.get('statuses')),
-        _native_sql_in_filter('path', request_data.get('uri') or request_data.get('path')),
-        _native_sql_in_filter('client_ip', request_data.get('client_ip') or request_data.get('client_ips')),
-    ])
-
-
-def _native_clickhouse_context(config, request_data, variant, start_ms, end_ms):
-    from .log_views import _clickhouse_identifier, _clickhouse_time_expression, _resolve_clickhouse_collection
-
-    collection_key = request_data.get('collection') or request_data.get('collection_key') or NATIVE_LOG_DASHBOARDS[variant]['default_collection']
-    collection = _resolve_clickhouse_collection(config, {**request_data, 'collection': collection_key})
-    table_ref = f'{_clickhouse_identifier(collection["database"], "database")}.{_clickhouse_identifier(collection["table"], "table")}'
-    time_field = request_data.get('time_field') or collection.get('time_field') or config.get('time_field') or 'timestamp'
-    timezone_name = request_data.get('timezone') or collection.get('timezone') or config.get('timezone') or 'Asia/Shanghai'
-    time_identifier = _clickhouse_identifier(time_field, 'time field')
-    time_filter = (
-        f'{time_identifier} >= {_clickhouse_time_expression(start_ms, timezone_name)} '
-        f'AND {time_identifier} <= {_clickhouse_time_expression(end_ms, timezone_name)}'
-    )
-    return {
-        'collection': collection,
-        'table': table_ref,
-        'time_field': time_identifier,
-        'time_filter': time_filter,
-        'filters': _native_clickhouse_filters(variant, request_data),
-    }
-
-
 def _native_render_clickhouse_sql(template, context):
     return template.format(
         table=context['table'],
@@ -829,74 +658,6 @@ def _native_clickhouse_panel(panel, config, context):
     if panel_type in {'table', 'logs'}:
         return {'rows': rows}
     return {'rows': rows}
-
-
-def _native_log_dashboard(request_data, start_ms, end_ms):
-    from .log_views import ProviderError, _merge_config
-
-    datasource_id = request_data.get('log_datasource_id') or request_data.get('datasource_id')
-    if not datasource_id:
-        datasource = LogDataSource.objects.filter(provider='clickhouse', is_enabled=True).order_by('-is_default', 'name').first()
-    else:
-        datasource = LogDataSource.objects.get(pk=datasource_id)
-    if not datasource or datasource.provider != 'clickhouse':
-        raise ProviderError('请选择 ClickHouse 日志数据源')
-    config = _merge_config('clickhouse', datasource.config)
-    variant = str(request_data.get('log_dashboard') or request_data.get('variant') or '').strip().lower()
-    if variant not in NATIVE_LOG_DASHBOARDS:
-        variant = 'container'
-    definition = NATIVE_LOG_DASHBOARDS[variant]
-    context = _native_clickhouse_context(config, request_data, variant, start_ms, end_ms)
-
-    panels = []
-    for panel in definition['panels']:
-        try:
-            panels.append(_native_panel_response(panel, _native_clickhouse_panel(panel, config, context)))
-        except Exception as exc:
-            panels.append(_native_panel_response(panel, {}, 'warning', str(exc)))
-    return {
-        'dashboard': {
-            'key': 'logs',
-            'variant': variant,
-            'title': definition['title'],
-            'description': definition['description'],
-            'source_type': 'clickhouse',
-            'collection': context['collection'],
-        },
-        'log_datasource': {'id': datasource.id, 'name': datasource.name, 'provider': datasource.provider},
-        'panels': panels,
-    }
-
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def native_dashboard(request):
-    denied = _deny_if_missing_any(request, ['ops.monitor.dashboard.view', 'ops.metric.query', 'ops.log.query'])
-    if denied:
-        return denied
-    request_data = dict(request.data or {})
-    dashboard = str(request_data.get('dashboard') or 'kubernetes').strip().lower()
-    dashboard = NATIVE_DASHBOARD_ALIASES.get(dashboard, dashboard)
-    start_ms, end_ms = _native_time_range(request_data)
-    try:
-        if dashboard == 'logs':
-            payload = _native_log_dashboard(request_data, start_ms, end_ms)
-        else:
-            if dashboard not in NATIVE_PROMETHEUS_DASHBOARDS:
-                dashboard = 'kubernetes'
-            request_data['dashboard'] = dashboard
-            payload = _native_prometheus_dashboard(request_data, start_ms, end_ms)
-    except LogDataSource.DoesNotExist:
-        return Response({'detail': '日志数据源不存在'}, status=status.HTTP_404_NOT_FOUND)
-    except Exception as exc:
-        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-    payload['time_range'] = {
-        'start_ms': start_ms,
-        'end_ms': end_ms,
-        'step': _normalize_promql_step(request_data.get('step') or 60),
-    }
-    return Response(payload)
 
 
 def _dashboard_panel_options(panel):
@@ -1064,6 +825,91 @@ class ObservabilityDashboardViewSet(EventWallModelViewSetMixin, RBACPermissionMi
         return Response(self.get_serializer(dashboard).data, status=status.HTTP_201_CREATED)
 
 
+def _integration_status(integration):
+    template_count = AlertRuleTemplate.objects.filter(code__in=integration.template_codes, is_enabled=True).count()
+    rule_count = AlertRule.objects.filter(template__code__in=integration.template_codes).count()
+    dashboard_count = ObservabilityDashboard.objects.filter(title__in=integration.dashboard_titles, is_enabled=True).count()
+    metric_ready = MetricDataSource.objects.filter(is_enabled=True, last_check_status='ok').exists()
+    log_ready = LogDataSource.objects.filter(provider='clickhouse', is_enabled=True, last_check_status='ok').exists()
+    source_available = (
+        'sla' in integration.source_types
+        or ('prometheus' in integration.source_types and metric_ready)
+        or ('clickhouse' in integration.source_types and log_ready)
+    )
+    if dashboard_count and rule_count:
+        status_value = 'dashboards_installed'
+    elif rule_count:
+        status_value = 'rules_installed'
+    elif source_available:
+        status_value = 'source_available'
+    else:
+        status_value = 'not_connected'
+    return template_count, rule_count, dashboard_count, status_value
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated, build_rbac_permission('ops.monitor.dashboard.view')])
+def observability_integrations(request):
+    ensure_builtin_dashboards()
+    ensure_builtin_alert_rule_templates()
+    items = []
+    for integration in list_integrations():
+        template_count, rule_count, dashboard_count, status_value = _integration_status(integration)
+        items.append({
+            'key': integration.key,
+            'title': integration.title,
+            'brand': 'Xing-Cloud',
+            'category': integration.category,
+            'source_types': integration.source_types,
+            'tags': integration.tags,
+            'icon': integration.icon,
+            'guide_path': integration.guide_path,
+            'template_codes': integration.template_codes,
+            'dashboard_titles': integration.dashboard_titles,
+            'metric_probe_queries': integration.metric_probe_queries,
+            'log_collections': integration.log_collections,
+            'template_count': template_count,
+            'rule_count': rule_count,
+            'dashboard_count': dashboard_count,
+            'status': status_value,
+        })
+    return Response({'integrations': items})
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, build_rbac_permission('ops.alert.config.manage')])
+def install_integration_rules(request, key):
+    integration = get_integration(key)
+    if not integration:
+        return Response({'detail': 'integration not found'}, status=status.HTTP_404_NOT_FOUND)
+    requested = request.data.get('template_codes') or integration.template_codes
+    requested = [code for code in requested if code in integration.template_codes]
+    created, skipped = install_rules_from_templates(requested)
+    return Response({
+        'integration': key,
+        'created_count': len(created),
+        'skipped_count': len(skipped),
+        'created': [{'id': item.id, 'name': item.name, 'code': item.code} for item in created],
+        'skipped': skipped,
+    }, status=status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated, build_rbac_permission('ops.monitor.dashboard.manage')])
+def install_integration_dashboards(request, key):
+    integration = get_integration(key)
+    if not integration:
+        return Response({'detail': 'integration not found'}, status=status.HTTP_404_NOT_FOUND)
+    ensure_builtin_dashboards()
+    dashboards = ObservabilityDashboard.objects.filter(title__in=integration.dashboard_titles)
+    dashboards.update(is_enabled=True, is_builtin=True)
+    return Response({
+        'integration': key,
+        'enabled_count': dashboards.count(),
+        'dashboards': [{'id': item.id, 'title': item.title} for item in dashboards],
+    }, status=status.HTTP_201_CREATED)
+
+
 class MetricDataSourceViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = MetricDataSource.objects.all().order_by('environment', '-is_default', 'name')
     serializer_class = MetricDataSourceSerializer
@@ -1186,7 +1032,7 @@ def metrics_series_names(request):
             environment=request.query_params.get('environment') or '',
         )
         if not client or not client.get('ready'):
-            raise RuntimeError((client or {}).get('warning') or '指标数据源未就绪')
+            raise RuntimeError((client or {}).get('warning') or '鎸囨爣鏁版嵁婧愭湭灏辩华')
         values = _prometheus_label_values(client, '__name__', match_expr=match_expr, limit=max(5000, limit * 20))
     except ValueError as exc:
         return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -1244,13 +1090,13 @@ def observability_overview(request):
 
     navigation = []
     if access['monitor_dashboard']:
-        navigation.append({'title': '监控看板', 'path': '/observability/dashboards', 'description': '查看服务器、K8S、日志等原生看板', 'tone': 'accent'})
+        navigation.append({'title': '监控看板', 'path': '/observability/dashboards', 'description': '查看 JSON 驱动的服务器、K8S、日志与中间件看板', 'tone': 'accent'})
     if access['metric_query'] or access['metric_datasource']:
-        navigation.append({'title': '指标查询', 'path': '/observability/metrics', 'description': '用 PromQL 查询 Prometheus 指标数据', 'tone': 'success'})
+        navigation.append({'title': '指标查询', 'path': '/observability/metrics', 'description': '使用 PromQL 查询 Prometheus 指标数据', 'tone': 'success'})
     if access['log_query'] or access['log_datasource']:
-        navigation.append({'title': '日志中心', 'path': '/logs', 'description': '检索容器日志、集群事件和应用日志', 'tone': 'info'})
+        navigation.append({'title': '日志中心', 'path': '/logs/query', 'description': '检索容器日志、集群事件和应用日志', 'tone': 'info'})
     if access['alerts']:
-        navigation.append({'title': '告警中心', 'path': '/alerts', 'description': '查看告警、研判结论和处理状态', 'tone': 'danger'})
+        navigation.append({'title': '告警中心', 'path': '/observability/alerts', 'description': '配置来源、规则、模板并处理告警闭环', 'tone': 'danger'})
 
     return Response({
         'modules': {
@@ -1274,5 +1120,7 @@ def observability_overview(request):
         'recent_alerts': alerts['recent'] if alerts else [],
         'tips': [],
     })
+
+
 
 

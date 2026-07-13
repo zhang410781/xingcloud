@@ -47,6 +47,7 @@ from ops.models import (
 )
 from ops.log_views import _merge_config as merge_log_config
 from ops.log_views import _run_query as run_log_provider_query
+from ops.alert_log_evidence import build_alert_log_evidence, is_clickhouse_log_alert
 from ops.observability_views import execute_promql_query
 from rbac.services import is_demo_account, user_has_permissions
 
@@ -361,7 +362,7 @@ DEPRECATED_BUILTIN_MCP_SERVER_NAMES = {'CMDB MCP'}
 BUILTIN_SKILLS = [
     {
         'name': '告警证据清单',
-        'slug': 'sx-alert-evidence-checklist',
+        'slug': 'xing-cloud-alert-evidence-checklist',
         'category': '告警排障',
         'description': '规范告警根因分析的证据收集顺序、判断口径和输出结构。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
@@ -402,7 +403,7 @@ BUILTIN_SKILLS = [
     },
     {
         'name': 'K8s 告警排障',
-        'slug': 'sx-k8s-alert-troubleshooting',
+        'slug': 'xing-cloud-k8s-alert-troubleshooting',
         'category': 'K8s 诊断',
         'description': '针对 K8s 相关告警组织集群、命名空间、工作负载、Pod、Event 和日志证据。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
@@ -470,7 +471,7 @@ BUILTIN_SKILLS = [
     },
     {
         'name': '日志模式分析',
-        'slug': 'sx-log-pattern-analysis',
+        'slug': 'xing-cloud-log-pattern-analysis',
         'category': '日志查询',
         'description': '规范日志聚合、样本解释、错误模式归类和证据表达。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
@@ -506,7 +507,7 @@ BUILTIN_SKILLS = [
     },
     {
         'name': '变更影响分析',
-        'slug': 'sx-change-impact-analysis',
+        'slug': 'xing-cloud-change-impact-analysis',
         'category': '变更关联',
         'description': '规范发布、工单、事件与知识图谱依赖的时间线关联分析。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
@@ -542,7 +543,7 @@ BUILTIN_SKILLS = [
     },
     {
         'name': '日志查询规范',
-        'slug': 'sx-log-query-guide',
+        'slug': 'xing-cloud-log-query-guide',
         'category': '日志查询',
         'description': '将自然语言需求转成可执行、可解释、可复制的日志查询条件。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
@@ -573,7 +574,7 @@ BUILTIN_SKILLS = [
     },
     {
         'name': '日志字段字典',
-        'slug': 'sx-log-field-dictionary',
+        'slug': 'xing-cloud-log-field-dictionary',
         'category': '日志查询',
         'description': '沉淀日志字段含义和跨工具关联字段，提升查询生成稳定性。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
@@ -603,7 +604,7 @@ BUILTIN_SKILLS = [
     },
     {
         'name': 'K8s 排障 SOP',
-        'slug': 'sx-k8s-troubleshooting',
+        'slug': 'xing-cloud-k8s-troubleshooting',
         'category': 'K8s 诊断',
         'description': '沉淀 K8s 常见异常的只读排障路径和输出格式。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
@@ -632,7 +633,7 @@ BUILTIN_SKILLS = [
     },
     {
         'name': '容器只读取证护栏',
-        'slug': 'sx-container-readonly-guard',
+        'slug': 'xing-cloud-container-readonly-guard',
         'category': '安全护栏',
         'description': '限定容器和 K8s 场景只能通过平台后端接口取证，写操作必须走确认流。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
@@ -659,7 +660,7 @@ BUILTIN_SKILLS = [
     },
     {
         'name': '事件时间线关联',
-        'slug': 'sx-event-timeline-correlation',
+        'slug': 'xing-cloud-event-timeline-correlation',
         'category': '变更关联',
         'description': '将事件墙、工单、发布、告警和知识图谱关系组织成可解释时间线。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
@@ -685,7 +686,7 @@ BUILTIN_SKILLS = [
     },
     {
         'name': '自愈风险护栏',
-        'slug': 'sx-self-heal-risk-guard',
+        'slug': 'xing-cloud-self-heal-risk-guard',
         'category': '自愈安全',
         'description': '约束自愈推荐必须先评估风险、生成 dry-run 和待确认动作。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
@@ -714,7 +715,7 @@ BUILTIN_SKILLS = [
     },
     {
         'name': '任务模板选择',
-        'slug': 'sx-task-template-selection',
+        'slug': 'xing-cloud-task-template-selection',
         'category': '任务中心',
         'description': '约束 assistant 如何根据目标资源、环境和风险选择任务中心模板。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
@@ -741,7 +742,7 @@ BUILTIN_SKILLS = [
     },
     {
         'name': '回滚策略',
-        'slug': 'sx-rollback-strategy',
+        'slug': 'xing-cloud-rollback-strategy',
         'category': '发布回滚',
         'description': '规范发布回滚和变更撤销建议的前置验证、影响范围和失败处理。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
@@ -782,10 +783,10 @@ BUILTIN_ACTION_REGISTRY = [
             'query_knowledge_graph',
         ],
         'skills': [
-            'sx-alert-evidence-checklist',
-            'sx-k8s-alert-troubleshooting',
-            'sx-log-pattern-analysis',
-            'sx-change-impact-analysis',
+            'xing-cloud-alert-evidence-checklist',
+            'xing-cloud-k8s-alert-troubleshooting',
+            'xing-cloud-log-pattern-analysis',
+            'xing-cloud-change-impact-analysis',
             'answer-formatter',
         ],
         'preflight_required': False,
@@ -814,8 +815,8 @@ BUILTIN_ACTION_REGISTRY = [
             'query_knowledge_graph',
         ],
         'skills': [
-            'sx-change-impact-analysis',
-            'sx-event-timeline-correlation',
+            'xing-cloud-change-impact-analysis',
+            'xing-cloud-event-timeline-correlation',
             'answer-formatter',
         ],
         'preflight_required': False,
@@ -841,8 +842,8 @@ BUILTIN_ACTION_REGISTRY = [
             'query_knowledge_graph',
         ],
         'skills': [
-            'sx-log-query-guide',
-            'sx-log-field-dictionary',
+            'xing-cloud-log-query-guide',
+            'xing-cloud-log-field-dictionary',
             'answer-formatter',
         ],
         'preflight_required': False,
@@ -872,8 +873,8 @@ BUILTIN_ACTION_REGISTRY = [
             'query_knowledge_graph',
         ],
         'skills': [
-            'sx-k8s-troubleshooting',
-            'sx-container-readonly-guard',
+            'xing-cloud-k8s-troubleshooting',
+            'xing-cloud-container-readonly-guard',
             'answer-formatter',
         ],
         'preflight_required': False,
@@ -902,9 +903,9 @@ BUILTIN_ACTION_REGISTRY = [
             'generate_host_task',
         ],
         'skills': [
-            'sx-self-heal-risk-guard',
-            'sx-task-template-selection',
-            'sx-rollback-strategy',
+            'xing-cloud-self-heal-risk-guard',
+            'xing-cloud-task-template-selection',
+            'xing-cloud-rollback-strategy',
             'answer-formatter',
         ],
         'preflight_required': True,
@@ -931,7 +932,7 @@ BUILTIN_ACTION_REGISTRY = [
             'generate_host_task',
         ],
         'skills': [
-            'sx-task-template-selection',
+            'xing-cloud-task-template-selection',
             'answer-formatter',
         ],
         'preflight_required': False,
@@ -959,8 +960,8 @@ BUILTIN_ACTION_REGISTRY = [
             'query_knowledge_graph',
         ],
         'skills': [
-            'sx-alert-evidence-checklist',
-            'sx-log-pattern-analysis',
+            'xing-cloud-alert-evidence-checklist',
+            'xing-cloud-log-pattern-analysis',
             'answer-formatter',
         ],
         'preflight_required': False,
@@ -1951,11 +1952,18 @@ def _action_question_matches(action_code, question, analysis_scope=None):
             or has_abnormal_analysis_intent
         )
     if action_code == 'change.correlation':
+        change_scope_text = (
+            lowered
+            .replace('工单服务', '')
+            .replace('生产工单服务', '')
+            .replace('workorder-service', '')
+            .replace('workorder service', '')
+        )
         deploy_change_context = (
             _question_contains_any(lowered, ['deploy', 'deployment'])
             and _question_contains_any(lowered, ['之后', '以后', '后', '变更', '发布', '上线', '关联', '关系', '相关', '导致'])
         )
-        has_change_or_event_scope = _question_contains_any(lowered, [
+        has_change_or_event_scope = _question_contains_any(change_scope_text, [
             '变更', '发布', '工单', '部署', '回滚', '上线', '事件',
             'change', 'changes', 'event', 'events',
         ]) or deploy_change_context
@@ -2546,27 +2554,35 @@ def _ensure_builtin_runtime_assets(config):
             'builtin_tools': filter_feature_tools(definition.get('builtin_tools') or []),
             'recommended_tools': filter_feature_tools(definition.get('recommended_tools') or []),
         }
-        skill, _ = AIOpsSkill.objects.get_or_create(
-            slug=definition['slug'],
-            defaults={
-                'name': definition['name'],
-                'description': definition['description'],
-                'category': definition.get('category', ''),
-                'applicable_actions': definition.get('applicable_actions', []),
-                'examples': definition.get('examples', []),
-                'builtin_tools': definition.get('builtin_tools', []),
-                'recommended_tools': definition.get('recommended_tools', []),
-                'max_iterations': definition.get('max_iterations', 0),
-                'risk_level': definition.get('risk_level', AIOpsSkill.RISK_READ_ONLY),
-                'output_contract': definition.get('output_contract', {}),
-                'source_type': definition['source_type'],
-                'content': definition['content'],
-                'allowed_role_codes': definition['allowed_role_codes'],
-                'is_builtin': True,
-                'is_enabled': True,
-            },
-        )
+        legacy_slug = definition['slug'].replace('xing-cloud-', 'xingcloud-', 1)
+        skill = AIOpsSkill.objects.filter(slug=definition['slug']).first()
+        if skill is None and legacy_slug != definition['slug']:
+            skill = AIOpsSkill.objects.filter(slug=legacy_slug).first()
+        if skill is None:
+            skill = AIOpsSkill.objects.filter(name=definition['name']).first()
+        if skill is None:
+            skill = AIOpsSkill.objects.create(
+                slug=definition['slug'],
+                name=definition['name'],
+                description=definition['description'],
+                category=definition.get('category', ''),
+                applicable_actions=definition.get('applicable_actions', []),
+                examples=definition.get('examples', []),
+                builtin_tools=definition.get('builtin_tools', []),
+                recommended_tools=definition.get('recommended_tools', []),
+                max_iterations=definition.get('max_iterations', 0),
+                risk_level=definition.get('risk_level', AIOpsSkill.RISK_READ_ONLY),
+                output_contract=definition.get('output_contract', {}),
+                source_type=definition['source_type'],
+                content=definition['content'],
+                allowed_role_codes=definition['allowed_role_codes'],
+                is_builtin=True,
+                is_enabled=True,
+            )
         changed_fields = []
+        if skill.slug != definition['slug']:
+            skill.slug = definition['slug']
+            changed_fields.append('slug')
         if not skill.is_builtin:
             skill.is_builtin = True
             changed_fields.append('is_builtin')
@@ -5461,9 +5477,19 @@ def query_alert_root_cause(session, user_message, user, query='', fingerprint=''
 
     event_result = query_events(session, user_message, user, query=scoped_query, date_filter='', limit=5)
     log_result = None
-    if alert.service:
+    if is_clickhouse_log_alert(alert):
+        try:
+            log_result = build_alert_log_evidence(alert, limit=5)
+        except Exception as exc:
+            log_result = {
+                'summary': {'count': 0, 'error': str(exc)[:200], 'provider': 'clickhouse'},
+                'sections': [{'title': 'ClickHouse log evidence', 'items': [f'Log evidence query failed: {str(exc)[:200]}']}],
+                'citations': [{'title': 'Log Center', 'path': '/logs/query'}],
+                'logs': [],
+            }
+    if log_result is None and alert.service:
         log_result = query_logs(session, user_message, user, query=scoped_query, service=alert.service, limit=5)
-    else:
+    elif log_result is None:
         log_result = {
             'summary': {'count': 0, 'skipped': True, 'reason': 'missing_service'},
             'sections': [{'title': '日志查询跳过', 'items': ['告警未携带明确服务名，已跳过日志查询。']}],
@@ -10430,9 +10456,17 @@ def _strip_task_title_environment_context(value):
     text = _compact_task_title(value, max_length=120)
     if not text:
         return ''
+    for environment_name in ['郑州生产演示', '生产环境', '测试环境', '开发环境']:
+        if text.startswith(environment_name):
+            text = text[len(environment_name):].strip()
     text = re.sub(r'^(?:在|为|给|对)?[^，,。；;：:\s]{1,24}环境(?:下|里|中|上|的)?\s*', '', text)
     text = re.sub(r'(?:^|[\s，,。；;：:])(?:在|为|给|对)?[^，,。；;：:\s]{1,24}环境(?:下|里|中|上|的)?\s*', ' ', text)
     text = re.sub(r'^(?:在|为|给|对)\s*', '', text)
+    text = re.sub(r'^(请|帮我|麻烦|安排|创建|新建|建个|建一个|生成|发起|准备|构建|配置|执行)\s*', '', text)
+    text = re.sub(r'^(请|帮我|麻烦|安排|创建|新建|建个|建一个|生成|发起|准备|构建|配置|执行)\s*', '', text)
+    for environment_name in ['郑州生产演示', '生产环境', '测试环境', '开发环境']:
+        if text.startswith(environment_name):
+            text = text[len(environment_name):].lstrip(' 的')
     return _compact_task_title(text)
 
 

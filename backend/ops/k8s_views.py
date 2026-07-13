@@ -138,6 +138,7 @@ DEMO_PODS = [
     {'name': 'web-frontend-6d9f8b7c5-k7p3q', 'namespace': 'staging', 'status': 'Pending', 'node': '', 'ip': '', 'containers': [{'name': 'frontend', 'image': 'myapp/web:v2.2.0-rc1', 'ready': False}], 'restarts': 0, 'created': '2026-03-08T16:05:00+08:00'},
     {'name': 'prometheus-server-0', 'namespace': 'monitoring', 'status': 'Running', 'node': 'node-02', 'ip': '10.244.2.40', 'containers': [{'name': 'prometheus', 'image': 'prom/prometheus:v2.51.0', 'ready': True}], 'restarts': 0, 'created': '2026-02-01T10:30:00+08:00'},
     {'name': 'alertmanager-0', 'namespace': 'monitoring', 'status': 'Running', 'node': 'node-01', 'ip': '10.244.1.42', 'containers': [{'name': 'alertmanager', 'image': 'prom/alertmanager:v0.27.0', 'ready': True}], 'restarts': 0, 'created': '2026-02-01T10:40:00+08:00'},
+    {'name': 'data-migration-v2-finished', 'namespace': 'production', 'status': 'Succeeded', 'node': 'node-03', 'ip': '10.244.3.52', 'containers': [{'name': 'migrator', 'image': 'myapp/migrator:v2.1', 'ready': False}], 'restarts': 2, 'created': '2026-03-08T10:00:00+08:00'},
     {'name': 'coredns-5d78c9689-b8k4m', 'namespace': 'kube-system', 'status': 'Running', 'node': 'node-01', 'ip': '10.244.1.3', 'containers': [{'name': 'coredns', 'image': 'registry.k8s.io/coredns:v1.11.1', 'ready': True}], 'restarts': 0, 'created': '2026-01-15T08:00:00+08:00'},
     {'name': 'etcd-master', 'namespace': 'kube-system', 'status': 'Running', 'node': 'master', 'ip': '10.0.0.1', 'containers': [{'name': 'etcd', 'image': 'registry.k8s.io/etcd:3.5.12', 'ready': True}], 'restarts': 0, 'created': '2026-01-15T08:00:00+08:00'},
     {'name': 'kube-proxy-n7x2k', 'namespace': 'kube-system', 'status': 'Running', 'node': 'node-01', 'ip': '192.168.1.21', 'containers': [{'name': 'kube-proxy', 'image': 'registry.k8s.io/kube-proxy:v1.29.3', 'ready': True}], 'restarts': 0, 'created': '2026-01-15T08:00:00+08:00'},
@@ -184,6 +185,7 @@ DEMO_DAEMONSETS = [
 DEMO_JOBS = [
     {'name': 'db-backup-20260309', 'namespace': 'production', 'completions': '1/1', 'duration': '45s', 'status': 'Complete', 'images': 'mysql:8.0', 'created': '2026-03-09T02:00:00+08:00'},
     {'name': 'data-migration-v2', 'namespace': 'production', 'completions': '3/3', 'duration': '12m', 'status': 'Complete', 'images': 'myapp/migrator:v2.1', 'created': '2026-03-08T10:00:00+08:00'},
+    {'name': 'redis-aof-check-20260309', 'namespace': 'production', 'completions': '1/1', 'duration': '38s', 'status': 'Complete', 'images': 'redis:7.2-alpine', 'created': '2026-03-09T03:00:00+08:00'},
 ]
 
 DEMO_CRONJOBS = [

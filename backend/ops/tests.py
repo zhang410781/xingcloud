@@ -1,4 +1,4 @@
-from urllib.parse import quote
+﻿from urllib.parse import quote
 import copy
 import importlib
 from datetime import datetime, timedelta
@@ -19,6 +19,7 @@ from ops.models import (
     AlertRule,
     AlertRuleTemplate,
     AlertNotificationChannel,
+    AlertNotificationLog,
     AlertNotificationRule,
     AlertRecipient,
     AlertRecipientGroup,
@@ -29,6 +30,8 @@ from ops.models import (
     K8sConfigRevision,
     LogDataSource,
     MetricDataSource,
+    ObservabilityDashboard,
+    ObservabilityDashboardPanel,
     TransactionTicket,
 )
 from ops.k8s_views import (
@@ -93,7 +96,7 @@ class DashboardStatsTests(TestCase):
         month_alert_time = now - timedelta(hours=3)
         old_time = now - timedelta(days=2)
         db_alert = Alert.objects.create(
-            title='MySQL 主库连接失败',
+            title='MySQL 涓诲簱杩炴帴澶辫触',
             level='critical',
             status=Alert.STATUS_ACTIVE,
             source='prometheus',
@@ -148,7 +151,7 @@ class DashboardStatsTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(payload['cockpit_title'], '智能运维平台驾驶舱')
+        self.assertEqual(payload['cockpit_title'], 'Xing-Cloud 运行总览')
         self.assertEqual(payload['sla']['target'], 99.96)
         self.assertIn(payload['sla']['month_status'], ['达标', '风险', '未达标'])
         self.assertEqual(payload['sla']['month_status'], '未达标')
@@ -958,7 +961,7 @@ class ObservabilityViewsTests(TestCase):
         self.assertIsNone(payload['modules']['dashboards'])
         self.assertEqual(payload['modules']['logs']['datasource_count'], existing_count + 1)
         self.assertEqual(len(payload['navigation']), 1)
-        self.assertEqual(payload['navigation'][0]['path'], '/logs')
+        self.assertEqual(payload['navigation'][0]['path'], '/logs/query')
 
     def test_observability_overview_ignores_grafana_config_for_native_dashboards(self):
         with override_settings(
@@ -969,7 +972,7 @@ class ObservabilityViewsTests(TestCase):
                     'url': 'http://grafana.example.com',
                     'default_path': '',
                     'demo_mode': True,
-                    'dashboards': [{'key': 'custom-trace', 'title': '自定义链路总览'}],
+                    'dashboards': [{'key': 'custom-trace', 'title': '鑷畾涔夐摼璺€昏'}],
                 },
             }
         ):
@@ -978,10 +981,11 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertNotIn('grafana', payload['modules'])
-        self.assertEqual(
-            [item['key'] for item in payload['modules']['dashboards']['dashboards']],
-            ['server', 'kubernetes', 'logs'],
-        )
+        dashboard_titles = [item['title'] for item in payload['modules']['dashboards']['dashboards']]
+        self.assertIn('K8S Cluster Health', dashboard_titles)
+        self.assertIn('Linux Server Resources', dashboard_titles)
+        self.assertIn('ClickHouse Container Logs', dashboard_titles)
+        self.assertNotIn('自定义链路总览', dashboard_titles)
 
     def test_observability_grafana_routes_are_removed(self):
         routes = [
@@ -1076,211 +1080,123 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(mock_get.call_args.kwargs['headers']['X-Scope-OrgID'], 'retail')
         self.assertEqual(mock_get.call_args.kwargs['params']['match[]'], '{__name__=~".*node_.*"}')
 
-    @patch('ops.observability_views.http_requests.get')
-    def test_native_server_dashboard_returns_prometheus_panels(self, mock_get):
-        datasource = MetricDataSource.objects.create(
-            name='Server Prometheus',
-            environment='prod',
-            is_default=True,
-            config={'query_url': 'http://prometheus.prod.local:9090'},
-        )
-        mock_get.return_value = MockHttpResponse({
-            'status': 'success',
-            'data': {
-                'resultType': 'vector',
-                'result': [{'metric': {'instance': 'server-01'}, 'value': [1710000000, '2']}],
-            },
-        })
+    def test_old_native_dashboard_query_endpoint_is_removed(self):
+        response = self.client.post('/api/observability/dashboards/query/', {'dashboard': 'kubernetes'}, format='json')
 
-        response = self.client.post(
-            '/api/observability/dashboards/query/',
-            {'dashboard': 'server', 'metric_datasource_id': datasource.id},
-            format='json',
-        )
+        self.assertEqual(response.status_code, 404)
 
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()
-        self.assertEqual(payload['dashboard']['key'], 'server')
-        panel_keys = {panel['key'] for panel in payload['panels']}
-        self.assertIn('server-node-total', panel_keys)
-        self.assertIn('server-cpu-usage', panel_keys)
-
-    @patch('ops.observability_views.http_requests.get')
-    def test_native_kubernetes_dashboard_returns_prometheus_panels(self, mock_get):
-        datasource = MetricDataSource.objects.create(
-            name='K8S Prometheus',
-            environment='prod',
-            is_default=True,
-            config={'query_url': 'http://prometheus.prod.local:9090'},
-        )
-        mock_get.return_value = MockHttpResponse({
-            'status': 'success',
-            'data': {
-                'resultType': 'vector',
-                'result': [{'metric': {'node': 'node-01'}, 'value': [1710000000, '4']}],
-            },
-        })
-
-        response = self.client.post(
-            '/api/observability/dashboards/query/',
-            {'dashboard': 'kubernetes', 'metric_datasource_id': datasource.id},
-            format='json',
-        )
-
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()
-        self.assertEqual(payload['dashboard']['key'], 'kubernetes')
-        panel_keys = {panel['key'] for panel in payload['panels']}
-        self.assertIn('cluster-node-total', panel_keys)
-        self.assertIn('cluster-cpu-usage', panel_keys)
-        self.assertTrue(all(panel['status'] in {'ok', 'warning'} for panel in payload['panels']))
-        self.assertIn('/api/v1/query', mock_get.call_args_list[0].args[0])
-
-    @patch('ops.observability_views.http_requests.get')
-    def test_native_metric_dashboard_uses_default_metric_datasource(self, mock_get):
-        default_source = MetricDataSource.objects.create(
-            name='Default Prometheus',
-            environment='prod',
-            is_default=True,
-            config={'query_url': 'http://prometheus.default.local:9090'},
-        )
+    def test_observability_integrations_returns_catalog_and_status(self):
         MetricDataSource.objects.create(
-            name='Secondary Prometheus',
-            environment='prod',
-            is_default=False,
-            config={'query_url': 'http://prometheus.secondary.local:9090'},
-        )
-        mock_get.return_value = MockHttpResponse({
-            'status': 'success',
-            'data': {
-                'resultType': 'vector',
-                'result': [{'metric': {'node': 'node-01'}, 'value': [1710000000, '4']}],
-            },
-        })
-
-        response = self.client.post(
-            '/api/observability/dashboards/query/',
-            {'dashboard': 'kubernetes', 'environment': 'prod'},
-            format='json',
-        )
-
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()
-        self.assertEqual(payload['metric_datasource']['id'], default_source.id)
-        self.assertEqual(payload['metric_datasource']['name'], 'Default Prometheus')
-        self.assertIn('http://prometheus.default.local:9090/api/v1/query', mock_get.call_args_list[0].args[0])
-
-    @patch('ops.log_views.http_requests.request')
-    def test_native_log_dashboard_executes_clickhouse_templates(self, mock_request):
-        datasource = LogDataSource.objects.create(
-            name='ClickHouse Logs',
-            provider='clickhouse',
-            config={
-                'endpoint': 'http://clickhouse.prod.local:8123',
-                'username': 'xinghai',
-                'password': 'Aws_kkk',
-                'collections': [
-                    {
-                        'key': 'container-logs',
-                        'name': 'K8S Container Logs',
-                        'database': 'container_logs',
-                        'table': 'logs',
-                        'time_field': 'createdtime',
-                        'message_fields': 'log_message',
-                        'level_field': 'log_level',
-                        'source_fields': 'namespace,pod_name,container_name',
-                        'search_fields': 'namespace,pod_name,node_name,container_name,log_level,log_message',
-                    },
-                ],
-            },
-        )
-        mock_request.return_value = MockHttpResponse({
-            'data': [{'value': 2, 'name': 'prod', 'time': '2026-07-08 10:00:00', 'body': 'ok'}],
-            'statistics': {'elapsed': 0.01},
-        })
-
-        response = self.client.post(
-            '/api/observability/dashboards/query/',
-            {
-                'dashboard': 'logs',
-                'log_datasource_id': datasource.id,
-                'log_dashboard': 'container',
-                'collection': 'container-logs',
-            },
-            format='json',
-        )
-
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()
-        self.assertEqual(payload['dashboard']['key'], 'logs')
-        self.assertEqual(payload['dashboard']['variant'], 'container')
-        panel_keys = {panel['key'] for panel in payload['panels']}
-        self.assertIn('container-log-total', panel_keys)
-        self.assertIn('container-log-level-trend', panel_keys)
-        executed_sql = ' '.join(call.kwargs.get('data', '') for call in mock_request.call_args_list)
-        self.assertIn('container_logs', executed_sql)
-        self.assertIn('FORMAT JSON', executed_sql)
-
-    @patch('ops.log_views.http_requests.request')
-    def test_native_log_dashboard_uses_default_clickhouse_datasource(self, mock_request):
-        default_source = LogDataSource.objects.create(
-            name='Default ClickHouse Logs',
-            provider='clickhouse',
+            name='Default Prometheus',
+            provider='prometheus',
+            config={'query_url': 'http://prometheus.local:9090'},
             is_default=True,
-            config={
-                'endpoint': 'http://clickhouse.default.local:8123',
-                'username': 'xinghai',
-                'password': 'Aws_kkk',
-                'collections': [
-                    {
-                        'key': 'container-logs',
-                        'name': 'K8S Container Logs',
-                        'database': 'container_logs',
-                        'table': 'logs',
-                        'time_field': 'createdtime',
-                        'message_fields': 'log_message',
-                        'level_field': 'log_level',
-                        'source_fields': 'namespace,pod_name,container_name',
-                        'search_fields': 'namespace,pod_name,node_name,container_name,log_level,log_message',
-                    },
-                ],
-            },
+            is_enabled=True,
+            last_check_status='ok',
         )
-        LogDataSource.objects.create(
-            name='Secondary ClickHouse Logs',
-            provider='clickhouse',
-            is_default=False,
-            config={
-                'endpoint': 'http://clickhouse.secondary.local:8123',
-                'collections': [
-                    {
-                        'key': 'container-logs',
-                        'name': 'K8S Container Logs',
-                        'database': 'secondary_logs',
-                        'table': 'logs',
-                        'time_field': 'createdtime',
-                    },
-                ],
-            },
-        )
-        mock_request.return_value = MockHttpResponse({
-            'data': [{'value': 2, 'name': 'prod', 'time': '2026-07-08 10:00:00', 'body': 'ok'}],
-            'statistics': {'elapsed': 0.01},
-        })
 
+        response = self.client.get('/api/observability/integrations/')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        keys = [item['key'] for item in payload['integrations']]
+        self.assertIn('mysql', keys)
+        self.assertIn('redis', keys)
+        self.assertIn('kafka', keys)
+        mysql = next(item for item in payload['integrations'] if item['key'] == 'mysql')
+        self.assertEqual(mysql['brand'], 'Xing-Cloud')
+        self.assertEqual(mysql['source_types'], ['prometheus'])
+        self.assertIn(mysql['status'], ['source_available', 'rules_installed', 'dashboards_installed'])
+        self.assertGreaterEqual(mysql['template_count'], 1)
+        self.assertGreaterEqual(mysql['dashboard_count'], 1)
+
+    def test_install_integration_rules_creates_rules_from_builtin_templates(self):
         response = self.client.post(
-            '/api/observability/dashboards/query/',
-            {'dashboard': 'logs', 'log_dashboard': 'container'},
+            '/api/observability/integrations/redis/install-rules/',
+            {'template_codes': ['redis-down', 'redis-high-memory']},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload['created_count'], 2)
+        self.assertEqual(payload['skipped_count'], 0)
+        self.assertTrue(AlertRule.objects.filter(template__code='redis-down').exists())
+        self.assertTrue(AlertRuleTemplate.objects.filter(code='redis-down', is_builtin=True).exists())
+
+    def test_integration_dashboard_install_enables_builtin_json_dashboard(self):
+        response = self.client.post('/api/observability/integrations/redis/install-dashboards/', {}, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload['integration'], 'redis')
+        self.assertGreaterEqual(payload['enabled_count'], 1)
+        self.assertTrue(ObservabilityDashboard.objects.filter(title='Redis Overview', is_builtin=True, is_enabled=True).exists())
+
+    def test_observability_overview_dashboard_summary_uses_json_definitions(self):
+        response = self.client.get('/api/observability/overview/')
+
+        self.assertEqual(response.status_code, 200)
+        dashboards = response.json()['modules']['dashboards']
+        self.assertEqual(dashboards['source'], 'json')
+        self.assertIn('Redis Overview', [item['title'] for item in dashboards['dashboards']])
+
+    def test_builtin_dashboards_update_log_and_k8s_panels(self):
+        from ops.dashboard_presets import ensure_builtin_dashboards
+
+        dashboard = ObservabilityDashboard.objects.create(
+            title='ClickHouse Container Logs',
+            description='old',
+            tags=['old'],
+            is_builtin=True,
+        )
+        ObservabilityDashboardPanel.objects.create(
+            dashboard=dashboard,
+            key='container-error-total',
+            title='Old Error Count',
+            chart_type='stat',
+            datasource_type='clickhouse',
+            targets=[{'collection': 'container-logs', 'sql': 'SELECT 1 AS value'}],
+            sort_order=1,
+        )
+
+        ensure_builtin_dashboards()
+
+        dashboard.refresh_from_db()
+        error_panel = dashboard.panels.get(key='container-error-total')
+        ingress_dashboard = ObservabilityDashboard.objects.get(title='Ingress Access Logs')
+        k8s_dashboard = ObservabilityDashboard.objects.get(title='K8S Cluster Health')
+
+        self.assertIn('container', dashboard.tags)
+        self.assertIn("upper(toString(log_level)) IN ('ERROR','FATAL','CRITICAL')", error_panel.targets[0]['sql'])
+        self.assertTrue(ingress_dashboard.panels.filter(key='ingress-5xx-path-top').exists())
+        self.assertTrue(k8s_dashboard.panels.filter(key='k8s-pod-restart-top').exists())
+
+    @patch('ops.views.evaluate_rule')
+    def test_alert_rule_dry_run_draft_creates_unsaved_preview_rule(self, mock_evaluate):
+        mock_evaluate.return_value = {'success': True, 'matched_count': 1, 'would_fire_count': 1, 'dry_run': True}
+        response = self.client.post(
+            '/api/alert-rules/dry-run-draft/',
+            {
+                'name': 'Draft Redis Down',
+                'source_type': 'prometheus',
+                'level': 'critical',
+                'query_config': {'query': 'redis_up == 0'},
+                'condition': {'operator': '>', 'threshold': 0},
+                'labels': {'integration': 'redis'},
+                'annotations': {},
+                'interval_seconds': 60,
+                'duration_seconds': 60,
+                'notify_enabled': True,
+                'auto_analyze': False,
+                'is_enabled': False,
+            },
             format='json',
         )
 
         self.assertEqual(response.status_code, 200)
-        payload = response.json()
-        self.assertEqual(payload['log_datasource']['id'], default_source.id)
-        self.assertEqual(payload['log_datasource']['name'], 'Default ClickHouse Logs')
-        executed_sql = ' '.join(call.kwargs.get('data', '') for call in mock_request.call_args_list)
-        self.assertIn('container_logs', executed_sql)
-        self.assertNotIn('secondary_logs', executed_sql)
+        self.assertEqual(response.json()['would_fire_count'], 1)
+        self.assertFalse(AlertRule.objects.filter(name='Draft Redis Down').exists())
 
     def test_metric_datasource_serializer_masks_secrets(self):
         datasource = MetricDataSource.objects.create(
@@ -2026,12 +1942,37 @@ class MiddlewareViewsTests(TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertIn('overview', payload)
+        self.assertIn('database', payload)
         self.assertIn('redis', payload)
         self.assertIn('rocketmq', payload)
         self.assertIn('elasticsearch', payload)
         self.assertTrue(any(item['cluster'] == 'order-cache' for item in payload['redis']['instances']))
         self.assertTrue(any(item['group'] == 'GID_AUDIT_ETL' for item in payload['rocketmq']['consumer_groups']))
         self.assertTrue(any(item['health'] == 'yellow' for item in payload['elasticsearch']['clusters']))
+
+    @patch('ops.middleware_views.execute_promql_query', create=True)
+    def test_middleware_overview_marks_mysql_and_redis_from_prometheus(self, mocked_promql):
+        mocked_promql.side_effect = [
+            {'results': [{'metric': {'pod': 'xing-cloud-mysql-exporter'}, 'value': [1783652960, '1']}]},
+            {'results': [{'metric': {}, 'value': [1783652960, '2']}]},
+            {'results': [{'metric': {}, 'value': [1783652960, '151']}]},
+            {'results': [{'metric': {'pod': 'xing-cloud-redis-exporter'}, 'value': [1783652960, '1']}]},
+        ]
+
+        response = self.client.get('/api/middleware/overview/')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        mysql = next(item for item in payload['database']['assets'] if item['engine'] == 'MySQL')
+        redis_monitoring = payload['redis']['monitoring']
+        self.assertEqual(mysql['monitoring']['status'], 'healthy')
+        self.assertEqual(mysql['monitoring']['up'], 1)
+        self.assertEqual(mysql['monitoring']['connections'], 2)
+        self.assertEqual(mysql['monitoring']['max_connections'], 151)
+        self.assertEqual(redis_monitoring['status'], 'healthy')
+        self.assertEqual(redis_monitoring['up'], 1)
+        self.assertEqual(mocked_promql.call_args_list[0].args[0], 'mysql_up')
+        self.assertEqual(mocked_promql.call_args_list[-1].args[0], 'redis_up')
 
     def test_redis_promote_action_swaps_master_role(self):
         initial = self.client.get('/api/middleware/overview/').json()
@@ -2222,9 +2163,44 @@ class AlertPlatformRuleTests(TestCase):
         results = payload['results'] if isinstance(payload, dict) and 'results' in payload else payload
         self.assertTrue(any(item['code'] == 'k8s-pod-crashloop-test' for item in results))
 
+    def test_builtin_template_bundles_include_k8s_events_and_linux_server(self):
+        from ops.alert_rule_presets import ensure_builtin_alert_rule_templates
+
+        ensure_builtin_alert_rule_templates()
+
+        k8s_codes = set(AlertRuleTemplate.objects.filter(default_labels__integration='kubernetes').values_list('code', flat=True))
+        linux_codes = set(AlertRuleTemplate.objects.filter(default_labels__integration='linux').values_list('code', flat=True))
+        self.assertSetEqual(
+            k8s_codes,
+            {'k8s-node-not-ready', 'k8s-abnormal-pods', 'k8s-pod-restarts', 'k8s-events-warning'},
+        )
+        self.assertSetEqual(
+            linux_codes,
+            {'linux-node-down', 'linux-high-cpu', 'linux-high-memory', 'linux-high-disk'},
+        )
+        k8s_events = AlertRuleTemplate.objects.get(code='k8s-events-warning')
+        self.assertEqual(k8s_events.source_type, AlertRuleTemplate.SOURCE_CLICKHOUSE)
+        self.assertEqual(k8s_events.query_config['collection'], 'k8s-events')
+
+    def test_alert_rule_template_api_returns_full_builtin_catalog(self):
+        from ops.alert_rule_presets import ensure_builtin_alert_rule_templates
+
+        ensure_builtin_alert_rule_templates()
+
+        response = self.client.get('/api/alert-rule-templates/')
+
+        self.assertEqual(response.status_code, 200)
+        rows = response.json()
+        if isinstance(rows, dict) and 'results' in rows:
+            rows = rows['results']
+        codes = {item['code'] for item in rows}
+        self.assertIn('k8s-events-warning', codes)
+        self.assertIn('linux-node-down', codes)
+        self.assertGreaterEqual(len(rows), AlertRuleTemplate.objects.filter(is_builtin=True).count())
+
     def test_alert_rule_can_be_created_from_template(self):
         template = AlertRuleTemplate.objects.create(
-            name='ClickHouse ERROR 日志突增',
+            name='ClickHouse ERROR 鏃ュ織绐佸',
             code='clickhouse-error-spike-test',
             source_type='clickhouse',
             level='warning',
@@ -2356,6 +2332,154 @@ class AlertPlatformRuleTests(TestCase):
         self.assertEqual(payload['results'][0]['value'], 8)
         self.assertEqual(Alert.objects.count(), 0)
         self.assertIn('container_logs', mock_request.call_args.args[1])
+
+    @patch('ops.alert_engine.evaluator._clickhouse_data_rows')
+    @patch('ops.alert_engine.evaluator._clickhouse_request')
+    def test_clickhouse_rule_sql_applies_level_list_from_query_config(self, mock_request, mock_rows):
+        mock_request.return_value = {'data': [{'value': 8}]}
+        mock_rows.return_value = [{'value': 8}]
+        LogDataSource.objects.create(
+            name='ClickHouse Error Levels',
+            provider='clickhouse',
+            is_default=True,
+            config={
+                'endpoint': 'http://clickhouse.prod.local:8123',
+                'collections': [
+                    {
+                        'key': 'container-logs',
+                        'database': 'container_logs',
+                        'table': 'logs',
+                        'time_field': 'timestamp',
+                        'level_field': 'log_level',
+                    },
+                ],
+            },
+        )
+        rule = AlertRule.objects.create(
+            name='Container ERROR spike',
+            code='container-error-spike-level-list',
+            source_type='clickhouse',
+            level='warning',
+            query_config={'collection': 'container-logs', 'window_minutes': 5, 'level': ['ERROR', 'FATAL', 'CRITICAL']},
+            condition={'operator': '>', 'threshold': 5},
+            notify_enabled=False,
+        )
+
+        response = self.client.post(f'/api/alert-rules/{rule.id}/evaluate/', {'dry_run': True}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        sql = mock_request.call_args.args[1]
+        self.assertIn('upper(toString(`log_level`)) IN', sql)
+        self.assertIn("'ERROR'", sql)
+        self.assertIn("'FATAL'", sql)
+        self.assertIn("'CRITICAL'", sql)
+
+    @patch('ops.alert_engine.evaluator._clickhouse_data_rows')
+    @patch('ops.alert_engine.evaluator._clickhouse_request')
+    def test_clickhouse_rule_sql_applies_ingress_status_min(self, mock_request, mock_rows):
+        mock_request.return_value = {'data': [{'value': 60}]}
+        mock_rows.return_value = [{'value': 60}]
+        LogDataSource.objects.create(
+            name='ClickHouse Ingress',
+            provider='clickhouse',
+            is_default=True,
+            config={
+                'endpoint': 'http://clickhouse.prod.local:8123',
+                'collections': [
+                    {
+                        'key': 'ingress-access',
+                        'database': 'nginxlogs',
+                        'table': 'nginx_access',
+                        'time_field': 'timestamp',
+                        'level_field': 'status',
+                    },
+                ],
+            },
+        )
+        rule = AlertRule.objects.create(
+            name='Ingress 5XX Spike',
+            code='ingress-5xx-status-min',
+            source_type='clickhouse',
+            level='warning',
+            query_config={'collection': 'ingress-access', 'window_minutes': 5, 'status_min': 500},
+            condition={'operator': '>', 'threshold': 50},
+            notify_enabled=False,
+        )
+
+        response = self.client.post(f'/api/alert-rules/{rule.id}/evaluate/', {'dry_run': True}, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        sql = mock_request.call_args.args[1]
+        self.assertIn('`status` >= 500', sql)
+
+    @patch('ops.log_views.http_requests.request')
+    def test_alert_log_evidence_returns_clickhouse_samples_for_rule_window(self, mock_request):
+        mock_request.return_value = MockHttpResponse({
+            'statistics': {'elapsed': 0.004},
+            'rows_before_limit_at_least': 1,
+            'data': [
+                {
+                    'timestamp': '2026-07-10 16:04:06.092',
+                    'namespace': 'monitoring',
+                    'pod_name': 'alertmanager-main-0',
+                    'container_name': 'alertmanager',
+                    'log_level': 'ERROR',
+                    'message': 'Notify for alerts failed',
+                    'log_message': 'Notify for alerts failed',
+                },
+            ],
+        })
+        LogDataSource.objects.create(
+            name='ClickHouse Evidence',
+            provider='clickhouse',
+            is_default=True,
+            is_enabled=True,
+            config={
+                'endpoint': 'http://clickhouse.prod.local:8123',
+                'collections': [
+                    {
+                        'key': 'container-logs',
+                        'database': 'container_logs',
+                        'table': 'logs',
+                        'time_field': 'timestamp',
+                        'level_field': 'log_level',
+                        'message_fields': 'message,log_message',
+                        'source_fields': 'namespace,pod_name,container_name',
+                        'search_fields': 'namespace,pod_name,container_name,log_level,message,log_message',
+                    },
+                ],
+            },
+        )
+        alert = Alert.objects.create(
+            title='Container ERROR Log Spike',
+            level='warning',
+            status=Alert.STATUS_ACTIVE,
+            source='Xing-Cloud Alert Rule',
+            source_type=Alert.SOURCE_PLATFORM,
+            service='container-logs',
+            labels={'collection': 'container-logs', 'alert_rule_source_type': 'clickhouse'},
+            raw_payload={
+                'rule': {
+                    'source_type': 'clickhouse',
+                    'query_config': {
+                        'collection': 'container-logs',
+                        'window_minutes': 5,
+                        'level': ['ERROR', 'FATAL', 'CRITICAL'],
+                    },
+                },
+            },
+        )
+
+        response = self.client.get(f'/api/alerts/{alert.id}/log-evidence/', {'limit': 5})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['summary']['collection'], 'container-logs')
+        self.assertEqual(payload['summary']['count'], 1)
+        self.assertEqual(payload['logs'][0]['message'], 'Notify for alerts failed')
+        sql = mock_request.call_args.kwargs['data']
+        self.assertIn('FROM `container_logs`.`logs`', sql)
+        self.assertIn('upper(toString(`log_level`)) IN', sql)
 
     def test_alert_rule_engine_status_endpoint(self):
         AlertRule.objects.create(
@@ -2496,3 +2620,101 @@ class AlertActionApiTests(TestCase):
         rule = AlertNotificationRule.objects.get(name='critical notify')
         self.assertEqual(rule.channels.count(), 1)
         self.assertEqual(rule.recipient_groups.count(), 1)
+
+    @patch('ops.alerting.requests.post')
+    def test_feishu_business_error_is_logged_as_error(self, mock_post):
+        mock_post.return_value = SimpleNamespace(status_code=200, text='{"code":19021,"msg":"sign match fail"}')
+        channel = AlertNotificationChannel.objects.create(
+            name='feishu',
+            channel_type='feishu',
+            config={'webhook_url': 'https://open.feishu.cn/open-apis/bot/v2/hook/test'},
+        )
+
+        response = self.client.post(f'/api/alert-notification-channels/{channel.id}/test/')
+
+        self.assertEqual(response.status_code, 200)
+        log = AlertNotificationLog.objects.get(channel=channel)
+        self.assertEqual(log.status, AlertNotificationLog.STATUS_ERROR)
+        self.assertIn('19021', log.error_message)
+        self.assertIn('sign match fail', log.error_message)
+        self.assertIn('19021', log.response_body)
+
+    @patch('ops.alerting.requests.post')
+    def test_feishu_secret_adds_timestamp_and_signature(self, mock_post):
+        mock_post.return_value = SimpleNamespace(status_code=200, text='{"code":0,"msg":"success"}')
+        channel = AlertNotificationChannel.objects.create(
+            name='feishu',
+            channel_type='feishu',
+            config={'webhook_url': 'https://open.feishu.cn/open-apis/bot/v2/hook/test', 'secret': 'sign-secret'},
+        )
+
+        response = self.client.post(f'/api/alert-notification-channels/{channel.id}/test/')
+
+        self.assertEqual(response.status_code, 200)
+        payload = mock_post.call_args.kwargs['json']
+        self.assertIn('timestamp', payload)
+        self.assertIn('sign', payload)
+        self.assertRegex(str(payload['timestamp']), r'^\d{10}$')
+        self.assertTrue(payload['sign'])
+
+    @patch('ops.alerting.requests.post')
+    def test_channel_test_uses_fixed_xing_cloud_test_alert(self, mock_post):
+        mock_post.return_value = SimpleNamespace(status_code=200, text='{"code":0,"msg":"success"}')
+        Alert.objects.create(title='Recent real alert', level='critical', source='monitor', source_type=Alert.SOURCE_PLATFORM, message='real')
+        channel = AlertNotificationChannel.objects.create(
+            name='feishu',
+            channel_type='feishu',
+            config={'webhook_url': 'https://open.feishu.cn/open-apis/bot/v2/hook/test'},
+        )
+
+        response = self.client.post(f'/api/alert-notification-channels/{channel.id}/test/')
+
+        self.assertEqual(response.status_code, 200)
+        log = AlertNotificationLog.objects.get(channel=channel)
+        self.assertEqual(log.alert.title, 'Xing-Cloud 通知渠道测试')
+        self.assertEqual(log.alert.source, 'Xing-Cloud')
+
+    @patch('ops.alerting.requests.post')
+    def test_empty_notification_template_uses_alert_title(self, mock_post):
+        mock_post.return_value = SimpleNamespace(status_code=200, text='{"code":0,"msg":"success"}')
+        channel = AlertNotificationChannel.objects.create(
+            name='feishu',
+            channel_type='feishu',
+            config={'webhook_url': 'https://open.feishu.cn/open-apis/bot/v2/hook/test'},
+        )
+        from ops.alerting import send_alert_notification
+
+        send_alert_notification(channel, self.alert, {'names': ['ops']}, action='fire')
+
+        payload = mock_post.call_args.kwargs['json']
+        self.assertEqual(payload['card']['header']['title']['content'], self.alert.title)
+
+    def test_feishu_secret_is_masked_and_empty_update_keeps_existing_secret(self):
+        channel = AlertNotificationChannel.objects.create(
+            name='feishu',
+            channel_type='feishu',
+            config={'webhook_url': 'https://open.feishu.cn/open-apis/bot/v2/hook/test', 'secret': 'old-secret'},
+        )
+
+        detail = self.client.get(f'/api/alert-notification-channels/{channel.id}/')
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.json()['config']['secret'], '******')
+
+        response = self.client.put(
+            f'/api/alert-notification-channels/{channel.id}/',
+            {
+                'name': channel.name,
+                'channel_type': channel.channel_type,
+                'is_enabled': channel.is_enabled,
+                'send_resolved': channel.send_resolved,
+                'timeout_seconds': channel.timeout_seconds,
+                'template_title': channel.template_title,
+                'template_body': channel.template_body,
+                'config': {'webhook_url': 'https://open.feishu.cn/open-apis/bot/v2/hook/test', 'secret': ''},
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        channel.refresh_from_db()
+        self.assertEqual(channel.config['secret'], 'old-secret')

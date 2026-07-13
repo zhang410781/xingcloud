@@ -1871,7 +1871,7 @@ Expected:
 Run:
 
 ```bash
-rg -n "XingCloud|星云|sxdevops|sx-" frontend/src docs/监控告警/方案设计
+rg -n "<legacy-brand-keywords>" frontend/src docs/监控告警/方案设计
 ```
 
 Expected: no matches.

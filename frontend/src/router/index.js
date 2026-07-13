@@ -92,8 +92,13 @@ const routes = [
       },
       {
         path: 'assets',
-        redirect: '/assets/registration',
-        meta: { hidden: true, anyPermissions: ['ops.task.resource.view', 'ops.task.resource.manage'] },
+        redirect: () => {
+          const authStore = useAuthStore(pinia)
+          if (authStore.hasAnyPermission(['ops.task.resource.view', 'ops.task.resource.manage'])) return '/assets/registration'
+          if (authStore.hasAnyPermission(['ops.middleware.view', 'ops.middleware.manage'])) return '/assets/middleware'
+          return '/403'
+        },
+        meta: { hidden: true, anyPermissions: ['ops.task.resource.view', 'ops.task.resource.manage', 'ops.middleware.view', 'ops.middleware.manage'] },
       },
       {
         path: 'assets/registration',
@@ -103,6 +108,16 @@ const routes = [
           title: '资产登记',
           icon: 'Monitor',
           anyPermissions: ['ops.task.resource.view', 'ops.task.resource.manage'],
+        },
+      },
+      {
+        path: 'assets/middleware',
+        name: 'MiddlewareAssets',
+        component: () => import('@/views/MiddlewareAssets.vue'),
+        meta: {
+          title: '中间件资产',
+          icon: 'Coin',
+          anyPermissions: ['ops.middleware.view', 'ops.middleware.manage'],
         },
       },
       {
@@ -260,9 +275,8 @@ const routes = [
       },
       {
         path: 'alerts',
-        name: 'Alerts',
-        component: () => import('@/views/Alerts.vue'),
-        meta: { title: '告警中心', icon: 'Bell', anyPermissions: ['ops.alert.view', 'ops.alert.config.view'] },
+        redirect: '/observability/alerts',
+        meta: { hidden: true, anyPermissions: ['ops.alert.view', 'ops.alert.config.view'] },
       },
       {
         path: 'observability',
@@ -311,6 +325,12 @@ const routes = [
           icon: 'DataLine',
           anyPermissions: observabilityOverviewPermissions,
         },
+      },
+      {
+        path: 'observability/alerts',
+        name: 'ObservabilityAlerts',
+        component: () => import('@/views/Alerts.vue'),
+        meta: { title: '告警中心', icon: 'Bell', anyPermissions: ['ops.alert.view', 'ops.alert.config.view'] },
       },
       {
         path: 'observability/metrics',

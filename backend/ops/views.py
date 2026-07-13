@@ -94,6 +94,7 @@ from .alerting import (
     handle_interaction_token,
     match_matchers,
 )
+from .alert_log_evidence import build_alert_log_evidence
 from .alert_rules import trigger_alert_rule
 from .sla import build_dashboard_sla as build_sla_dashboard_summary
 
@@ -2148,6 +2149,7 @@ class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.Mod
         'close': ['ops.alert.manage'],
         'reopen': ['ops.alert.manage'],
         'notify': ['ops.alert.notify'],
+        'log_evidence': ['ops.alert.view'],
     }
 
     def get_queryset(self):
@@ -2259,10 +2261,20 @@ class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.Mod
         logs = dispatch_alert_notifications(alert, action=request.data.get('action') or 'fire', request=request, force=True)
         return Response({'sent': len(logs), 'logs': AlertNotificationLogSerializer(logs, many=True).data})
 
+    @action(detail=True, methods=['get'], url_path='log-evidence')
+    def log_evidence(self, request, pk=None):
+        alert = self.get_object()
+        try:
+            limit = int(request.query_params.get('limit') or 10)
+        except (TypeError, ValueError):
+            limit = 10
+        return Response(build_alert_log_evidence(alert, limit=limit))
+
 
 class AlertRuleTemplateViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = AlertRuleTemplate.objects.all()
     serializer_class = AlertRuleTemplateSerializer
+    pagination_class = None
     search_fields = ['name', 'code', 'source_type', 'description']
     filterset_fields = ['source_type', 'level', 'is_builtin', 'is_enabled']
     event_module = 'ops'
@@ -2298,6 +2310,7 @@ class AlertRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets
         'destroy': ['ops.alert.config.manage'],
         'trigger': ['ops.alert.config.manage'],
         'evaluate': ['ops.alert.config.manage'],
+        'dry_run_draft': ['ops.alert.config.manage'],
         'engine_status': ['ops.alert.config.view'],
     }
 
@@ -2324,6 +2337,18 @@ class AlertRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets
         rule = self.get_object()
         dry_run = str(request.data.get('dry_run', '')).lower() in {'1', 'true', 'yes'}
         result = evaluate_rule(rule, dry_run=dry_run, request=request)
+        response_status = status.HTTP_200_OK if result.get('success') else status.HTTP_502_BAD_GATEWAY
+        return Response(result, status=response_status)
+
+    @action(detail=False, methods=['post'], url_path='dry-run-draft')
+    def dry_run_draft(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        rule = AlertRule(**serializer.validated_data)
+        rule.id = None
+        if not rule.code:
+            rule.code = 'draft-alert-rule'
+        result = evaluate_rule(rule, dry_run=True, request=request)
         response_status = status.HTTP_200_OK if result.get('success') else status.HTTP_502_BAD_GATEWAY
         return Response(result, status=response_status)
 
@@ -2390,16 +2415,24 @@ class AlertNotificationChannelViewSet(EventWallModelViewSetMixin, RBACPermission
     @action(detail=True, methods=['post'])
     def test(self, request, pk=None):
         channel = self.get_object()
-        alert = Alert.objects.order_by('-created_at').first()
-        if not alert:
-            alert = Alert.objects.create(
-                title='告警通知测试',
-                level='info',
-                source='Xing-Cloud',
-                source_type=Alert.SOURCE_PLATFORM,
-                message='这是一条用于验证通知渠道的测试告警。',
-                status=Alert.STATUS_ACTIVE,
-            )
+        alert, _ = Alert.objects.update_or_create(
+            fingerprint='xing-cloud-notification-channel-test',
+            defaults={
+                'title': 'Xing-Cloud 通知渠道测试',
+                'level': 'info',
+                'source': 'Xing-Cloud',
+                'source_type': Alert.SOURCE_PLATFORM,
+                'message': '这是一条用于验证通知渠道连通性和模板渲染的测试告警。',
+                'status': Alert.STATUS_ACTIVE,
+                'resource_type': 'notification-channel',
+                'resource': channel.name,
+                'service': 'alert-notification',
+                'environment': 'test',
+                'starts_at': timezone.now(),
+                'last_received_at': timezone.now(),
+                'is_suppressed': False,
+            },
+        )
         temp_rule = AlertNotificationRule(name='渠道测试', is_enabled=True)
         logs = []
         from .alerting import send_alert_notification
@@ -2586,7 +2619,7 @@ def dashboard_stats(request):
     ).data
 
     return Response({
-        'cockpit_title': '智能运维平台驾驶舱',
+        'cockpit_title': 'Xing-Cloud 运行总览',
         'sla': dashboard_sla['sla'],
         'product_slas': dashboard_sla['product_slas'],
         'workorders': dashboard_workorders,

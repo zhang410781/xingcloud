@@ -1,4 +1,4 @@
-# XingCloud 下一窗口交接备忘
+# Xing-Cloud 下一窗口交接备忘
 
 更新时间：2026-07-09
 
@@ -206,5 +206,5 @@ curl --noproxy '*' -I -m 10 -H 'Host: xinghai.example.com' http://10.105.118.19/
 下一窗口开场可以直接说：
 
 ```text
-请读取 NEXT_WINDOW_CONTEXT.md，基于当前已上线的 XingCloud，重新设计并实现可观测模块。不要恢复 Jaeger/SkyWalking/Tempo/Zipkin/SLS/Grafana/Webhook 告警接入。当前数据源以 Prometheus 指标和 ClickHouse 日志为主。
+请读取 NEXT_WINDOW_CONTEXT.md，基于当前已上线的 Xing-Cloud，重新设计并实现可观测模块。不要恢复 Jaeger/SkyWalking/Tempo/Zipkin/SLS/Grafana/Webhook 告警接入。当前数据源以 Prometheus 指标和 ClickHouse 日志为主。
 ```

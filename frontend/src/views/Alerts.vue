@@ -15,6 +15,8 @@
       </div>
     </section>
 
+    <ObservabilityRouteTabs group="observability" />
+
     <div class="audit-grid alert-top-stats">
       <button
         v-for="card in statCards"
@@ -334,7 +336,7 @@
       <section class="panel">
         <div class="section-head">
           <h3>&#x544A;&#x8B66;&#x89C4;&#x5219;</h3>
-          <el-button v-if="canManageConfig" size="small" type="primary" :icon="Plus" @click="openAlertRule()">&#x65B0;&#x589E;&#x89C4;&#x5219;</el-button>
+          <el-button v-if="canManageConfig" size="small" type="primary" :icon="Plus" @click="openWizardForSource()">新建规则</el-button>
         </div>
         <el-table :data="alertRules" stripe size="small" v-loading="configLoading">
           <el-table-column prop="name" label="&#x89C4;&#x5219;&#x540D;&#x79F0;" min-width="180">
@@ -384,43 +386,12 @@
     </template>
 
     <template v-if="activeTab === 'templates' && canViewConfig">
-      <section class="panel">
-        <div class="section-head">
-          <h3>&#x89C4;&#x5219;&#x6A21;&#x677F;</h3>
-          <el-button v-if="canManageConfig" size="small" type="primary" :icon="Plus" @click="openAlertRuleTemplate()">&#x65B0;&#x589E;&#x6A21;&#x677F;</el-button>
-        </div>
-        <el-table :data="alertRuleTemplates" stripe size="small" v-loading="configLoading">
-          <el-table-column prop="name" label="&#x6A21;&#x677F;&#x540D;&#x79F0;" min-width="190">
-            <template #default="{ row }">
-              <div class="rule-name-cell">
-                <strong>{{ row.name }}</strong>
-                <span>{{ row.code }}</span>
-              </div>
-            </template>
-          </el-table-column>
-          <el-table-column prop="source_type" label="&#x6570;&#x636E;&#x6E90;" width="130">
-            <template #default="{ row }">{{ ruleSourceText(row.source_type) }}</template>
-          </el-table-column>
-          <el-table-column prop="level" label="&#x7EA7;&#x522B;" width="90">
-            <template #default="{ row }"><el-tag :type="levelType(row.level)" size="small">{{ row.level_display || levelText(row.level) }}</el-tag></template>
-          </el-table-column>
-          <el-table-column prop="description" label="&#x8BF4;&#x660E;" min-width="240" show-overflow-tooltip />
-          <el-table-column label="&#x7C7B;&#x578B;" width="90">
-            <template #default="{ row }"><el-tag :type="row.is_builtin ? 'primary' : 'info'" size="small">{{ row.is_builtin ? '&#x5185;&#x7F6E;' : '&#x81EA;&#x5B9A;&#x4E49;' }}</el-tag></template>
-          </el-table-column>
-          <el-table-column label="&#x72B6;&#x6001;" width="80">
-            <template #default="{ row }"><el-tag :type="row.is_enabled ? 'success' : 'info'" size="small">{{ row.is_enabled ? '&#x542F;&#x7528;' : '&#x505C;&#x7528;' }}</el-tag></template>
-          </el-table-column>
-          <el-table-column label="&#x64CD;&#x4F5C;" width="130" fixed="right">
-            <template #default="{ row }">
-              <el-button v-if="canManageConfig" link size="small" @click="openAlertRuleTemplate(row)">&#x7F16;&#x8F91;</el-button>
-              <el-popconfirm v-if="canManageConfig && !row.is_builtin" title="&#x5220;&#x9664;&#x8BE5;&#x89C4;&#x5219;&#x6A21;&#x677F;&#xFF1F;" @confirm="removeAlertRuleTemplate(row.id)">
-                <template #reference><el-button link type="danger" size="small">&#x5220;&#x9664;</el-button></template>
-              </el-popconfirm>
-            </template>
-          </el-table-column>
-        </el-table>
-      </section>
+      <RuleTemplateCatalog
+        v-loading="configLoading"
+        :templates="alertRuleTemplates"
+        @import-rule="openAlertRuleFromTemplate"
+        @preview="openAlertRuleTemplate"
+      />
     </template>
 
     <template v-if="activeTab === 'logs' && canViewAlerts">
@@ -475,6 +446,28 @@
               <el-descriptions-item label="&#x63CF;&#x8FF0;">{{ selectedAlert.message }}</el-descriptions-item>
             </el-descriptions>
           </section>
+          <section class="alert-detail-card log-evidence-card" v-loading="alertLogEvidenceLoading">
+            <div class="detail-section-title">
+              <h4>日志证据</h4>
+              <span>
+                {{ alertLogEvidence?.summary?.collection || 'ClickHouse' }}
+                / {{ alertLogEvidence?.summary?.window_minutes || '-' }}m
+                / {{ alertLogEvidence?.summary?.count || 0 }} 条
+              </span>
+            </div>
+            <span v-if="alertLogEvidence?.summary?.error" class="detail-empty">{{ alertLogEvidence.summary.error }}</span>
+            <span v-else-if="!alertLogEvidenceLoading && !alertLogEvidenceLogs.length" class="detail-empty">暂无匹配日志样本</span>
+            <div v-else class="log-evidence-list">
+              <article v-for="(log, index) in alertLogEvidenceLogs" :key="`${log.timestamp || index}-${index}`" class="log-evidence-item">
+                <div class="log-evidence-meta">
+                  <el-tag size="small" :type="logLevelType(log.level)">{{ String(log.level || '-').toUpperCase() }}</el-tag>
+                  <span>{{ formatTime(log.timestamp) || log.timestamp || '-' }}</span>
+                  <strong>{{ log.source || '-' }}</strong>
+                </div>
+                <p>{{ log.message || '-' }}</p>
+              </article>
+            </div>
+          </section>
           <div v-if="canManageAlerts || canNotifyAlerts" class="detail-actions">
             <el-button v-if="!selectedAlert.current_user_claimed" size="small" type="success" @click="runAlertAction(selectedAlert, 'claim')">&#x8BA4;&#x9886;</el-button>
             <el-button v-if="selectedAlert.current_user_claimed" size="small" @click="runAlertAction(selectedAlert, 'unclaim')">&#x53D6;&#x6D88;&#x8BA4;&#x9886;</el-button>
@@ -507,6 +500,12 @@
         </div>
       </template>
     </el-drawer>
+
+    <AlertRuleWizard
+      v-model="ruleWizardVisible"
+      :templates="alertRuleTemplates"
+      @save="saveWizardRule"
+    />
 
     <el-dialog v-model="ruleDialog.visible" title="&#x544A;&#x8B66;&#x89C4;&#x5219;" width="760px">
       <el-form :model="ruleDialog.form" label-width="130px">
@@ -597,9 +596,17 @@
         </el-form-item>
         <el-form-item label="&#x901A;&#x77E5;&#x5730;&#x5740;"><el-input v-model="channelDialog.form.webhook_url" /></el-form-item>
         <el-form-item label="&#x8BBF;&#x95EE;&#x4EE4;&#x724C;"><el-input v-model="channelDialog.form.access_token" show-password /></el-form-item>
+        <el-form-item v-if="channelDialog.form.channel_type === 'feishu'" label="签名密钥">
+          <el-input v-model="channelDialog.form.secret" show-password placeholder="飞书机器人开启签名校验时填写" />
+        </el-form-item>
         <el-form-item label="&#x9ED8;&#x8BA4;&#x63A5;&#x6536;&#x5730;&#x5740;"><el-input v-model="channelDialog.form.to" placeholder="&#x591A;&#x4E2A;&#x63A5;&#x6536;&#x5730;&#x5740;&#x6216;&#x624B;&#x673A;&#x53F7;&#xFF0C;&#x4F7F;&#x7528;&#x82F1;&#x6587;&#x9017;&#x53F7;&#x5206;&#x9694;" /></el-form-item>
-        <el-form-item label="&#x6807;&#x9898;&#x6A21;&#x677F;"><el-input v-model="channelDialog.form.template_title" /></el-form-item>
-        <el-form-item label="&#x5185;&#x5BB9;&#x6A21;&#x677F;"><el-input v-model="channelDialog.form.template_body" type="textarea" :rows="4" /></el-form-item>
+        <el-collapse class="channel-advanced">
+          <el-collapse-item title="高级模板" name="template">
+            <p class="field-help">默认直接使用告警标题和告警详情。仅在需要自定义格式时填写，支持 {title}、{level}、{service}、{resource}、{message}。</p>
+            <el-form-item label="&#x6807;&#x9898;&#x6A21;&#x677F;"><el-input v-model="channelDialog.form.template_title" /></el-form-item>
+            <el-form-item label="&#x5185;&#x5BB9;&#x6A21;&#x677F;"><el-input v-model="channelDialog.form.template_body" type="textarea" :rows="4" /></el-form-item>
+          </el-collapse-item>
+        </el-collapse>
         <el-form-item label="&#x6062;&#x590D;&#x901A;&#x77E5;"><el-switch v-model="channelDialog.form.send_resolved" /></el-form-item>
         <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="channelDialog.form.is_enabled" /></el-form-item>
       </el-form>
@@ -788,7 +795,7 @@
 
 <script setup>
 import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { Bell, Delete, Document, Operation, Plus, Refresh, Search, Setting } from '@element-plus/icons-vue'
 import { ElButton, ElInput, ElMessage, ElMessageBox, ElOption, ElPopconfirm, ElSelect, ElTable, ElTableColumn, ElTag } from 'element-plus'
 import {
@@ -820,6 +827,7 @@ import {
   getAlertAggregationRules,
   getAlertEscalationPolicies,
   getAlertGroups,
+  getAlertLogEvidence,
   getAlertInhibitionRules,
   getAlertMuteRules,
   getAlertNotificationChannels,
@@ -850,6 +858,9 @@ import {
   updateAlertRuleTemplate,
 } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
+import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
+import AlertRuleWizard from '@/components/observability/AlertRuleWizard.vue'
+import RuleTemplateCatalog from '@/components/observability/RuleTemplateCatalog.vue'
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value || []))
@@ -993,6 +1004,7 @@ const PolicyTable = defineComponent({
 })
 
 const route = useRoute()
+const router = useRouter()
 const authStore = useAuthStore()
 
 const activeTab = ref('events')
@@ -1071,8 +1083,11 @@ const inhibitionRules = ref([])
 const muteRules = ref([])
 const escalationPolicies = ref([])
 const notificationLogs = ref([])
+const ruleWizardVisible = ref(false)
 const selectedAlert = ref(null)
 const detailVisible = ref(false)
+const alertLogEvidence = ref(null)
+const alertLogEvidenceLoading = ref(false)
 
 const canViewAlerts = computed(() => authStore.hasPermission('ops.alert.view'))
 const canManageAlerts = computed(() => authStore.hasPermission('ops.alert.manage'))
@@ -1100,6 +1115,8 @@ const activeStatKey = computed(() => {
   ))?.key || ''
 })
 
+const alertLogEvidenceLogs = computed(() => alertLogEvidence.value?.logs || [])
+
 const environmentOptions = computed(() => {
   const values = new Set()
   for (const item of alerts.value || []) {
@@ -1122,6 +1139,14 @@ const policyDialog = reactive({ visible: false, kind: 'aggregation', title: '', 
 
 function levelType(level) {
   return { critical: 'danger', warning: 'warning', info: 'info' }[level] || 'info'
+}
+
+function logLevelType(level) {
+  const normalized = String(level || '').toLowerCase()
+  if (['fatal', 'critical', 'error'].includes(normalized)) return 'danger'
+  if (['warn', 'warning'].includes(normalized)) return 'warning'
+  if (['debug', 'trace'].includes(normalized)) return 'info'
+  return 'info'
 }
 
 function levelText(level) {
@@ -1229,9 +1254,37 @@ function openGroup(row) {
   refreshEvents()
 }
 
+async function fetchAlertLogEvidence(row) {
+  alertLogEvidence.value = null
+  if (!row?.id || !canViewAlerts.value) return
+  const alertId = row.id
+  alertLogEvidenceLoading.value = true
+  try {
+    const payload = await getAlertLogEvidence(alertId, { limit: 8 })
+    if (selectedAlert.value?.id === alertId) {
+      alertLogEvidence.value = payload
+    }
+  } catch (error) {
+    if (selectedAlert.value?.id === alertId) {
+      alertLogEvidence.value = {
+        summary: {
+          count: 0,
+          error: error?.response?.data?.detail || error?.response?.data?.error || error?.message || '日志证据查询失败',
+        },
+        logs: [],
+      }
+    }
+  } finally {
+    if (selectedAlert.value?.id === alertId) {
+      alertLogEvidenceLoading.value = false
+    }
+  }
+}
+
 function openDetail(row) {
   selectedAlert.value = row
   detailVisible.value = true
+  fetchAlertLogEvidence(row)
 }
 
 function handleSelectionChange(rows) {
@@ -1383,7 +1436,7 @@ async function fetchAlertRules() {
   try {
     const [ruleList, templateList] = await Promise.all([
       getAlertRules(),
-      getAlertRuleTemplates(),
+      getAlertRuleTemplates({ page_size: 200 }),
     ])
     alertRules.value = listOf(ruleList)
     alertRuleTemplates.value = listOf(templateList)
@@ -1395,7 +1448,7 @@ async function fetchAlertRules() {
 async function fetchAlertRuleTemplates() {
   configLoading.value = true
   try {
-    alertRuleTemplates.value = listOf(await getAlertRuleTemplates())
+    alertRuleTemplates.value = listOf(await getAlertRuleTemplates({ page_size: 200 }))
   } finally {
     configLoading.value = false
   }
@@ -1413,8 +1466,12 @@ async function fetchNotificationLogs() {
 async function refreshAll() {
   ensureTabAccess()
   if (activeTab.value === 'events' && canViewAlerts.value) await refreshEvents()
-  if (activeTab.value === 'rules' && canViewConfig.value) await fetchAlertRules()
-  if (activeTab.value === 'templates' && canViewConfig.value) await fetchAlertRuleTemplates()
+  if (activeTab.value === 'rules' && canViewConfig.value) {
+    await fetchAlertRules()
+  }
+  if (activeTab.value === 'templates' && canViewConfig.value) {
+    await fetchAlertRuleTemplates()
+  }
   if (activeTab.value === 'notify' && canViewConfig.value) await loadNotifyTab()
   if (activeTab.value === 'policies' && canViewConfig.value) await loadPolicyTab()
   if (activeTab.value === 'logs' && canViewAlerts.value) await fetchNotificationLogs()
@@ -1506,6 +1563,27 @@ function applyTemplateToRule(templateId) {
   form.notify_enabled = Boolean(template.notify_enabled)
   form.auto_analyze = Boolean(template.auto_analyze)
   if (!form.description) form.description = template.description || ''
+}
+
+function openWizardForSource() {
+  ruleWizardVisible.value = true
+  if (!alertRuleTemplates.value.length) fetchAlertRuleTemplates()
+}
+
+function openAlertRuleFromTemplate(template) {
+  openAlertRule()
+  ruleDialog.form.template = template.id
+  applyTemplateToRule(template.id)
+}
+
+async function saveWizardRule(data) {
+  try {
+    await createAlertRule(data)
+    ElMessage.success('告警规则已保存')
+    await fetchAlertRules()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '告警规则保存失败')
+  }
 }
 
 function buildAlertRulePayload(form) {
@@ -1609,7 +1687,7 @@ async function testAlertRule(row) {
 }
 
 function emptyChannel() {
-  return { id: null, name: '', channel_type: 'dingtalk', webhook_url: '', access_token: '', to: '', template_title: '', template_body: '', send_resolved: true, is_enabled: true, timeout_seconds: 8 }
+  return { id: null, name: '', channel_type: 'dingtalk', webhook_url: '', access_token: '', secret: '', to: '', template_title: '', template_body: '', send_resolved: true, is_enabled: true, timeout_seconds: 8 }
 }
 
 function openChannel(row = null) {
@@ -1621,6 +1699,7 @@ function openChannel(row = null) {
       ...row,
       webhook_url: config.webhook_url || config.url || '',
       access_token: config.access_token || config.token || '',
+      secret: config.secret || config.sign_secret || '',
       to: Array.isArray(configTo) ? configTo.join(',') : String(configTo || ''),
     }
   } else {
@@ -1635,9 +1714,14 @@ async function saveChannel() {
   data.config = {
     ...(data.webhook_url ? { webhook_url: data.webhook_url } : {}),
     ...(data.access_token ? { access_token: data.access_token } : {}),
+    ...(data.channel_type === 'feishu' && data.secret ? { secret: data.secret } : {}),
     ...(data.channel_type === 'email' ? { to: recipientsText } : {}),
     ...((data.channel_type === 'sms' || data.channel_type === 'voice') ? { phones: recipientsText } : {}),
   }
+  delete data.webhook_url
+  delete data.access_token
+  delete data.secret
+  delete data.to
   if (data.id) await updateAlertNotificationChannel(data.id, data)
   else await createAlertNotificationChannel(data)
   channelDialog.visible = false
@@ -1652,8 +1736,21 @@ async function removeChannel(id) {
 }
 
 async function testChannel(row) {
-  await testAlertNotificationChannel(row.id)
-  ElMessage.success('\u6D4B\u8BD5\u8BF7\u6C42\u5DF2\u63D0\u4EA4')
+  const result = listOf(await testAlertNotificationChannel(row.id))
+  const log = result[0] || {}
+  if (log.status === 'success') {
+    ElMessage.success('测试通知发送成功')
+  } else {
+    await ElMessageBox.alert(
+      [
+        `状态：${log.status_display || log.status || '-'}`,
+        `错误：${log.error_message || '-'}`,
+        `响应：${log.response_body || '-'}`,
+      ].join('\n'),
+      '测试通知结果',
+      { confirmButtonText: '知道了' },
+    )
+  }
   await fetchNotificationLogs()
 }
 
@@ -2274,6 +2371,52 @@ onMounted(async () => {
   word-break: break-word;
 }
 
+.log-evidence-card {
+  min-height: 74px;
+}
+
+.log-evidence-list {
+  display: grid;
+  gap: 7px;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.log-evidence-item {
+  background: #f8fafc;
+  border: 1px solid #edf0f5;
+  border-radius: 8px;
+  padding: 7px;
+}
+
+.log-evidence-meta {
+  align-items: center;
+  color: #64748b;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  margin-bottom: 5px;
+}
+
+.log-evidence-meta strong {
+  color: #334155;
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.log-evidence-item p {
+  color: #1e293b;
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .detail-actions {
   background: #fff;
   border: 1px solid var(--alert-border-soft);
@@ -2384,6 +2527,21 @@ onMounted(async () => {
 
 .level-row .el-select {
   min-width: 220px;
+}
+
+.channel-advanced {
+  margin: 4px 0 14px;
+}
+
+.channel-advanced :deep(.el-collapse-item__content) {
+  padding-bottom: 0;
+}
+
+.field-help {
+  margin: 0 0 12px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .alerts-page :deep(.el-input__wrapper),
