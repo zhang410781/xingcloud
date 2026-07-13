@@ -2295,7 +2295,7 @@ class AlertRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets
     queryset = AlertRule.objects.select_related('template').all()
     serializer_class = AlertRuleSerializer
     search_fields = ['name', 'code', 'source_type', 'description']
-    filterset_fields = ['source_type', 'level', 'is_enabled', 'notify_enabled', 'auto_analyze', 'template']
+    filterset_fields = ['category', 'source_type', 'level', 'is_enabled', 'notify_enabled', 'auto_analyze', 'template']
     event_module = 'ops'
     event_resource_type = 'alert_rule'
     event_resource_label = '告警规则'
@@ -2308,11 +2308,50 @@ class AlertRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets
         'update': ['ops.alert.config.manage'],
         'partial_update': ['ops.alert.config.manage'],
         'destroy': ['ops.alert.config.manage'],
+        'apply_preset': ['ops.alert.config.manage'],
+        'by_category': ['ops.alert.config.view'],
         'trigger': ['ops.alert.config.manage'],
         'evaluate': ['ops.alert.config.manage'],
         'dry_run_draft': ['ops.alert.config.manage'],
         'engine_status': ['ops.alert.config.view'],
     }
+
+    @action(detail=True, methods=['post'], url_path='apply-preset')
+    def apply_preset(self, request, pk=None):
+        rule = self.get_object()
+        template_id = request.data.get('template_id') or rule.template_id
+        if not template_id:
+            return Response({'detail': 'template_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            template = AlertRuleTemplate.objects.get(pk=template_id, is_enabled=True)
+        except (AlertRuleTemplate.DoesNotExist, ValueError, TypeError):
+            return Response({'detail': 'alert rule template not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        preset_fields = (
+            'category', 'source_type', 'level', 'query_config', 'condition',
+            'annotations', 'interval_seconds', 'duration_seconds',
+            'notify_enabled', 'auto_analyze', 'description',
+        )
+        for field in preset_fields:
+            setattr(rule, field, getattr(template, field))
+        rule.template = template
+        rule.labels = template.default_labels
+        rule.is_enabled = True
+        rule.save()
+        return Response(self.get_serializer(rule).data)
+
+    @action(detail=False, methods=['get'], url_path='by-category')
+    def by_category(self, request):
+        counts = dict(
+            self.filter_queryset(self.get_queryset())
+            .order_by()
+            .values_list('category')
+            .annotate(count=Count('id'))
+        )
+        return Response([
+            {'category': category, 'category_display': label, 'count': counts.get(category, 0)}
+            for category, label in AlertRule.CATEGORY_CHOICES
+        ])
 
     @action(detail=True, methods=['post'])
     def trigger(self, request, pk=None):

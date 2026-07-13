@@ -62,7 +62,7 @@ def _emit_alert(rule, result, request=None, status=Alert.STATUS_ACTIVE):
 def process_rule_results(rule, results, *, dry_run=False, request=None):
     now = timezone.now()
     results = [dict(item) for item in results or [] if item.get('matched')]
-    duration = _duration_seconds(rule)
+    default_duration = _duration_seconds(rule)
     seen_fingerprints = []
     would_fire = []
 
@@ -110,6 +110,10 @@ def process_rule_results(rule, results, *, dry_run=False, request=None):
             state.last_seen_at = now
             state.last_value = item.get('value') if isinstance(item.get('value'), (int, float)) else None
             state.last_error = ''
+            try:
+                duration = int(item.get('duration_seconds', default_duration))
+            except (TypeError, ValueError):
+                duration = default_duration
             fire_at = state.first_seen_at + timedelta(seconds=duration)
             item['would_fire'] = now >= fire_at
             if item['would_fire']:

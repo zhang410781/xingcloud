@@ -62,6 +62,27 @@ def _compare(value, condition):
     return value > threshold
 
 
+def _apply_condition_levels(rule, results):
+    condition = _dict(rule.condition)
+    levels = condition.get('levels')
+    if not isinstance(levels, list):
+        return results
+
+    priority = {'critical': 3, 'warning': 2, 'info': 1}
+    for result in results:
+        matched_levels = [
+            level for level in levels
+            if isinstance(level, dict) and _compare(result.get('value'), level)
+        ]
+        selected = max(matched_levels, key=lambda item: priority.get(item.get('level'), 0), default=None)
+        result['matched'] = selected is not None
+        if selected:
+            result['level'] = selected.get('level') or rule.level
+            result['duration_seconds'] = selected.get('duration_seconds', rule.duration_seconds)
+            result['title'] = result.get('title') or rule.name
+    return results
+
+
 def _labels(rule, extra=None):
     labels = {}
     labels.update(_dict(rule.labels))
@@ -264,6 +285,7 @@ def evaluate_rule(rule, *, dry_run=False, request=None):
             results = _k8s_results(rule)
         else:
             results = []
+        results = _apply_condition_levels(rule, results)
         processed = process_rule_results(rule, results, dry_run=dry_run, request=request)
         processed.update({
             'success': True,

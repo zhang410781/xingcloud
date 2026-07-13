@@ -821,6 +821,7 @@ class Alert(models.Model):
     region = models.CharField('地域', max_length=128, blank=True, default='')
     business_line = models.CharField('系统', max_length=128, blank=True, default='')
     resource_type = models.CharField('资源类型', max_length=64, blank=True, default='')
+    resource_category = models.CharField('资源分类', max_length=16, blank=True, default='', db_index=True)
     resource = models.CharField('资源标识', max_length=256, blank=True, default='')
     metric_name = models.CharField('指标名', max_length=128, blank=True, default='')
     runbook_url = models.URLField('Runbook', max_length=500, blank=True, default='')
@@ -881,6 +882,13 @@ class AlertClaim(models.Model):
 
 
 class AlertRuleTemplate(models.Model):
+    CATEGORY_CHOICES = [
+        ('server', '服务器'),
+        ('k8s', 'Kubernetes'),
+        ('storage', '存储'),
+        ('database', '数据库'),
+    ]
+
     SOURCE_PROMETHEUS = 'prometheus'
     SOURCE_CLICKHOUSE = 'clickhouse'
     SOURCE_K8S = 'k8s'
@@ -896,6 +904,7 @@ class AlertRuleTemplate(models.Model):
 
     name = models.CharField('模板名称', max_length=128)
     code = models.SlugField('模板编码', max_length=96, unique=True, blank=True, default='')
+    category = models.CharField('分类', max_length=16, choices=CATEGORY_CHOICES, default='server', db_index=True)
     source_type = models.CharField('数据源类型', max_length=32, choices=SOURCE_TYPE_CHOICES)
     level = models.CharField('默认级别', max_length=16, choices=Alert.LEVEL_CHOICES, default='warning')
     query_config = models.JSONField('查询配置', default=dict, blank=True)
@@ -934,10 +943,12 @@ class AlertRuleTemplate(models.Model):
 
 class AlertRule(models.Model):
     SOURCE_TYPE_CHOICES = AlertRuleTemplate.SOURCE_TYPE_CHOICES
+    CATEGORY_CHOICES = AlertRuleTemplate.CATEGORY_CHOICES
 
     template = models.ForeignKey(AlertRuleTemplate, on_delete=models.SET_NULL, null=True, blank=True, related_name='rules', verbose_name='规则模板')
     name = models.CharField('规则名称', max_length=128)
     code = models.SlugField('规则编码', max_length=96, unique=True, blank=True, default='')
+    category = models.CharField('分类', max_length=16, choices=CATEGORY_CHOICES, default='server', db_index=True)
     source_type = models.CharField('数据源类型', max_length=32, choices=SOURCE_TYPE_CHOICES)
     level = models.CharField('级别', max_length=16, choices=Alert.LEVEL_CHOICES, default='warning')
     query_config = models.JSONField('查询配置', default=dict, blank=True)

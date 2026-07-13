@@ -1495,6 +1495,7 @@ class AlertUserLiteSerializer(serializers.ModelSerializer):
 
 
 class AlertRuleTemplateSerializer(serializers.ModelSerializer):
+    category_display = serializers.CharField(source='get_category_display', read_only=True)
     source_type_display = serializers.CharField(source='get_source_type_display', read_only=True)
     level_display = serializers.CharField(source='get_level_display', read_only=True)
 
@@ -1504,6 +1505,7 @@ class AlertRuleTemplateSerializer(serializers.ModelSerializer):
 
 
 class AlertRuleSerializer(serializers.ModelSerializer):
+    category_display = serializers.CharField(source='get_category_display', read_only=True)
     source_type_display = serializers.CharField(source='get_source_type_display', read_only=True)
     level_display = serializers.CharField(source='get_level_display', read_only=True)
     template_name = serializers.CharField(source='template.name', read_only=True, default='')

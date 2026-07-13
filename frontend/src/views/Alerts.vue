@@ -124,8 +124,11 @@
               <el-tag :type="statusType(row.status)" size="small">{{ row.status_display || statusText(row.status) }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="source_type" label="&#x63A5;&#x5165;" width="120">
+          <el-table-column prop="source_type" label="接入" width="120">
             <template #default="{ row }">{{ providerText(row.source_type) }}</template>
+          </el-table-column>
+          <el-table-column prop="category" label="分类" width="90">
+            <template #default="{ row }">{{ categoryText(row.category) }}</template>
           </el-table-column>
           <el-table-column prop="environment" label="&#x73AF;&#x5883;" width="100" />
           <el-table-column prop="claimed_by" label="&#x8BA4;&#x9886;&#x4EBA;" width="120">
@@ -335,11 +338,20 @@
     <template v-if="activeTab === 'rules' && canViewConfig">
       <section class="panel">
         <div class="section-head">
-          <h3>&#x544A;&#x8B66;&#x89C4;&#x5219;</h3>
+<div class="category-filter neo-tabs theme-blue" style="margin-bottom:12px">
+          <button
+            v-for="cat in categoryOptions"
+            :key="cat.value"
+            class="neo-tab-btn"
+            :class="{ active: rulesCategoryFilter === cat.value }"
+            @click="rulesCategoryFilter = cat.value; fetchAlertRules()"
+          >{{ cat.label }}</button>
+        </div>
+          <h3>告警规则</h3>
           <el-button v-if="canManageConfig" size="small" type="primary" :icon="Plus" @click="openWizardForSource()">新建规则</el-button>
         </div>
         <el-table :data="alertRules" stripe size="small" v-loading="configLoading">
-          <el-table-column prop="name" label="&#x89C4;&#x5219;&#x540D;&#x79F0;" min-width="180">
+          <el-table-column prop="name" label="规则名称" min-width="180">
             <template #default="{ row }">
               <div class="rule-name-cell">
                 <strong>{{ row.name }}</strong>
@@ -347,8 +359,11 @@
               </div>
             </template>
           </el-table-column>
-          <el-table-column prop="source_type" label="&#x6570;&#x636E;&#x6E90;" width="130">
+          <el-table-column prop="source_type" label="数据源" width="130">
             <template #default="{ row }">{{ ruleSourceText(row.source_type) }}</template>
+          </el-table-column>
+          <el-table-column prop="category" label="分类" width="90">
+            <template #default="{ row }">{{ categoryText(row.category) }}</template>
           </el-table-column>
           <el-table-column prop="level" label="&#x7EA7;&#x522B;" width="90">
             <template #default="{ row }"><el-tag :type="levelType(row.level)" size="small">{{ row.level_display || levelText(row.level) }}</el-tag></template>
@@ -1017,6 +1032,14 @@ const eventModeOptions = [
   { label: '\u5206\u7EC4', value: 'group' },
 ]
 
+const categoryOptions = [
+  { label: '全部', value: '' },
+  { label: '服务器', value: 'server' },
+  { label: 'K8S', value: 'k8s' },
+  { label: '存储', value: 'storage' },
+  { label: '数据库', value: 'database' },
+]
+
 const providerOptions = [
   { label: '\u5E73\u53F0\u89C4\u5219', value: 'platform' },
 ]
@@ -1129,6 +1152,7 @@ const environmentOptions = computed(() => {
 })
 
 const ruleDialog = reactive({ visible: false, form: emptyAlertRule() })
+const rulesCategoryFilter = ref('')
 const templateDialog = reactive({ visible: false, form: emptyAlertRuleTemplate() })
 const muteDialog = reactive({ visible: false, target: null, form: { minutes: 60 } })
 const channelDialog = reactive({ visible: false, form: emptyChannel() })
@@ -1163,6 +1187,10 @@ function statusText(status) {
 
 function providerText(value) {
   return providerOptions.find((item) => item.value === value)?.label || value || '-'
+}
+
+function categoryText(value) {
+  return categoryOptions.find((item) => item.value === value)?.label || value || '-'
 }
 
 function ruleSourceText(value) {
@@ -1434,8 +1462,10 @@ async function loadPolicyTab() {
 async function fetchAlertRules() {
   configLoading.value = true
   try {
+    const params = {}
+    if (rulesCategoryFilter.value) params.category = rulesCategoryFilter.value
     const [ruleList, templateList] = await Promise.all([
-      getAlertRules(),
+      getAlertRules(params),
       getAlertRuleTemplates({ page_size: 200 }),
     ])
     alertRules.value = listOf(ruleList)
@@ -1483,6 +1513,7 @@ function emptyAlertRule() {
     template: null,
     name: '',
     code: '',
+    category: '',
     source_type: 'k8s',
     level: 'warning',
     query_config_text: jsonText({}),
@@ -1503,6 +1534,7 @@ function emptyAlertRuleTemplate() {
     id: null,
     name: '',
     code: '',
+    category: '',
     source_type: 'k8s',
     level: 'warning',
     query_config_text: jsonText({}),
@@ -1552,6 +1584,7 @@ function applyTemplateToRule(templateId) {
   if (!template) return
   const form = ruleDialog.form
   if (!form.name) form.name = template.name
+  if (template.category) form.category = template.category
   form.source_type = template.source_type
   form.level = template.level
   form.query_config_text = jsonText(template.query_config)
