@@ -310,3 +310,77 @@ def evaluate_rule(rule, *, dry_run=False, request=None):
             'error': str(exc),
             'evaluated_at': timezone.now().isoformat(),
         }
+
+
+ROOT_CAUSE_MAP = {
+    'cpu_usage': (
+        'CPU 使用率达到 {value:.1f}%，可能存在大量慢查询或连接数过多',
+        '建议检查慢查询日志，优化 SQL 语句，或考虑扩容',
+    ),
+    'memory_usage': (
+        '内存使用率达到 {value:.1f}%，可能存在内存泄漏或缓存过大',
+        '建议检查内存占用进程，优化缓存配置，或考虑扩容',
+    ),
+    'disk_usage': (
+        '磁盘使用率达到 {value:.1f}%，磁盘空间不足',
+        '建议清理日志文件，扩容磁盘，或迁移历史数据',
+    ),
+    'connection_ratio': (
+        '连接数使用率达到 {value:.1f}%，接近最大连接数限制',
+        '建议增加 max_connections 配置，或检查连接泄漏',
+    ),
+    'replication_lag': (
+        '主从复制延迟 {value:.1f} 秒，从库同步落后',
+        '建议检查从库 IO/SQL 线程状态，检查网络带宽和主库写入压力',
+    ),
+    'slow_queries': (
+        '慢查询数达到 {value:.0f}，SQL 执行效率低下',
+        '建议分析慢查询日志，添加合适索引，优化查询语句',
+    ),
+    'qps': (
+        'QPS 达到 {value:.0f}，查询压力过大',
+        '建议检查热点查询，添加缓存层，或进行读写分离',
+    ),
+    'node_load': (
+        '节点负载达到 {value:.2f}，CPU 负载过高',
+        '建议检查系统进程，迁移部分服务到其他节点，或扩容',
+    ),
+    'pod_restarts': (
+        'Pod 重启次数达到 {value:.0f}，可能存在稳定性问题',
+        '建议检查 Pod 日志，排查 OOMKill、配置错误或依赖服务不可用',
+    ),
+    'pod_cpu': (
+        'Pod CPU 使用率达到 {value:.1f}%，可能存在计算密集任务',
+        '建议调整资源请求/限制，优化代码逻辑，或水平扩容',
+    ),
+    'pod_memory': (
+        'Pod 内存使用率达到 {value:.1f}%，接近内存限制',
+        '建议检查内存泄漏，调整资源请求/限制，或扩容',
+    ),
+}
+
+
+def _analyze_root_cause(metric_name, value, resource=''):
+    """根据指标名和值提供智能根因分析和建议。参考 database-monitor-main 设计。"""
+    text_value = f'{value:.2f}' if isinstance(value, (int, float)) else str(value)
+    entry = ROOT_CAUSE_MAP.get(metric_name)
+    if entry:
+        cause_template, suggestion_template = entry
+        cause = cause_template.format(value=float(value)) if isinstance(value, (int, float)) else cause_template.format(value=0)
+        suggestion = suggestion_template
+        if resource:
+            suggestion = f'资源: {resource}。{suggestion}'
+        return cause, suggestion
+    return f'指标 {metric_name} 异常，当前值 {text_value}', f'请检查 {metric_name} 指标详情，排查异常原因'
+
+
+def build_alert_with_root_cause(rule, result, status='active'):
+    """构建带根因分析的告警载荷。参考 database-monitor-main alert_service.py"""
+    metric_name = result.get('metric_name') or rule.query_config.get('metric') or rule.query_config.get('promql') or ''
+    value = result.get('value')
+    resource = result.get('resource') or ''
+    root_cause, suggestion = _analyze_root_cause(metric_name, value, resource)
+    return {
+        'root_cause': root_cause,
+        'suggestion': suggestion,
+    }

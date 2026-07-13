@@ -94,6 +94,8 @@ def build_platform_alert_payload(rule, payload=None, status=None):
         'resource': resource,
         'metric_name': _first(payload.get('metric_name'), labels.get('__name__'), rule.query_config.get('metric'), rule.query_config.get('promql')),
         'runbook_url': _first(payload.get('runbook_url'), annotations.get('runbook_url'), annotations.get('runbook')),
+        'root_cause': payload.get('root_cause') or '',
+        'suggestion': payload.get('suggestion') or '',
         'labels': labels,
         'annotations': annotations,
         'starts_at': timezone.now(),

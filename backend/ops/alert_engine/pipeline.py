@@ -48,6 +48,15 @@ def _alert_payload_from_result(rule, result, status=Alert.STATUS_ACTIVE):
 
 def _emit_alert(rule, result, request=None, status=Alert.STATUS_ACTIVE):
     normalized = _alert_payload_from_result(rule, result, status=status)
+    # 参考 database-monitor-main 的根因分析设计
+    try:
+        from ops.alert_engine.evaluator import build_alert_with_root_cause
+        root_cause_data = build_alert_with_root_cause(rule, result, status=status)
+        normalized['root_cause'] = root_cause_data.get('root_cause', '')
+        normalized['suggestion'] = root_cause_data.get('suggestion', '')
+    except Exception:
+        normalized['root_cause'] = ''
+        normalized['suggestion'] = ''
     alert, created = upsert_alert(
         normalized,
         actor='alert-engine',

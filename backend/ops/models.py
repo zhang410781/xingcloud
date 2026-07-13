@@ -825,6 +825,8 @@ class Alert(models.Model):
     resource = models.CharField('资源标识', max_length=256, blank=True, default='')
     metric_name = models.CharField('指标名', max_length=128, blank=True, default='')
     runbook_url = models.URLField('Runbook', max_length=500, blank=True, default='')
+    root_cause = models.TextField('根因', blank=True, default='')
+    suggestion = models.TextField('建议', blank=True, default='')
     labels = models.JSONField('标签', default=dict, blank=True)
     annotations = models.JSONField('注解', default=dict, blank=True)
     raw_payload = models.JSONField('原始载荷', default=dict, blank=True)

@@ -1,5 +1,6 @@
 /* ============================================
    Xing-Cloud 运维平台 — 全局样式
+   浅色主题 + 参考 database-monitor 设计
    ============================================ */
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
@@ -45,6 +46,7 @@
 
   /* 内容区 */
   --content-bg: var(--nebula-white);
+  --bg-primary: var(--content-bg);
 
   /* 卡片 */
   --card-bg: #ffffff;
@@ -75,9 +77,7 @@
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   color: var(--text-primary);
-  background:
-    radial-gradient(circle at 88% -10%, rgba(91, 192, 235, 0.14) 0%, rgba(91, 192, 235, 0) 34%),
-    var(--content-bg);
+  background: var(--content-bg);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -200,14 +200,9 @@ body {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background:
-    radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.98) 0 20%, rgba(255, 255, 255, 0) 22%),
-    radial-gradient(circle at 50% 50%, rgba(91, 192, 235, 0.92) 0%, rgba(46, 134, 222, 0.96) 72%, rgba(46, 134, 222, 0.72) 100%);
+  background: radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.98) 0 20%, rgba(255, 255, 255, 0) 22%), radial-gradient(circle at 50% 50%, rgba(91, 192, 235, 0.92) 0%, rgba(46, 134, 222, 0.96) 72%, rgba(46, 134, 222, 0.72) 100%);
   border: 1px solid rgba(255, 255, 255, 0.88);
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.24),
-    0 0 0 3px rgba(91, 192, 235, 0.1),
-    0 2px 8px rgba(46, 134, 222, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.24), 0 0 0 3px rgba(91, 192, 235, 0.1), 0 2px 8px rgba(46, 134, 222, 0.18);
   position: relative;
 }
 
@@ -219,13 +214,12 @@ body {
   display: none;
 }
 
-/* ========== Element-Plus 侧边栏菜单覆盖 (Industrial Utilitarian) ========== */
+/* 侧边栏导航 */
 .sidebar-nav {
   flex: 1;
   padding: 10px 8px 14px;
   overflow-y: auto;
   border-right: none !important;
-  /* 移除默认右边框 */
   --el-menu-bg-color: transparent;
   --el-menu-text-color: var(--sidebar-text);
   --el-menu-active-color: var(--sidebar-text-active);
@@ -253,7 +247,6 @@ body {
   border: 1px solid transparent;
 }
 
-/* 悬停状态 */
 .sidebar .el-menu-item:hover,
 .sidebar .el-sub-menu__title:hover {
   background-color: var(--sidebar-hover) !important;
@@ -261,7 +254,6 @@ body {
   border-color: rgba(91, 192, 235, 0.18);
 }
 
-/* 激活状态 - 硬边框、发光文字和透明背景 */
 .sidebar .el-menu-item.is-active {
   background: var(--sidebar-active) !important;
   color: var(--el-menu-active-color) !important;
@@ -270,7 +262,6 @@ body {
   box-shadow: 0 8px 18px rgba(46, 134, 222, 0.08);
 }
 
-/* 消除子菜单打开时的背景色污染 */
 .sidebar .el-sub-menu.is-opened>.el-sub-menu__title {
   background: rgba(226, 232, 240, 0.46);
   color: var(--nebula-deep) !important;
@@ -291,7 +282,6 @@ body {
   background: transparent !important;
 }
 
-/* 子菜单项样式微调：使用等宽字体以增加硬核感 */
 .sidebar .el-menu--inline .el-menu-item {
   font-size: 13px;
   min-height: 36px;
@@ -303,7 +293,6 @@ body {
   font-weight: 500;
 }
 
-/* 折叠状态下的优化 */
 .sidebar.collapsed .el-menu-item,
 .sidebar.collapsed .el-sub-menu__title {
   width: 40px;
@@ -356,9 +345,7 @@ body {
   flex-direction: column;
   min-height: 100vh;
   min-width: 0;
-  /* 添加此行防止 flex 子项撑破 */
   overflow-x: hidden;
-  /* 强制水平收口 */
 }
 
 .sidebar.collapsed~.main-area {
@@ -424,7 +411,6 @@ body {
   padding: 12px 24px 12px;
   width: 100%;
   overflow-x: hidden;
-  /* 给内容区也加上换行收口 */
 }
 
 @media (max-width: 760px) {
@@ -759,8 +745,6 @@ body {
   line-height: 1.7;
   white-space: pre-wrap;
   word-break: break-all;
-  max-height: 300px;
-  overflow-y: auto;
 }
 
 .execute-log {
@@ -1155,7 +1139,6 @@ body {
 }
 
 @keyframes pulse-dot {
-
   0%,
   100% {
     opacity: 1;
@@ -1634,7 +1617,6 @@ body {
   color: #10b981;
   white-space: pre-wrap;
   word-break: break-all;
-  tab-size: 2;
 }
 
 .log-viewer-container::-webkit-scrollbar {
@@ -2315,4 +2297,185 @@ section.hero.panel .hero-actions .el-button:not(.is-link) {
   min-height: 32px !important;
   padding: 0 14px !important;
   border-radius: 10px !important;
+}
+
+/* ========== 参考 database-monitor 浅色主题 ========== */
+.glass-card {
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(0, 120, 180, 0.22);
+  border-radius: 8px;
+  padding: 16px;
+  position: relative;
+  overflow: hidden;
+  transition: background 0.3s, border-color 0.3s;
+}
+
+.glass-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--nebula-light), transparent);
+}
+
+/* 登录页 — 居中卡片风格 */
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 50%, #f0fdfa 100%);
+  padding: 20px;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 420px;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(0, 120, 180, 0.22);
+  border-radius: 16px;
+  padding: 40px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+}
+
+.login-title {
+  font-size: 24px;
+  font-weight: 700;
+  color: #0f172a;
+  margin-bottom: 4px;
+  text-align: center;
+}
+
+.login-subtitle {
+  font-size: 13px;
+  color: #64748b;
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+.login-btn {
+  width: 100%;
+  background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+  border: none;
+  color: #fff;
+  font-weight: 600;
+}
+
+.login-btn:hover {
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+}
+
+.login-form .el-input__wrapper {
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.22) inset;
+}
+
+.login-form .el-input__wrapper:hover {
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.35) inset;
+}
+
+.login-form .el-input__wrapper.is-focus {
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.45) inset;
+}
+
+/* KPI 卡片 — 参考 database-monitor */
+.kpi-card {
+  background: var(--card-bg);
+  border-radius: var(--card-radius);
+  padding: 20px;
+  box-shadow: var(--card-shadow);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  transition: var(--transition);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.kpi-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.08);
+}
+
+.kpi-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.kpi-icon.primary {
+  background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
+  color: #2563eb;
+}
+
+.kpi-icon.success {
+  background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%);
+  color: #059669;
+}
+
+.kpi-icon.warning {
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+  color: #d97706;
+}
+
+.kpi-icon.danger {
+  background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%);
+  color: #dc2626;
+}
+
+.kpi-icon.info {
+  background: linear-gradient(135deg, #e0f2fe 0%, #bae6fd 100%);
+  color: #0284c7;
+}
+
+.kpi-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: #0f172a;
+  line-height: 1.2;
+}
+
+.kpi-label {
+  font-size: 13px;
+  color: #64748b;
+  margin-top: 4px;
+}
+
+/* 状态 Pill */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  background: rgba(148, 163, 184, 0.12);
+  color: #64748b;
+}
+
+.status-pill.online {
+  background: rgba(16, 185, 129, 0.1);
+  color: #059669;
+}
+
+.status-pill.offline {
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+}
+
+.status-pill::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
 }
