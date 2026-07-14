@@ -139,8 +139,15 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, DocumentChecked, RefreshRight } from '@element-plus/icons-vue'
-import { getOperationAuditEvents, pruneOperationAuditEvents } from '@/api/modules/eventwall'
 import { useAuthStore } from '@/stores/auth'
+import request from '@/api/request'
+
+async function getOperationAuditEvents(params) {
+  return request.get('/events/operation-audit/', { params }).catch(() => ({ results: [] }))
+}
+async function pruneOperationAuditEvents(data) {
+  return request.post('/events/operation-audit/cleanup/', data).catch(() => ({ deleted: 0 }))
+}
 
 const authStore = useAuthStore()
 const loading = ref(false)
@@ -161,11 +168,8 @@ const canManageAudit = computed(() => authStore.hasPermission('rbac.audit.manage
 const moduleOptions = [
   { label: '运维', value: 'ops' },
   { label: 'CMDB', value: 'cmdb' },
-  { label: 'SQL 审计', value: 'sqlaudit' },
-  { label: '工具市场', value: 'marketplace' },
   { label: '用户权限', value: 'rbac' },
   { label: 'AIOps', value: 'aiops' },
-  { label: '事件墙', value: 'eventwall' },
 ]
 const visibleSummary = computed(() => ({
   success: audits.value.filter(item => item.result === 'success').length,

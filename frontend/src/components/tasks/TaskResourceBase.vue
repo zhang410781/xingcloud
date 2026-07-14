@@ -356,7 +356,6 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Connection, Delete, Edit, Files, Monitor, Plus, Search } from '@element-plus/icons-vue'
 import { getK8sClusters } from '@/api/modules/container'
-import { getEventEnvironments } from '@/api/modules/eventwall'
 import {
   createTaskResource,
   createTaskResourceGroup,
@@ -379,7 +378,6 @@ const treeData = ref([])
 const resources = ref([])
 const stats = ref({})
 const k8sClusters = ref([])
-const eventEnvironmentOptions = ref([])
 const loading = reactive({ tree: false, resources: false, submit: false })
 const filters = reactive({ search: '', resource_type: '', status: '', environment: '', system: '', asset_environment: '' })
 
@@ -395,10 +393,7 @@ const environments = computed(() => treeData.value)
 const systemsForFilter = computed(() => environments.value.find(item => item.id === filters.environment)?.children || [])
 const systemsForResource = computed(() => environments.value.find(item => item.id === resourceForm.environment)?.children || [])
 const selectedK8sClusterName = computed(() => k8sClusters.value.find(item => item.id === resourceForm.cluster)?.name || '')
-const eventEnvironmentSelectOptions = computed(() => eventEnvironmentOptions.value.map(item => ({
-  ...item,
-  label: `${item.name || item.code}（${item.code}）`,
-})))
+// eventEnvironmentSelectOptions was removed (eventwall module deleted)
 const assetEnvironmentOptions = [
   { label: '生产', value: 'prod' },
   { label: '测试', value: 'test' },
@@ -633,16 +628,8 @@ async function fetchK8sClusters() {
   }
 }
 
-async function fetchEventEnvironments() {
-  try {
-    eventEnvironmentOptions.value = normalizeList(await getEventEnvironments({ enabled: 'true' }))
-  } catch {
-    eventEnvironmentOptions.value = []
-  }
-}
-
 async function reloadAll() {
-  await Promise.all([fetchTree(), fetchResources(), fetchStats(), fetchK8sClusters(), fetchEventEnvironments()])
+  await Promise.all([fetchTree(), fetchResources(), fetchStats(), fetchK8sClusters()])
 }
 
 async function submitNode() {
