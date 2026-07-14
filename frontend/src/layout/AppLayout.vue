@@ -187,7 +187,6 @@ import { useAuthStore } from '@/stores/auth'
 import AIOpsChatWidget from '@/components/aiops/AIOpsChatWidget.vue'
 import { getModuleSettings } from '@/api/modules/rbac'
 import { getDashboardStats, getDeployments, getTransactionTickets } from '@/api/modules/ops'
-import { getEventWallAnalysis } from '@/api/modules/eventwall'
 
 const route = useRoute()
 const router = useRouter()
@@ -210,7 +209,7 @@ const observabilityOverviewPermissions = [
   'ops.alert.view',
   'ops.alert.config.view',
 ]
-const defaultOpenMenuKeys = ['aiops', 'observability', 'events']
+const defaultOpenMenuKeys = ['aiops', 'observability']
 let notificationTimer = null
 
 const menuItems = [
@@ -240,16 +239,6 @@ const menuItems = [
     ],
   },
   {
-    moduleKey: 'events',
-    title: '事件中心',
-    icon: 'Tickets',
-    children: [
-      { path: '/events/wall', title: '事件中心', icon: 'Aim', permission: 'eventwall.view' },
-      { path: '/events/environments', title: '事件环境', icon: 'CollectionTag', permission: 'eventwall.environment.view' },
-      { path: '/events/sources', title: '事件源', icon: 'Share', permission: 'eventwall.source.view' },
-    ],
-  },
-  {
     moduleKey: 'tasks',
     title: '任务中心',
     icon: 'Operation',
@@ -273,7 +262,6 @@ const menuItems = [
     icon: 'Tickets',
     children: [
       { path: '/workworkorders/releases', title: '应用发布', icon: 'Promotion', anyPermissions: ['ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve'] },
-      { path: '/workworkorders/sql', title: 'SQL 审计', icon: 'DataAnalysis', anyPermissions: ['sqlaudit.datasource.view', 'sqlaudit.order.view', 'sqlaudit.order.submit', 'sqlaudit.order.review', 'sqlaudit.order.execute', 'sqlaudit.query.view', 'sqlaudit.query.execute'] },
       { path: '/workworkorders/transactions', title: '事务工单', icon: 'Tickets', anyPermissions: ['ops.ticket.view', 'ops.ticket.manage', 'ops.ticket.approve'] },
       { path: '/workworkorders/approval-flows', title: '审批流', icon: 'Checked', anyPermissions: ['ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve'] },
     ],
@@ -351,9 +339,6 @@ const normalizedMenuPath = computed(() => {
   if (route.path.startsWith('/sql')) {
     return '/sql'
   }
-  if (route.path.startsWith('/events/')) {
-    return route.path
-  }
   if (observabilityBoardPaths.has(route.path)) {
     return '/observability/dashboards'
   }
@@ -410,16 +395,14 @@ const isAIOpsChatRoute = computed(() => route.name === 'AIOpsChat' || route.path
 const canOpenAIOpsAssistant = computed(() => authStore.hasPermission('aiops.chat.view') && !isAIOpsChatRoute.value)
 
 const notificationSections = computed(() => {
-  const sectionOrder = ['approval', 'alert', 'event']
+  const sectionOrder = ['approval', 'alert']
   const sectionTitleMap = {
     approval: '待审批清单',
     alert: '告警提醒',
-    event: '关键事件',
   }
   const sectionRouteMap = {
     approval: '/workworkorders/releases',
     alert: '/observability/alerts',
-    event: '/events/wall',
   }
   return sectionOrder
     .map((key) => ({
@@ -507,12 +490,6 @@ function buildEventNotificationItem(item) {
   const meta = resultToneMap[item.result] || { tag: '平台动态', tagType: 'info', priority: 1 }
   return {
     key: `event-${item.id}`,
-    section: 'event',
-    title: item.title || '事件中心动态',
-    description: item.summary || item.detail || item.resource_name || '请进入事件中心查看详情',
-    time: item.occurred_at,
-    route: '/events/wall',
-    tag: meta.tag,
     tagType: meta.tagType,
     dotTone: item.result === 'failed' ? 'danger' : item.result === 'partial' || item.result === 'pending' ? 'warning' : 'info',
     priority: meta.priority,
@@ -552,11 +529,7 @@ async function loadNotifications() {
       tasks.push(Promise.resolve(null))
     }
 
-    if (authStore.hasPermission('eventwall.view')) {
-      tasks.push(getEventWallAnalysis({ limit: 80 }))
-    } else {
-      tasks.push(Promise.resolve(null))
-    }
+
 
     const [deploymentsResult, transactionTicketsResult, dashboardStatsResult, eventOverviewResult] = await Promise.allSettled(tasks)
     const deploymentsResponse = deploymentsResult.status === 'fulfilled' ? deploymentsResult.value : null
