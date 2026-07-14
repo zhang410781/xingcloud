@@ -314,14 +314,9 @@ INSTALLED_APPS = [
     'channels',
     # Local
     'ops.apps.OpsConfig',
-    'sqlaudit',
-    'marketplace',
     'cmdb',
-    'iac',
-    'multicloud',
     'aiops.apps.AiopsConfig',
     'rbac',
-    'eventwall',
 ]
 
 MIDDLEWARE = [

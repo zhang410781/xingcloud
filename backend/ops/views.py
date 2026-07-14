@@ -9,9 +9,9 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from aiops.models import AIOpsPendingAction
-from eventwall.mixins import EventWallModelViewSetMixin
-from eventwall.models import EventRecord
-from eventwall.services import build_json_preview, build_resource, record_event
+from .eventwall_stub import EventWallModelViewSetMixin
+from .eventwall_stub import EventRecord
+from .eventwall_stub import build_json_preview, build_resource, record_event
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 
 from . import deployer

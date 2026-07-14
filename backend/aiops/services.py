@@ -25,8 +25,8 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 
 from cmdb.models import ConfigItem
-from eventwall.models import EventRecord
-from eventwall.services import record_event
+from ops.eventwall_stub import EventRecord
+from ops.eventwall_stub import record_event
 from xing_cloud.features import filter_feature_tools, tool_feature_enabled
 from ops.host_tasks import build_host_target_snapshot as build_ops_host_target_snapshot
 from ops.host_tasks import build_k8s_target_snapshot as build_ops_k8s_target_snapshot

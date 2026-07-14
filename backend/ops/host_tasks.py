@@ -676,7 +676,7 @@ def _run_single_task(task, host, execution_mode):
 
 def _task_result_for_event(status):
     try:
-        from eventwall.models import EventRecord
+        from .eventwall_stub import EventRecord
     except Exception:
         return 'success'
     if status == HostTask.STATUS_FAILED:
@@ -692,7 +692,7 @@ def _task_result_for_event(status):
 
 def _task_severity_for_event(task):
     try:
-        from eventwall.models import EventRecord
+        from .eventwall_stub import EventRecord
     except Exception:
         return 'info'
     if task.risk_level in [HostTask.RISK_CRITICAL, HostTask.RISK_HIGH]:
@@ -727,8 +727,8 @@ def _task_environment_for_event(task):
 
 def record_task_center_event(task, action, title, summary='', request=None, actor_username='', source_type=''):
     try:
-        from eventwall.models import EventRecord
-        from eventwall.services import record_event
+        from .eventwall_stub import EventRecord
+        from .eventwall_stub import record_event
     except Exception:
         return None
     return record_event(

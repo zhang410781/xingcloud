@@ -13,9 +13,9 @@ from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from eventwall.mixins import EventWallModelViewSetMixin
-from eventwall.models import EventRecord
-from eventwall.services import record_event
+from .eventwall_stub import EventWallModelViewSetMixin
+from .eventwall_stub import EventRecord
+from .eventwall_stub import record_event
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from rbac.services import user_has_permissions
 from .alert_rule_presets import ensure_builtin_alert_rule_templates, install_rules_from_templates

@@ -11,8 +11,8 @@ from rest_framework.exceptions import NotFound
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from eventwall.models import EventRecord
-from eventwall.services import record_event
+from ops.eventwall_stub import EventRecord
+from ops.eventwall_stub import record_event
 from ops.models import Alert, DockerHost, K8sCluster, LogDataSource, MetricDataSource, TaskResource, TaskResourceGroup
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from rbac.services import is_demo_account, user_has_permissions
@@ -64,7 +64,7 @@ from .services import (
     build_model_cost_overview,
     build_runbook_draft_from_payload,
     build_runbook_draft_from_session,
-    build_skill_marketplace_catalog,
+    
     cancel_action,
     cancel_external_task,
     clone_skill_to_team,
@@ -212,7 +212,7 @@ class AIOpsSkillViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'update': ['aiops.config.manage'],
         'partial_update': ['aiops.config.manage'],
         'destroy': ['aiops.config.manage'],
-        'marketplace': ['aiops.config.view'],
+        
         'clone': ['aiops.config.manage'],
     }
 
@@ -227,8 +227,7 @@ class AIOpsSkillViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         return super().destroy(request, *args, **kwargs)
 
     @action(detail=False, methods=['get'])
-    def marketplace(self, request):
-        return Response(build_skill_marketplace_catalog(user=request.user))
+    
 
     @action(detail=True, methods=['post'])
     def clone(self, request, pk=None):

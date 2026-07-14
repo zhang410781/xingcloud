@@ -154,17 +154,6 @@ const routes = [
           if (authStore.hasAnyPermission(['ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve'])) {
             return '/workworkorders/releases'
           }
-          if (authStore.hasAnyPermission([
-            'sqlaudit.order.view',
-            'sqlaudit.order.submit',
-            'sqlaudit.order.review',
-            'sqlaudit.order.execute',
-            'sqlaudit.datasource.view',
-            'sqlaudit.query.view',
-            'sqlaudit.query.execute',
-          ])) {
-            return '/workworkorders/sql'
-          }
           if (authStore.hasAnyPermission(['ops.ticket.view', 'ops.ticket.manage', 'ops.ticket.approve'])) {
             return '/workworkorders/transactions'
           }
@@ -190,25 +179,6 @@ const routes = [
           title: '审批流',
           icon: 'Checked',
           anyPermissions: ['ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve'],
-        },
-      },
-      {
-        path: 'workworkorders/sql',
-        name: 'WorkOrderSqlAudit',
-        component: () => import('@/views/SqlAudit.vue'),
-        meta: {
-          title: 'SQL 审计',
-          icon: 'DataAnalysis',
-          defaultTab: 'workorders',
-          anyPermissions: [
-            'sqlaudit.datasource.view',
-            'sqlaudit.order.view',
-            'sqlaudit.order.submit',
-            'sqlaudit.order.review',
-            'sqlaudit.order.execute',
-            'sqlaudit.query.view',
-            'sqlaudit.query.execute',
-          ],
         },
       },
       {
@@ -350,49 +320,6 @@ const routes = [
         meta: { title: '监控看板', icon: 'Histogram', permission: 'ops.monitor.dashboard.view' },
       },
       {
-        path: 'events',
-        redirect: '/events/wall',
-        meta: { hidden: true, permission: 'eventwall.view' },
-      },
-      {
-        path: 'events/wall',
-        name: 'EventWall',
-        component: () => import('@/views/EventWall.vue'),
-        meta: { title: '事件中心', icon: 'Aim', permission: 'eventwall.view' },
-      },
-      {
-        path: 'events/overview',
-        redirect: '/events/wall',
-        meta: { hidden: true, permission: 'eventwall.view' },
-      },
-      {
-        path: 'events/wall-v2',
-        redirect: '/events/wall',
-        meta: { hidden: true, permission: 'eventwall.view' },
-      },
-      {
-        path: 'events/sources',
-        name: 'EventSources',
-        component: () => import('@/views/EventSources.vue'),
-        meta: { title: '事件源', icon: 'Share', permission: 'eventwall.source.view' },
-      },
-      {
-        path: 'events/environments',
-        name: 'EventEnvironments',
-        component: () => import('@/views/EventEnvironments.vue'),
-        meta: { title: '事件环境', icon: 'CollectionTag', permission: 'eventwall.environment.view' },
-      },
-      {
-        path: 'events/audit',
-        redirect: '/events/wall',
-        meta: { hidden: true, permission: 'eventwall.view' },
-      },
-      {
-        path: 'events/analysis',
-        redirect: '/events/wall',
-        meta: { hidden: true, permission: 'eventwall.view' },
-      },
-      {
         path: 'users',
         name: 'Users',
         component: () => import('@/views/Users.vue'),
@@ -459,26 +386,6 @@ const routes = [
           icon: 'Tickets',
           permission: 'aiops.audit.view',
         },
-      },
-      {
-        path: 'sql',
-        redirect: (to) => ({ path: '/workworkorders/sql', query: to.query }),
-        meta: { hidden: true },
-      },
-      {
-        path: 'sql/datasources',
-        redirect: { path: '/workworkorders/sql', query: { tab: 'datasources' } },
-        meta: { hidden: true },
-      },
-      {
-        path: 'sql/workorders',
-        redirect: { path: '/workworkorders/sql', query: { tab: 'workorders' } },
-        meta: { hidden: true },
-      },
-      {
-        path: 'sql/query',
-        redirect: { path: '/workworkorders/sql', query: { tab: 'query' } },
-        meta: { hidden: true },
       },
     ],
   },

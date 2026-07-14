@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from django.core.cache import cache
 from django.db.models import Count, Max, Q
 from django.utils import timezone
-from eventwall.models import EventRecord, EventSource
+from ops.eventwall_stub import EventRecord, EventSource
 from ops.models import (
     Alert,
     Deployment,
@@ -21,7 +21,7 @@ from ops.models import (
     TaskResource,
     TaskResourceGroup,
 )
-from marketplace.models import ServiceDeployment
+from ops.marketplace_stub import ServiceDeployment
 
 from .models import AIOpsKnowledgeEnvironment
 
@@ -2096,7 +2096,7 @@ def build_knowledge_graph(params=None):
         source_labels = {
             'k8s': 'K8s',
             'docker': 'Docker',
-            'marketplace': '平台部署',
+            
         }
         sources = [
             source_labels.get(key, key)
@@ -2141,7 +2141,7 @@ def build_knowledge_graph(params=None):
         release_name = _clean(deployment.release_name) or _clean(template.name)
         namespace = _clean(deployment.namespace)
         label = release_name if release_name == template.name else f'{template.name} / {release_name}'
-        component_id = _node_key('runtime_component', 'marketplace', deployment.id)
+        pass
         details = [
             {'label': '识别来源', 'value': '平台部署'},
             {'label': '技术', 'value': template.name},

@@ -13,8 +13,8 @@ from kubernetes import utils as k8s_utils
 from kubernetes.client.exceptions import ApiException
 
 from cmdb.models import CIType, CIRelation, ConfigItem
-from eventwall.models import EventRecord
-from eventwall.services import build_resource, record_event
+from .eventwall_stub import EventRecord
+from .eventwall_stub import build_resource, record_event
 from ops.k8s_views import _get_k8s_client, _is_demo
 
 from .models import Deployment

@@ -7,9 +7,9 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
 
-from eventwall.mixins import EventWallModelViewSetMixin
-from eventwall.models import EventRecord
-from eventwall.services import record_event
+from ops.eventwall_stub import EventWallModelViewSetMixin
+from ops.eventwall_stub import EventRecord
+from ops.eventwall_stub import record_event
 
 from .models import PermissionDefinition, Role, SystemModuleSetting, UserGroup
 from .permissions import RBACPermissionMixin, build_rbac_permission

@@ -70,12 +70,9 @@ class TaskResourceGroup(models.Model):
         related_name='children',
         verbose_name='上级节点',
     )
-    event_environment = models.ForeignKey(
-        'eventwall.EventEnvironment',
-        on_delete=models.SET_NULL,
+    event_environment = models.IntegerField(
         null=True,
         blank=True,
-        related_name='task_resource_groups',
         verbose_name='事件中心环境',
     )
     description = models.CharField('说明', max_length=255, blank=True, default='')
