@@ -21,7 +21,7 @@ from rbac.services import user_has_permissions
 from .alert_rule_presets import ensure_builtin_alert_rule_templates, install_rules_from_templates
 from .dashboard_presets import ensure_builtin_dashboards
 from .datasource_health import datasource_health_payload
-from .models import Alert, AlertRule, AlertRuleTemplate, Deployment, LogDataSource, LogEntry, MetricDataSource, ObservabilityDashboard
+from .models import Alert, AlertRule, Deployment, LogDataSource, LogEntry, MetricDataSource, ObservabilityDashboard
 from .observability_integrations import get_integration, list_integrations
 from .sla import build_sla_summary
 from .serializers import (
@@ -826,8 +826,8 @@ class ObservabilityDashboardViewSet(EventWallModelViewSetMixin, RBACPermissionMi
 
 
 def _integration_status(integration):
-    template_count = AlertRuleTemplate.objects.filter(code__in=integration.template_codes, is_enabled=True).count()
-    rule_count = AlertRule.objects.filter(template__code__in=integration.template_codes).count()
+    template_count = AlertRule.objects.filter(source__in=integration.template_codes, is_enabled=True).count()
+    rule_count = template_count
     dashboard_count = ObservabilityDashboard.objects.filter(title__in=integration.dashboard_titles, is_enabled=True).count()
     metric_ready = MetricDataSource.objects.filter(is_enabled=True, last_check_status='ok').exists()
     log_ready = LogDataSource.objects.filter(provider='clickhouse', is_enabled=True, last_check_status='ok').exists()

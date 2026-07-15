@@ -45,9 +45,7 @@ def build_rule_fingerprint(rule, labels=None):
 
 def build_platform_alert_payload(rule, payload=None, status=None):
     payload = _dict(payload)
-    template = getattr(rule, 'template', None)
     labels = {
-        **(_dict(getattr(template, 'default_labels', None)) if template else {}),
         **_dict(rule.labels),
         **_dict(payload.get('labels')),
     }
@@ -57,7 +55,6 @@ def build_platform_alert_payload(rule, payload=None, status=None):
         'alert_rule_source_type': rule.source_type,
     })
     annotations = {
-        **(_dict(getattr(template, 'annotations', None)) if template else {}),
         **_dict(rule.annotations),
         **_dict(payload.get('annotations')),
     }

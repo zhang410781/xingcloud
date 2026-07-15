@@ -7,7 +7,7 @@ from ops.log_views import (
     _merge_config,
     _resolve_clickhouse_collection,
 )
-from ops.models import AlertRuleTemplate, LogDataSource
+from ops.models import AlertRule, LogDataSource
 from ops.observability_views import execute_promql_query
 from ops.sla import build_sla_summary
 
@@ -110,7 +110,7 @@ def _prometheus_results(rule):
         resource = labels.get('pod') or labels.get('instance') or labels.get('node') or labels.get('job') or ''
         matched = _compare(value, condition)
         results.append({
-            'source_type': AlertRuleTemplate.SOURCE_PROMETHEUS,
+            'source_type': 'prometheus',
             'matched': matched,
             'value': value,
             'labels': labels,
@@ -228,7 +228,7 @@ def _clickhouse_results(rule, *, collection_key=None):
         })
         matched = _compare(value, condition)
         results.append({
-            'source_type': AlertRuleTemplate.SOURCE_CLICKHOUSE,
+            'source_type': 'clickhouse',
             'matched': matched,
             'value': value,
             'labels': labels,
@@ -251,7 +251,7 @@ def _sla_results(rule):
     matched = _compare(value, condition)
     labels = _labels(rule, {'resource': 'sla', 'metric': metric, 'severity': 'disaster-risk'})
     return [{
-        'source_type': AlertRuleTemplate.SOURCE_SLA,
+        'source_type': 'sla',
         'matched': matched,
         'value': value,
         'labels': labels,
@@ -275,13 +275,13 @@ def evaluate_rule(rule, *, dry_run=False, request=None):
     if not rule.is_enabled and not dry_run:
         raise ValueError('alert rule is disabled')
     try:
-        if rule.source_type == AlertRuleTemplate.SOURCE_PROMETHEUS:
+        if rule.source_type == 'prometheus':
             results = _prometheus_results(rule)
-        elif rule.source_type == AlertRuleTemplate.SOURCE_CLICKHOUSE:
+        elif rule.source_type == 'clickhouse':
             results = _clickhouse_results(rule)
-        elif rule.source_type == AlertRuleTemplate.SOURCE_SLA:
+        elif rule.source_type == 'sla':
             results = _sla_results(rule)
-        elif rule.source_type == AlertRuleTemplate.SOURCE_K8S:
+        elif rule.source_type == 'k8s':
             results = _k8s_results(rule)
         else:
             results = []

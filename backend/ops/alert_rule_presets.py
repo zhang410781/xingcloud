@@ -1,4 +1,4 @@
-from .models import AlertRule, AlertRuleTemplate
+from .models import AlertRule
 
 
 def _template(category, code, name, source_type, level, query_config, condition,
@@ -313,17 +313,26 @@ BUILTIN_ALERT_RULE_TEMPLATES = [
 
 def ensure_builtin_alert_rule_templates():
     """确保所有内置模板存在于数据库中（有则更新、无则创建）。"""
-    templates = []
+    rules = []
     for item in BUILTIN_ALERT_RULE_TEMPLATES:
-        payload = {**item, 'is_builtin': True, 'is_enabled': True}
-        template, _ = AlertRuleTemplate.objects.update_or_create(code=item['code'], defaults=payload)
-        templates.append(template)
-    return templates
+        payload = dict(item)
+        payload['labels'] = payload.pop('default_labels', {})
+        payload['source'] = item['code']
+        payload['is_enabled'] = True
+        payload.pop('sort_order', None)
+        rule, _ = AlertRule.objects.update_or_create(code=item['code'], defaults=payload)
+        rules.append(rule)
+    return rules
 
 
 def install_rules_from_templates(template_codes):
     """从指定模板编码列表批量创建告警规则（跳过已创建的）。"""
-    ensure_builtin_alert_rule_templates()
+    existing = set(AlertRule.objects.filter(source__in=template_codes).values_list('source', flat=True))
+    rules = ensure_builtin_alert_rule_templates()
+    return (
+        [rule for rule in rules if rule.source in template_codes and rule.source not in existing],
+        [code for code in template_codes if code in existing],
+    )
     created = []
     skipped = []
     for template in AlertRuleTemplate.objects.filter(code__in=template_codes, is_enabled=True).order_by('sort_order', 'name'):

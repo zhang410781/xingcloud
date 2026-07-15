@@ -10,19 +10,14 @@ from .host_task_schedules import CronExpressionError, compute_next_run, preview_
 from .models import (
     Alert,
     AlertAction,
-    AlertAggregationRule,
     AlertClaim,
-    AlertEscalationPolicy,
-    AlertInhibitionRule,
     AlertInteractionToken,
-    AlertMuteRule,
     AlertNotificationChannel,
     AlertNotificationLog,
-    AlertNotificationRule,
     AlertRecipient,
     AlertRecipientGroup,
     AlertRule,
-    AlertRuleTemplate,
+    AlertSilence,
     Deployment,
     DeploymentApprovalFlow,
     DeploymentApprovalNode,
@@ -1494,25 +1489,21 @@ class AlertUserLiteSerializer(serializers.ModelSerializer):
         return full_name or obj.username
 
 
-class AlertRuleTemplateSerializer(serializers.ModelSerializer):
-    category_display = serializers.CharField(source='get_category_display', read_only=True)
-    source_type_display = serializers.CharField(source='get_source_type_display', read_only=True)
-    level_display = serializers.CharField(source='get_level_display', read_only=True)
-
-    class Meta:
-        model = AlertRuleTemplate
-        fields = '__all__'
-
-
 class AlertRuleSerializer(serializers.ModelSerializer):
     category_display = serializers.CharField(source='get_category_display', read_only=True)
     source_type_display = serializers.CharField(source='get_source_type_display', read_only=True)
     level_display = serializers.CharField(source='get_level_display', read_only=True)
-    template_name = serializers.CharField(source='template.name', read_only=True, default='')
-
     class Meta:
         model = AlertRule
         fields = '__all__'
+
+
+class AlertSilenceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AlertSilence
+        fields = '__all__'
+        read_only_fields = ['created_by', 'created_at', 'updated_at']
+
 
 
 class AlertRecipientSerializer(serializers.ModelSerializer):
@@ -1602,85 +1593,9 @@ class AlertNotificationChannelSerializer(serializers.ModelSerializer):
         return super().update(instance, validated_data)
 
 
-class AlertAggregationRuleSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = AlertAggregationRule
-        fields = '__all__'
-
-    def validate_group_by(self, value):
-        if value in (None, ''):
-            return []
-        if not isinstance(value, list):
-            raise serializers.ValidationError('聚合维度必须是数组。')
-        return value
-
-
-class AlertInhibitionRuleSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = AlertInhibitionRule
-        fields = '__all__'
-
-
-class AlertMuteRuleSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = AlertMuteRule
-        fields = '__all__'
-        read_only_fields = ['created_by', 'created_at', 'updated_at']
-
-
-class AlertEscalationPolicySerializer(serializers.ModelSerializer):
-    class Meta:
-        model = AlertEscalationPolicy
-        fields = '__all__'
-
-
-class AlertNotificationRuleSerializer(serializers.ModelSerializer):
-    channel_ids = serializers.PrimaryKeyRelatedField(queryset=AlertNotificationChannel.objects.all(), many=True, write_only=True, required=False)
-    recipient_ids = serializers.PrimaryKeyRelatedField(queryset=AlertRecipient.objects.all(), many=True, write_only=True, required=False)
-    recipient_group_ids = serializers.PrimaryKeyRelatedField(queryset=AlertRecipientGroup.objects.all(), many=True, write_only=True, required=False)
-    channels = AlertNotificationChannelSerializer(many=True, read_only=True)
-    recipients = AlertRecipientSerializer(many=True, read_only=True)
-    recipient_groups = AlertRecipientGroupSerializer(many=True, read_only=True)
-    aggregation_rule_name = serializers.CharField(source='aggregation_rule.name', read_only=True, default='')
-    escalation_policy_name = serializers.CharField(source='escalation_policy.name', read_only=True, default='')
-
-    class Meta:
-        model = AlertNotificationRule
-        fields = [
-            'id', 'name', 'is_enabled', 'matchers', 'min_level', 'aggregation_rule', 'aggregation_rule_name',
-            'escalation_policy', 'escalation_policy_name', 'channels', 'recipients', 'recipient_groups',
-            'channel_ids', 'recipient_ids', 'recipient_group_ids', 'notify_on_fire', 'notify_on_resolved',
-            'notify_on_escalation', 'description', 'created_at', 'updated_at',
-        ]
-
-    def create(self, validated_data):
-        channel_ids = validated_data.pop('channel_ids', [])
-        recipient_ids = validated_data.pop('recipient_ids', [])
-        recipient_group_ids = validated_data.pop('recipient_group_ids', [])
-        instance = super().create(validated_data)
-        instance.channels.set(channel_ids)
-        instance.recipients.set(recipient_ids)
-        instance.recipient_groups.set(recipient_group_ids)
-        return instance
-
-    def update(self, instance, validated_data):
-        channel_ids = validated_data.pop('channel_ids', None)
-        recipient_ids = validated_data.pop('recipient_ids', None)
-        recipient_group_ids = validated_data.pop('recipient_group_ids', None)
-        instance = super().update(instance, validated_data)
-        if channel_ids is not None:
-            instance.channels.set(channel_ids)
-        if recipient_ids is not None:
-            instance.recipients.set(recipient_ids)
-        if recipient_group_ids is not None:
-            instance.recipient_groups.set(recipient_group_ids)
-        return instance
 
 
 class AlertNotificationLogSerializer(serializers.ModelSerializer):
-    channel_name = serializers.CharField(source='channel.name', read_only=True, default='')
-    channel_type = serializers.CharField(source='channel.channel_type', read_only=True, default='')
-    rule_name = serializers.CharField(source='rule.name', read_only=True, default='')
     status_display = serializers.CharField(source='get_status_display', read_only=True)
 
     class Meta:

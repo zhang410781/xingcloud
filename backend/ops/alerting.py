@@ -16,16 +16,14 @@ from django.utils import timezone
 from .models import (
     Alert,
     AlertAction,
-    AlertAggregationRule,
     AlertClaim,
-    AlertEscalationPolicy,
-    AlertInhibitionRule,
     AlertInteractionToken,
-    AlertMuteRule,
     AlertNotificationChannel,
     AlertNotificationLog,
-    AlertNotificationRule,
     AlertRecipient,
+    AlertRecipientGroup,
+    AlertRule,
+    AlertSilence,
     Host,
 )
 
@@ -295,56 +293,37 @@ def match_matchers(alert, matchers):
 
 def apply_alert_suppression(alert):
     now = timezone.now()
-    changed = False
-    mute = AlertMuteRule.objects.filter(is_enabled=True).filter(
-        Q(starts_at__isnull=True) | Q(starts_at__lte=now),
-        Q(ends_at__isnull=True) | Q(ends_at__gte=now),
-    ).order_by('-created_at').first()
-    matched_mute = None
-    for rule in AlertMuteRule.objects.filter(is_enabled=True).filter(
-        Q(starts_at__isnull=True) | Q(starts_at__lte=now),
-        Q(ends_at__isnull=True) | Q(ends_at__gte=now),
+    matched_silence = None
+    for silence in AlertSilence.objects.filter(
+        is_enabled=True,
+        starts_at__lte=now,
+        ends_at__gte=now,
     ):
-        if match_matchers(alert, rule.matchers):
-            matched_mute = rule
+        if match_matchers(alert, silence.matchers):
+            matched_silence = silence
             break
-    if matched_mute:
+
+    if matched_silence:
         alert.status = Alert.STATUS_MUTED
         alert.is_suppressed = True
-        alert.suppressed_by = f'mute:{matched_mute.name}'
-        alert.suppressed_until = matched_mute.ends_at
-        alert.mute_until = matched_mute.ends_at
-        alert.muted_reason = matched_mute.reason
-        changed = True
+        alert.suppressed_by = f'silence:{matched_silence.name}'
+        alert.suppressed_until = matched_silence.ends_at
+        alert.mute_until = matched_silence.ends_at
+        alert.muted_reason = matched_silence.reason
     elif alert.mute_until and alert.mute_until > now:
         alert.status = Alert.STATUS_MUTED
         alert.is_suppressed = True
         alert.suppressed_by = 'manual_mute'
         alert.suppressed_until = alert.mute_until
-        changed = True
     else:
-        inhibited_by = None
-        inhibit_until = None
-        for rule in AlertInhibitionRule.objects.filter(is_enabled=True):
-            if not match_matchers(alert, rule.target_matchers):
-                continue
-            source_qs = Alert.objects.filter(status=Alert.STATUS_ACTIVE).exclude(pk=alert.pk)
-            for source_alert in source_qs[:300]:
-                if not match_matchers(source_alert, rule.source_matchers):
-                    continue
-                equal_labels = rule.equal_labels or []
-                if all(alert_dimension_value(alert, key) == alert_dimension_value(source_alert, key) for key in equal_labels):
-                    inhibited_by = rule
-                    inhibit_until = now + timedelta(minutes=rule.duration_minutes)
-                    break
-            if inhibited_by:
-                break
-        alert.is_suppressed = bool(inhibited_by)
-        alert.suppressed_by = f'inhibit:{inhibited_by.name}' if inhibited_by else ''
-        alert.suppressed_until = inhibit_until
-        changed = True
-    if changed:
-        alert.save(update_fields=['status', 'is_suppressed', 'suppressed_by', 'suppressed_until', 'mute_until', 'muted_reason', 'updated_at'])
+        alert.is_suppressed = False
+        alert.suppressed_by = ''
+        alert.suppressed_until = None
+
+    alert.save(update_fields=[
+        'status', 'is_suppressed', 'suppressed_by', 'suppressed_until',
+        'mute_until', 'muted_reason', 'updated_at',
+    ])
     return alert
 
 
@@ -431,10 +410,15 @@ def _default_body(alert, action='fire'):
 
 
 def _recipient_contacts(rule):
+    config = rule.notify_config or {}
     result = defaultdict(set)
     names = set()
-    recipients = set(rule.recipients.filter(is_enabled=True))
-    for group in rule.recipient_groups.filter(is_enabled=True).prefetch_related('recipients', 'users'):
+    group_ids = _list(config.get('recipient_group_ids'))
+    recipients = set()
+    for group in AlertRecipientGroup.objects.filter(
+        id__in=group_ids,
+        is_enabled=True,
+    ).prefetch_related('recipients', 'users'):
         recipients.update(group.recipients.filter(is_enabled=True))
         for user in group.users.filter(is_active=True):
             names.add(user.get_full_name() or user.username)
@@ -613,8 +597,8 @@ def send_alert_notification(channel, alert, recipients, action='fire', rule=None
 
     log = AlertNotificationLog.objects.create(
         alert=alert,
-        rule=rule,
-        channel=channel,
+        rule_id=getattr(rule, 'id', None),
+        channel_id=channel.id,
         action=action,
         status=status,
         recipient_summary=', '.join(recipients.get('names', [])[:20]),
@@ -627,18 +611,24 @@ def send_alert_notification(channel, alert, recipients, action='fire', rule=None
     return log
 
 
-def _rule_can_send(rule, alert, action):
-    if not rule.is_enabled:
-        return False
-    if action == 'resolved' and not rule.notify_on_resolved:
-        return False
-    if action == 'escalation' and not rule.notify_on_escalation:
-        return False
-    if action == 'fire' and not rule.notify_on_fire:
-        return False
-    if rule.min_level and LEVEL_RANK.get(alert.level, 0) < LEVEL_RANK.get(rule.min_level, 0):
-        return False
-    return match_matchers(alert, rule.matchers)
+def _alert_rule(alert):
+    labels = alert.labels if isinstance(alert.labels, dict) else {}
+    rule_id = labels.get('alert_rule_id')
+    if not rule_id:
+        return None
+    try:
+        return AlertRule.objects.get(pk=rule_id, is_enabled=True, notify_enabled=True)
+    except (AlertRule.DoesNotExist, TypeError, ValueError):
+        return None
+
+
+def _rule_can_send(rule, action):
+    config = rule.notify_config or {}
+    if action == 'resolved':
+        return config.get('notify_on_resolved', True)
+    if action == 'fire':
+        return config.get('notify_on_fire', True)
+    return action != 'escalation' or rule.escalation_minutes > 0
 
 
 def dispatch_alert_notifications(alert, action='fire', request=None, force=False):
@@ -646,28 +636,36 @@ def dispatch_alert_notifications(alert, action='fire', request=None, force=False
         return []
     if action == 'resolved' and alert.status != Alert.STATUS_RESOLVED:
         return []
-    logs = []
-    rules = AlertNotificationRule.objects.filter(is_enabled=True).prefetch_related('channels', 'recipients', 'recipient_groups__recipients', 'recipient_groups__users')
-    for rule in rules:
-        if not _rule_can_send(rule, alert, action):
-            continue
-        recipients = _recipient_contacts(rule)
-        channels = [channel for channel in rule.channels.all() if channel.is_enabled]
-        if action == 'resolved':
-            channels = [channel for channel in channels if channel.send_resolved]
-        if not channels:
-            continue
-        aggregation = rule.aggregation_rule
-        if aggregation and aggregation.is_enabled:
-            group_key = compute_group_key(alert, aggregation.group_by or DEFAULT_GROUP_BY)
-            alert.group_key = group_key
-            alert.save(update_fields=['group_key', 'updated_at'])
-            since = timezone.now() - timedelta(minutes=aggregation.repeat_interval_minutes)
-            if not force and AlertNotificationLog.objects.filter(alert=alert, rule=rule, action=action, created_at__gte=since, status=AlertNotificationLog.STATUS_SUCCESS).exists():
-                continue
-        for channel in channels:
-            logs.append(send_alert_notification(channel, alert, recipients, action=action, rule=rule, request=request))
-    return logs
+
+    rule = _alert_rule(alert)
+    if not rule or not _rule_can_send(rule, action):
+        return []
+
+    config = rule.notify_config or {}
+    channel_ids = _list(config.get('channel_ids'))
+    channels = list(AlertNotificationChannel.objects.filter(id__in=channel_ids, is_enabled=True))
+    if action == 'resolved':
+        channels = [channel for channel in channels if channel.send_resolved]
+    if not channels:
+        return []
+
+    alert.group_key = compute_group_key(alert, DEFAULT_GROUP_BY)
+    alert.save(update_fields=['group_key', 'updated_at'])
+    since = timezone.now() - timedelta(minutes=rule.repeat_interval)
+    if not force and AlertNotificationLog.objects.filter(
+        alert=alert,
+        rule_id=rule.id,
+        action=action,
+        created_at__gte=since,
+        status=AlertNotificationLog.STATUS_SUCCESS,
+    ).exists():
+        return []
+
+    recipients = _recipient_contacts(rule)
+    return [
+        send_alert_notification(channel, alert, recipients, action=action, rule=rule, request=request)
+        for channel in channels
+    ]
 
 
 def _storm_group_key(alert):
@@ -740,33 +738,23 @@ def dispatch_alert_batch_notifications(alerts, action='fire', request=None, forc
 def apply_escalation_policy(alert, request=None):
     if alert.status not in {Alert.STATUS_ACTIVE, Alert.STATUS_MUTED}:
         return False
-    policy = matching_escalation_policy(alert)
-    if not policy or not policy.levels:
+    rule = _alert_rule(alert)
+    if not rule or rule.escalation_minutes <= 0:
         return False
     now = timezone.now()
     started_at = alert.starts_at or alert.created_at or now
     duration_minutes = max(int((now - started_at).total_seconds() // 60), 0)
-    target_level = alert.escalation_level
-    matched_level = None
-    for index, item in enumerate(policy.levels):
-        try:
-            after_minutes = int(item.get('after_minutes') or item.get('minutes') or 0)
-        except (TypeError, ValueError):
-            after_minutes = 0
-        if duration_minutes >= after_minutes and index + 1 > target_level:
-            target_level = index + 1
-            matched_level = item
-    if target_level <= alert.escalation_level:
+    if duration_minutes < rule.escalation_minutes or alert.escalation_level >= 1:
         return False
-    alert.escalation_level = target_level
+    alert.escalation_level = 1
     alert.escalated_at = now
     alert.save(update_fields=['escalation_level', 'escalated_at', 'updated_at'])
     _save_action(
         alert,
         AlertAction.ACTION_ESCALATE,
         actor='system',
-        note=f'命中升级策略 {policy.name}',
-        metadata={'policy_id': policy.id, 'level': matched_level or {}, 'duration_minutes': duration_minutes},
+        note=f'告警规则 {rule.name} 超时升级',
+        metadata={'rule_id': rule.id, 'duration_minutes': duration_minutes},
     )
     dispatch_alert_notifications(alert, action='escalation', request=request, force=True)
     return True
@@ -904,8 +892,3 @@ def alert_summary(queryset):
     }
 
 
-def matching_escalation_policy(alert):
-    for policy in AlertEscalationPolicy.objects.filter(is_enabled=True):
-        if match_matchers(alert, policy.matchers):
-            return policy
-    return None

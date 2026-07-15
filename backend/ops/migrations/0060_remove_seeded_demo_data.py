@@ -70,15 +70,12 @@ LEGACY_SUGGESTED_QUESTIONS = [
 ]
 
 
-def _delete_if_model_exists(apps, app_label, model_name, query=None):
+def _safe_get_model(apps, app_label, model_name):
+    """Safe model getter - returns None if model doesn't exist."""
     try:
-        model = apps.get_model(app_label, model_name)
+        return apps.get_model(app_label, model_name)
     except LookupError:
-        return
-    queryset = model.objects.all()
-    if query is not None:
-        queryset = queryset.filter(query)
-    queryset.delete()
+        return None
 
 
 def remove_seeded_demo_data(apps, schema_editor):
@@ -96,25 +93,9 @@ def remove_seeded_demo_data(apps, schema_editor):
     AIOpsAgentConfig = apps.get_model('aiops', 'AIOpsAgentConfig')
     AIOpsModelProvider = apps.get_model('aiops', 'AIOpsModelProvider')
     User = apps.get_model('auth', 'User')
-    UserGroup = apps.get_model('rbac', 'UserGroup')
-    EventRecord = apps.get_model('eventwall', 'EventRecord')
-    EventEnvironment = apps.get_model('eventwall', 'EventEnvironment')
-    ServiceDeployment = apps.get_model('marketplace', 'ServiceDeployment')
-    ConfigItem = apps.get_model('cmdb', 'ConfigItem')
-    CIRelation = apps.get_model('cmdb', 'CIRelation')
-    CostRecord = apps.get_model('cmdb', 'CostRecord')
-    ResourceNode = apps.get_model('cmdb', 'ResourceNode')
-    ResourceRequest = apps.get_model('cmdb', 'ResourceRequest')
-    DataSource = apps.get_model('sqlaudit', 'DataSource')
-    SqlOrder = apps.get_model('sqlaudit', 'SqlOrder')
-    QueryOrder = apps.get_model('sqlaudit', 'QueryOrder')
-    CloudCredential = apps.get_model('multicloud', 'CloudCredential')
-    CloudEnvironment = apps.get_model('multicloud', 'CloudEnvironment')
-    CloudAsset = apps.get_model('multicloud', 'CloudAsset')
-    CloudSyncTask = apps.get_model('multicloud', 'CloudSyncTask')
 
+    # Clean up ops data
     LogDataSource.objects.filter(Q(name__in=DEMO_LOG_DATASOURCES) | Q(config__demo_mode=True)).delete()
-
     demo_hosts = Host.objects.filter(hostname__in=DEMO_HOSTNAMES)
     Alert.objects.filter(
         Q(title__in=DEMO_ALERT_TITLES)
@@ -124,13 +105,6 @@ def remove_seeded_demo_data(apps, schema_editor):
         | Q(environment__in=['郑州生产演示', 'zhengzhou-production-demo'])
     ).delete()
     LogEntry.objects.filter(Q(host__in=demo_hosts) | Q(service__in=DEMO_LOG_SERVICES)).delete()
-
-    ServiceDeployment.objects.filter(
-        Q(deployer__in=['ops-demo', 'dev-demo'])
-        | Q(release_name__icontains='demo')
-        | Q(deploy_dir__icontains='demo')
-    ).delete()
-
     Deployment.objects.filter(
         Q(image__startswith='registry.demo.local/')
         | Q(submitter__in=['ops-demo', 'dev-demo'])
@@ -138,81 +112,47 @@ def remove_seeded_demo_data(apps, schema_editor):
         | Q(change_summary__icontains='演示')
     ).delete()
     DeploymentApprovalFlow.objects.filter(Q(created_by='ops-demo') | Q(name__startswith='事务工单 · ')).delete()
-
     HostTask.objects.filter(Q(created_by='ops_demo') | Q(created_by='ops-demo')).delete()
     HostTaskSchedule.objects.filter(Q(created_by='ops_demo') | Q(created_by='ops-demo')).delete()
     TransactionTicket.objects.filter(Q(applicant='ops-demo') | Q(title__startswith='示例 · ')).delete()
+    K8sCluster.objects.filter(name__in=DEMO_K8S_CLUSTERS).delete()
+    DockerHost.objects.filter(hostname__in=DEMO_DOCKER_HOSTS).delete()
+    Host.objects.filter(hostname__in=DEMO_HOSTNAMES).delete()
 
-    DockerHost.objects.filter(name__in=DEMO_DOCKER_HOSTS).delete()
-    K8sCluster.objects.filter(Q(name__in=DEMO_K8S_CLUSTERS) | Q(kubeconfig='demo')).delete()
-    demo_hosts.delete()
+    # Clean up deleted modules (safe wrappers)
+    service_deployment = _safe_get_model(apps, 'marketplace', 'ServiceDeployment')
+    if service_deployment:
+        service_deployment.objects.filter(
+            Q(deployer__in=['ops-demo', 'dev-demo'])
+            | Q(release_name__icontains='demo')
+            | Q(deploy_dir__icontains='demo')
+        ).delete()
 
-    QueryOrder.objects.filter(submitter__in=['audit_demo', 'dev_demo', 'ops_demo']).delete()
-    SqlOrder.objects.filter(submitter__in=['audit_demo', 'dev_demo', 'ops_demo']).delete()
-    DataSource.objects.filter(
-        Q(password='demo-secret')
-        | Q(remark__icontains='演示')
-        | Q(name__in=['工单核心库', '会员归档库'])
-    ).delete()
-
-    EventRecord.objects.filter(Q(is_demo=True) | Q(source_type='seed')).delete()
-    EventEnvironment.objects.filter(
-        Q(code__in=['zhengzhou-prod', 'zhengzhou-production-demo', 'zhengzhou-dev'])
-        | Q(name__in=['郑州生产环境', '郑州生产演示', '郑州开发环境'])
-    ).delete()
-
-    cloud_credentials = CloudCredential.objects.filter(Q(demo_mode=True) | Q(auth_mode='demo') | Q(created_by='seed'))
-    cloud_environments = CloudEnvironment.objects.filter(Q(credential__in=cloud_credentials) | Q(created_by='seed'))
-    CloudAsset.objects.filter(environment__in=cloud_environments).delete()
-    CloudSyncTask.objects.filter(Q(environment__in=cloud_environments) | Q(credential__in=cloud_credentials)).delete()
-    cloud_environments.delete()
-    cloud_credentials.delete()
-
-    demo_business_lines = ['郑州生产线', '数据平台', '基础架构']
-    demo_config_items = ConfigItem.objects.filter(Q(business_line__in=demo_business_lines) | Q(name__in=DEMO_HOSTNAMES))
-    CostRecord.objects.filter(ci__in=demo_config_items).delete()
-    CIRelation.objects.filter(Q(source__in=demo_config_items) | Q(target__in=demo_config_items)).delete()
-    demo_config_items.delete()
-    ResourceRequest.objects.filter(Q(business_line__in=demo_business_lines) | Q(applicant__in=['ops-demo', 'dev_demo', 'ops_demo'])).delete()
-    demo_resource_roots = ResourceNode.objects.filter(name__in=demo_business_lines)
-    ResourceNode.objects.filter(parent__in=demo_resource_roots).delete()
-    demo_resource_roots.delete()
-
-    User.objects.filter(username__in=['ops_demo', 'dev_demo', 'audit_demo', 'viewer_demo', 'demo']).delete()
-    UserGroup.objects.filter(code__in=['ops-team', 'dev-team', 'audit-team', 'visitors']).delete()
-
-    for config in AIOpsAgentConfig.objects.all():
-        questions = [
-            str(item).strip()
-            for item in (config.suggested_questions or [])
-            if str(item).strip() and str(item).strip() not in LEGACY_SUGGESTED_QUESTIONS and '郑州生产演示' not in str(item)
-        ]
-        if questions != (config.suggested_questions or []):
-            config.suggested_questions = questions
-            config.save(update_fields=['suggested_questions'])
-
-    AIOpsModelProvider.objects.filter(name='智能助手体验版').update(
-        provider_preset='sail_cloud',
-        base_url='https://api.sail-cloud.com/v1',
-        default_model='Qwen2.5-72B-Instruct',
-        backup_model='',
-        api_key_encrypted='',
-        price_currency='CNY',
-        last_test_status='unknown',
-        last_test_message='预置 Sail Cloud 配置，需填写 API Key 后使用',
-    )
+    for model_path in [
+        ('eventwall', 'EventRecord'),
+        ('eventwall', 'EventEnvironment'),
+        ('cmdb', 'ConfigItem'),
+        ('cmdb', 'CIRelation'),
+        ('cmdb', 'CostRecord'),
+        ('cmdb', 'ResourceNode'),
+        ('cmdb', 'ResourceRequest'),
+        ('sqlaudit', 'DataSource'),
+        ('sqlaudit', 'SqlOrder'),
+        ('sqlaudit', 'QueryOrder'),
+        ('multicloud', 'CloudCredential'),
+        ('multicloud', 'CloudEnvironment'),
+        ('multicloud', 'CloudAsset'),
+        ('multicloud', 'CloudSyncTask'),
+    ]:
+        model = _safe_get_model(apps, *model_path)
+        if model:
+            model.objects.all().delete()
 
 
 class Migration(migrations.Migration):
+
     dependencies = [
         ('ops', '0059_k8scluster_user_type'),
-        ('aiops', '0021_remove_aiopsknowledgeenvironment_posture_environments'),
-        ('cmdb', '0004_resourcerequest_approval_comment_and_more'),
-        ('eventwall', '0006_eventenvironment'),
-        ('marketplace', '0004_add_more_marketplace_templates'),
-        ('multicloud', '0002_rename_business_line_verbose_to_system'),
-        ('rbac', '0002_system_module_setting'),
-        ('sqlaudit', '0002_datasource_db_type'),
     ]
 
     operations = [

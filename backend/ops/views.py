@@ -27,17 +27,12 @@ from .host_tasks import build_host_target_queryset, build_k8s_target_snapshot, m
 from .models import (
     Alert,
     AlertAction,
-    AlertAggregationRule,
-    AlertEscalationPolicy,
-    AlertInhibitionRule,
-    AlertMuteRule,
     AlertNotificationChannel,
     AlertNotificationLog,
-    AlertNotificationRule,
     AlertRecipient,
     AlertRecipientGroup,
     AlertRule,
-    AlertRuleTemplate,
+    AlertSilence,
     Deployment,
     DeploymentApprovalFlow,
     DeploymentApprovalStep,
@@ -54,17 +49,12 @@ from .models import (
 )
 from .serializers import (
     AlertActionSerializer,
-    AlertAggregationRuleSerializer,
-    AlertEscalationPolicySerializer,
-    AlertInhibitionRuleSerializer,
-    AlertMuteRuleSerializer,
     AlertNotificationChannelSerializer,
     AlertNotificationLogSerializer,
-    AlertNotificationRuleSerializer,
     AlertRecipientGroupSerializer,
     AlertRecipientSerializer,
     AlertRuleSerializer,
-    AlertRuleTemplateSerializer,
+    AlertSilenceSerializer,
     AlertSerializer,
     ApprovalActionSerializer,
     DeploymentActionSerializer,
@@ -2271,31 +2261,13 @@ class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.Mod
         return Response(build_alert_log_evidence(alert, limit=limit))
 
 
-class AlertRuleTemplateViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
-    queryset = AlertRuleTemplate.objects.all()
-    serializer_class = AlertRuleTemplateSerializer
-    pagination_class = None
-    search_fields = ['name', 'code', 'source_type', 'description']
-    filterset_fields = ['source_type', 'level', 'is_builtin', 'is_enabled']
-    event_module = 'ops'
-    event_resource_type = 'alert_rule_template'
-    event_resource_label = '告警规则模板'
-    event_resource_name_fields = ('name',)
-    rbac_permissions = {
-        'list': ['ops.alert.config.view'],
-        'retrieve': ['ops.alert.config.view'],
-        'create': ['ops.alert.config.manage'],
-        'update': ['ops.alert.config.manage'],
-        'partial_update': ['ops.alert.config.manage'],
-        'destroy': ['ops.alert.config.manage'],
-    }
 
 
 class AlertRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
-    queryset = AlertRule.objects.select_related('template').all()
+    queryset = AlertRule.objects.all()
     serializer_class = AlertRuleSerializer
     search_fields = ['name', 'code', 'source_type', 'description']
-    filterset_fields = ['category', 'source_type', 'level', 'is_enabled', 'notify_enabled', 'auto_analyze', 'template']
+    filterset_fields = ['category', 'source_type', 'level', 'is_enabled', 'notify_enabled', 'auto_analyze']
     event_module = 'ops'
     event_resource_type = 'alert_rule'
     event_resource_label = '告警规则'
@@ -2316,29 +2288,6 @@ class AlertRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets
         'engine_status': ['ops.alert.config.view'],
     }
 
-    @action(detail=True, methods=['post'], url_path='apply-preset')
-    def apply_preset(self, request, pk=None):
-        rule = self.get_object()
-        template_id = request.data.get('template_id') or rule.template_id
-        if not template_id:
-            return Response({'detail': 'template_id is required'}, status=status.HTTP_400_BAD_REQUEST)
-        try:
-            template = AlertRuleTemplate.objects.get(pk=template_id, is_enabled=True)
-        except (AlertRuleTemplate.DoesNotExist, ValueError, TypeError):
-            return Response({'detail': 'alert rule template not found'}, status=status.HTTP_404_NOT_FOUND)
-
-        preset_fields = (
-            'category', 'source_type', 'level', 'query_config', 'condition',
-            'annotations', 'interval_seconds', 'duration_seconds',
-            'notify_enabled', 'auto_analyze', 'description',
-        )
-        for field in preset_fields:
-            setattr(rule, field, getattr(template, field))
-        rule.template = template
-        rule.labels = template.default_labels
-        rule.is_enabled = True
-        rule.save()
-        return Response(self.get_serializer(rule).data)
 
     @action(detail=False, methods=['get'], url_path='by-category')
     def by_category(self, request):
@@ -2472,56 +2421,22 @@ class AlertNotificationChannelViewSet(EventWallModelViewSetMixin, RBACPermission
                 'is_suppressed': False,
             },
         )
-        temp_rule = AlertNotificationRule(name='渠道测试', is_enabled=True)
         logs = []
         from .alerting import send_alert_notification
         logs.append(send_alert_notification(channel, alert, {'names': ['渠道测试']}, action='test', rule=None, request=request))
         return Response(AlertNotificationLogSerializer(logs, many=True).data)
 
 
-class AlertAggregationRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
-    queryset = AlertAggregationRule.objects.all()
-    serializer_class = AlertAggregationRuleSerializer
-    search_fields = ['name', 'description']
+
+
+class AlertSilenceViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
+    queryset = AlertSilence.objects.all()
+    serializer_class = AlertSilenceSerializer
+    search_fields = ['name', 'reason', 'created_by']
+    filterset_fields = ['is_enabled']
     event_module = 'ops'
-    event_resource_type = 'alert_aggregation_rule'
-    event_resource_label = '告警聚合规则'
-    event_resource_name_fields = ('name',)
-    rbac_permissions = {
-        'list': ['ops.alert.config.view'],
-        'retrieve': ['ops.alert.config.view'],
-        'create': ['ops.alert.config.manage'],
-        'update': ['ops.alert.config.manage'],
-        'partial_update': ['ops.alert.config.manage'],
-        'destroy': ['ops.alert.config.manage'],
-    }
-
-
-class AlertInhibitionRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
-    queryset = AlertInhibitionRule.objects.all()
-    serializer_class = AlertInhibitionRuleSerializer
-    search_fields = ['name', 'description']
-    event_module = 'ops'
-    event_resource_type = 'alert_inhibition_rule'
-    event_resource_label = '告警抑制规则'
-    event_resource_name_fields = ('name',)
-    rbac_permissions = {
-        'list': ['ops.alert.config.view'],
-        'retrieve': ['ops.alert.config.view'],
-        'create': ['ops.alert.config.manage'],
-        'update': ['ops.alert.config.manage'],
-        'partial_update': ['ops.alert.config.manage'],
-        'destroy': ['ops.alert.config.manage'],
-    }
-
-
-class AlertMuteRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
-    queryset = AlertMuteRule.objects.all()
-    serializer_class = AlertMuteRuleSerializer
-    search_fields = ['name', 'reason']
-    event_module = 'ops'
-    event_resource_type = 'alert_mute_rule'
-    event_resource_label = '告警屏蔽规则'
+    event_resource_type = 'alert_silence'
+    event_resource_label = '告警静默'
     event_resource_name_fields = ('name',)
     rbac_permissions = {
         'list': ['ops.alert.config.view'],
@@ -2536,47 +2451,11 @@ class AlertMuteRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, view
         serializer.save(created_by=self.request.user.username)
 
 
-class AlertEscalationPolicyViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
-    queryset = AlertEscalationPolicy.objects.all()
-    serializer_class = AlertEscalationPolicySerializer
-    search_fields = ['name', 'description']
-    event_module = 'ops'
-    event_resource_type = 'alert_escalation_policy'
-    event_resource_label = '告警升级策略'
-    event_resource_name_fields = ('name',)
-    rbac_permissions = {
-        'list': ['ops.alert.config.view'],
-        'retrieve': ['ops.alert.config.view'],
-        'create': ['ops.alert.config.manage'],
-        'update': ['ops.alert.config.manage'],
-        'partial_update': ['ops.alert.config.manage'],
-        'destroy': ['ops.alert.config.manage'],
-    }
-
-
-class AlertNotificationRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
-    queryset = AlertNotificationRule.objects.select_related('aggregation_rule', 'escalation_policy').prefetch_related('channels', 'recipients', 'recipient_groups').all()
-    serializer_class = AlertNotificationRuleSerializer
-    search_fields = ['name', 'description']
-    event_module = 'ops'
-    event_resource_type = 'alert_notification_rule'
-    event_resource_label = '告警通知规则'
-    event_resource_name_fields = ('name',)
-    rbac_permissions = {
-        'list': ['ops.alert.config.view'],
-        'retrieve': ['ops.alert.config.view'],
-        'create': ['ops.alert.config.manage'],
-        'update': ['ops.alert.config.manage'],
-        'partial_update': ['ops.alert.config.manage'],
-        'destroy': ['ops.alert.config.manage'],
-    }
-
-
 class AlertNotificationLogViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
-    queryset = AlertNotificationLog.objects.select_related('alert', 'rule', 'channel').all()
+    queryset = AlertNotificationLog.objects.select_related('alert').all()
     serializer_class = AlertNotificationLogSerializer
     search_fields = ['recipient_summary', 'response_body', 'error_message']
-    filterset_fields = ['alert', 'rule', 'channel', 'action', 'status']
+    filterset_fields = ['alert', 'rule_id', 'channel_id', 'action', 'status']
     rbac_permissions = {
         'list': ['ops.alert.view'],
         'retrieve': ['ops.alert.view'],
