@@ -16,6 +16,17 @@ User = get_user_model()
 
 
 class AIOpsConfigurationTests(TestCase):
+    def test_knowledge_environment_catalog_works_without_event_wall_models(self):
+        user = User.objects.create_superuser(username='catalog-admin', password='Admin@123456')
+        self.client.force_login(user)
+
+        response = self.client.get('/api/aiops/knowledge-environments/catalog/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('metric_datasources', response.json())
+        self.assertNotIn('event_environments', response.json())
+        self.assertNotIn('docker_hosts', response.json())
+
     def test_knowledge_graph_works_after_event_wall_retirement(self):
         cache.clear()
         user = User.objects.create_superuser(username='graph-admin', password='Admin@123456')

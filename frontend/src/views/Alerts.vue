@@ -633,8 +633,8 @@
         </el-form-item>
         <el-form-item label="&#x901A;&#x77E5;&#x5730;&#x5740;"><el-input v-model="channelDialog.form.webhook_url" /></el-form-item>
         <el-form-item label="&#x8BBF;&#x95EE;&#x4EE4;&#x724C;"><el-input v-model="channelDialog.form.access_token" show-password /></el-form-item>
-        <el-form-item v-if="channelDialog.form.channel_type === 'feishu'" label="签名密钥">
-          <el-input v-model="channelDialog.form.secret" show-password placeholder="飞书机器人开启签名校验时填写" />
+        <el-form-item v-if="channelDialog.form.channel_type === 'feishu'" label="签名密钥" required>
+          <el-input v-model="channelDialog.form.secret" show-password placeholder="飞书机器人签名校验必填；编辑时留存掩码即可" />
         </el-form-item>
         <el-form-item label="&#x9ED8;&#x8BA4;&#x63A5;&#x6536;&#x5730;&#x5740;"><el-input v-model="channelDialog.form.to" placeholder="&#x591A;&#x4E2A;&#x63A5;&#x6536;&#x5730;&#x5740;&#x6216;&#x624B;&#x673A;&#x53F7;&#xFF0C;&#x4F7F;&#x7528;&#x82F1;&#x6587;&#x9017;&#x53F7;&#x5206;&#x9694;" /></el-form-item>
         <el-collapse class="channel-advanced">
@@ -1899,6 +1899,9 @@ function openChannel(row = null) {
 
 async function saveChannel() {
   const data = { ...channelDialog.form }
+  if (data.channel_type === 'feishu' && !data.secret) {
+    return ElMessage.warning('飞书渠道必须填写签名密钥')
+  }
   const recipientsText = splitText(data.to)
   data.config = {
     ...(data.webhook_url ? { webhook_url: data.webhook_url } : {}),

@@ -1146,10 +1146,6 @@ class DeploymentSerializer(serializers.ModelSerializer):
     approval_status_display = serializers.CharField(source='get_approval_status_display', read_only=True)
     action_type_display = serializers.CharField(source='get_action_type_display', read_only=True)
     release_strategy_display = serializers.CharField(source='get_release_strategy_display', read_only=True)
-    docker_host_name = serializers.CharField(source='docker_host.name', read_only=True, default='')
-    docker_host_ip = serializers.CharField(source='docker_host.ip_address', read_only=True, default='')
-    host_name = serializers.CharField(source='host.hostname', read_only=True, default='')
-    host_ip = serializers.CharField(source='host.ip_address', read_only=True, default='')
     cluster_name = serializers.CharField(source='cluster.name', read_only=True, default='')
     target_display = serializers.CharField(read_only=True)
     strategy_summary = serializers.CharField(read_only=True)
@@ -1207,12 +1203,6 @@ class DeploymentSerializer(serializers.ModelSerializer):
             'replicas',
             'container_port',
             'service_port',
-            'docker_host',
-            'docker_host_name',
-            'docker_host_ip',
-            'host',
-            'host_name',
-            'host_ip',
             'cluster',
             'cluster_name',
             'target_display',
@@ -1327,9 +1317,7 @@ class DeploymentSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         business_line = (attrs.get('business_line') or getattr(self.instance, 'business_line', '') or '').strip()
         environment = attrs.get('environment') or getattr(self.instance, 'environment', '')
-        deploy_mode = attrs.get('deploy_mode') or getattr(self.instance, 'deploy_mode', 'docker_compose')
-        docker_host = attrs.get('docker_host', getattr(self.instance, 'docker_host', None))
-        host = attrs.get('host', getattr(self.instance, 'host', None))
+        deploy_mode = attrs.get('deploy_mode') or getattr(self.instance, 'deploy_mode', 'k8s')
         cluster = attrs.get('cluster', getattr(self.instance, 'cluster', None))
         namespace = attrs.get('namespace', getattr(self.instance, 'namespace', ''))
         strategy = attrs.get('release_strategy') or getattr(self.instance, 'release_strategy', 'standard')
@@ -1348,20 +1336,14 @@ class DeploymentSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({'environment': '所选环境未绑定到当前系统'})
         attrs['business_line'] = business_line
 
-        if deploy_mode == 'docker_compose':
-            docker_host = docker_host or self._resolve_docker_host_from_legacy(host)
-            if not docker_host:
-                raise serializers.ValidationError({'docker_host': 'Docker 环境模式必须选择 Docker 环境'})
-            attrs['docker_host'] = docker_host
-            attrs['host'] = None
-            attrs['cluster'] = None
-            attrs['namespace'] = ''
-        else:
-            if not cluster:
-                raise serializers.ValidationError({'cluster': 'K8s 集群模式必须选择目标集群'})
-            attrs['docker_host'] = None
-            attrs['host'] = None
-            attrs['namespace'] = (namespace or 'default').strip() or 'default'
+        if deploy_mode != 'k8s':
+            raise serializers.ValidationError({'deploy_mode': '发布流程仅支持 K8S 集群'})
+        if not cluster:
+            raise serializers.ValidationError({'cluster': '请选择目标 K8S 集群'})
+        attrs['deploy_mode'] = 'k8s'
+        attrs['docker_host'] = None
+        attrs['host'] = None
+        attrs['namespace'] = (namespace or 'default').strip() or 'default'
 
         if strategy == 'canary':
             if canary_percent <= 0 or canary_percent > 100:
@@ -1384,31 +1366,6 @@ class DeploymentSerializer(serializers.ModelSerializer):
         if not image:
             attrs['image'] = f'{app_name}:{version}'
         return attrs
-
-    def _resolve_docker_host_from_legacy(self, host):
-        if not host:
-            return None
-        docker_host = DockerHost.objects.filter(ip_address=host.ip_address).order_by('id').first()
-        if docker_host:
-            return docker_host
-        docker_host = DockerHost.objects.filter(name=host.hostname).order_by('id').first()
-        if docker_host:
-            return docker_host
-        status_map = {
-            'online': 'connected',
-            'offline': 'disconnected',
-            'warning': 'error',
-        }
-        return DockerHost.objects.create(
-            name=host.hostname,
-            ip_address=host.ip_address,
-            ssh_port=getattr(host, 'ssh_port', 22) or 22,
-            ssh_user=getattr(host, 'ssh_user', 'root') or 'root',
-            ssh_password=getattr(host, 'ssh_password', '') or '',
-            status=status_map.get(getattr(host, 'status', ''), 'disconnected'),
-            description='由应用发布主机目标自动映射',
-        )
-
 
 class ApprovalActionSerializer(serializers.Serializer):
     comment = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
@@ -1616,6 +1573,27 @@ class AlertNotificationChannelSerializer(serializers.ModelSerializer):
             elif key not in normalized and previous.get(key):
                 normalized[key] = previous[key]
         return normalized
+
+    def validate(self, attrs):
+        channel_type = attrs.get('channel_type') or getattr(self.instance, 'channel_type', '')
+        config = attrs.get('config')
+        if config is None:
+            config = getattr(self.instance, 'config', {}) or {}
+        config = self._normalize_config(config, instance=self.instance)
+        if config is None:
+            config = {}
+        if not isinstance(config, dict):
+            raise serializers.ValidationError({'config': '渠道配置必须为 JSON 对象'})
+        if channel_type == AlertNotificationChannel.CHANNEL_FEISHU:
+            webhook_url = str(config.get('webhook_url') or config.get('url') or '').strip()
+            sign_secret = str(config.get('secret') or config.get('sign_secret') or '').strip()
+            if not webhook_url:
+                raise serializers.ValidationError({'config': '飞书渠道必须配置 webhook_url'})
+            if not sign_secret:
+                raise serializers.ValidationError({'config': '飞书渠道必须配置签名密钥'})
+        if 'config' in attrs:
+            attrs['config'] = config
+        return attrs
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

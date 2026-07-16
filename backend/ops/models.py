@@ -166,12 +166,12 @@ class MiddlewareAsset(models.Model):
     TYPE_REDIS = 'redis'
     TYPE_KAFKA = 'kafka'
     TYPE_ROCKETMQ = 'rocketmq'
-    TYPE_ELASTICSEARCH = 'elasticsearch'
+    TYPE_DATABASE = 'database'
     TYPE_CHOICES = [
         (TYPE_REDIS, 'Redis'),
         (TYPE_KAFKA, 'Kafka'),
         (TYPE_ROCKETMQ, 'RocketMQ'),
-        (TYPE_ELASTICSEARCH, 'Elasticsearch'),
+        (TYPE_DATABASE, '数据库'),
     ]
 
     STATUS_UNKNOWN = 'unknown'
@@ -189,6 +189,8 @@ class MiddlewareAsset(models.Model):
     asset_type = models.CharField('资产类型', max_length=32, choices=TYPE_CHOICES)
     environment = models.CharField('环境', max_length=32, blank=True, default='prod')
     endpoint = models.CharField('访问地址', max_length=255)
+    username = models.CharField('访问用户名', max_length=128, blank=True, default='')
+    password = models.CharField('访问密码', max_length=255, blank=True, default='')
     version = models.CharField('版本', max_length=64, blank=True, default='')
     status = models.CharField('状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_UNKNOWN)
     description = models.CharField('说明', max_length=255, blank=True, default='')
@@ -508,7 +510,6 @@ class HostTaskExecution(models.Model):
 
 class Deployment(models.Model):
     DEPLOY_MODE_CHOICES = [
-        ('docker_compose', 'Docker 环境'),
         ('k8s', 'K8s 集群'),
     ]
     STATUS_CHOICES = [
@@ -546,7 +547,7 @@ class Deployment(models.Model):
     version = models.CharField('版本号', max_length=64)
     image = models.CharField('镜像地址', max_length=255, blank=True, default='')
     environment = models.CharField('环境', max_length=32, choices=ENV_CHOICES, default='test')
-    deploy_mode = models.CharField('发布模式', max_length=32, choices=DEPLOY_MODE_CHOICES, default='docker_compose')
+    deploy_mode = models.CharField('发布模式', max_length=32, choices=DEPLOY_MODE_CHOICES, default='k8s')
     status = models.CharField('执行状态', max_length=16, choices=STATUS_CHOICES, default='pending')
     approval_status = models.CharField('审批状态', max_length=16, choices=APPROVAL_STATUS_CHOICES, default='pending')
     action_type = models.CharField('发布类型', max_length=16, choices=ACTION_TYPE_CHOICES, default='deploy')
@@ -634,11 +635,6 @@ class Deployment(models.Model):
         ]
         constraints = [
             models.UniqueConstraint(
-                fields=['business_line', 'app_name', 'environment', 'docker_host'],
-                condition=Q(deploy_mode='docker_compose', is_current=True),
-                name='uniq_ops_curr_biz_app_docker_host',
-            ),
-            models.UniqueConstraint(
                 fields=['business_line', 'app_name', 'environment', 'cluster', 'namespace'],
                 condition=Q(deploy_mode='k8s', is_current=True),
                 name='uniq_ops_curr_biz_app_k8s',
@@ -649,16 +645,9 @@ class Deployment(models.Model):
         return f'{self.app_name} v{self.version} -> {self.environment}'
 
     @property
-    def docker_target(self):
-        return self.docker_host or self.host
-
-    @property
     def target_display(self):
-        if self.deploy_mode == 'k8s' and self.cluster_id:
+        if self.cluster_id:
             return f'{self.cluster.name} / {self.namespace or "default"}'
-        target = self.docker_target
-        if target:
-            return getattr(target, 'name', '') or getattr(target, 'hostname', '') or '-'
         return '-'
 
     @property
@@ -696,13 +685,7 @@ class Deployment(models.Model):
             environment=self.environment,
             deploy_mode=self.deploy_mode,
         )
-        if self.deploy_mode == 'k8s':
-            return queryset.filter(cluster=self.cluster, namespace=self.namespace or 'default')
-        if self.docker_host_id:
-            return queryset.filter(docker_host=self.docker_host)
-        if self.host_id:
-            return queryset.filter(host=self.host)
-        return queryset.filter(pk=self.pk)
+        return queryset.filter(cluster=self.cluster, namespace=self.namespace or 'default')
 
     def get_previous_successful_release(self):
         return self.same_target_queryset().filter(

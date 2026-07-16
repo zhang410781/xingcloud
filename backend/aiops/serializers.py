@@ -160,10 +160,10 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = AIOpsKnowledgeEnvironment
         fields = [
-            'id', 'name', 'aliases', 'description', 'event_environments',
+            'id', 'name', 'aliases', 'description',
             'metric_datasource', 'log_datasource',
             'metric_datasource_ids', 'log_datasource_ids', 'alert_environments',
-            'k8s_cluster_ids', 'k8s_namespaces', 'docker_host_ids',
+            'k8s_cluster_ids', 'k8s_namespaces',
             'task_resource_environment_ids',
             'is_default', 'is_enabled', 'created_by', 'updated_by', 'created_at', 'updated_at',
         ]
@@ -178,12 +178,10 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         list_fields = [
             'aliases',
-            'event_environments',
             'metric_datasource_ids',
             'log_datasource_ids',
             'alert_environments',
             'k8s_cluster_ids',
-            'docker_host_ids',
             'task_resource_environment_ids',
         ]
         for field in list_fields:
@@ -262,7 +260,7 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
             for field in ('metric_datasource', 'log_datasource')
         )
         if not has_association:
-            raise serializers.ValidationError('??????????????????????????K8s ???Docker ???????????')
+            raise serializers.ValidationError('请至少选择一个指标、日志、告警、K8S 集群或资产登记来源')
         is_default = attrs.get('is_default', getattr(instance, 'is_default', False))
         is_enabled = attrs.get('is_enabled', getattr(instance, 'is_enabled', True))
         if is_default and not is_enabled:

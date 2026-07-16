@@ -13,6 +13,7 @@ from django.db import OperationalError
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
+from cmdb.models import ResourceNode
 from ops.models import (
     Alert,
     AlertAction,
@@ -2007,7 +2008,7 @@ class MiddlewareViewsTests(TestCase):
 
     def test_delete_asset(self):
         asset = MiddlewareAsset.objects.create(
-            name='search', asset_type='elasticsearch', environment='test', endpoint='http://es:9200'
+            name='orders-db', asset_type='database', environment='test', endpoint='mysql://db:3306/orders'
         )
         response = self.client.post(
             '/api/middleware/action/',
@@ -2017,6 +2018,30 @@ class MiddlewareViewsTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(MiddlewareAsset.objects.exists())
         self.assertEqual(response.json()['data']['assets'], [])
+
+    def test_asset_credentials_are_stored_but_never_returned(self):
+        response = self.client.post(
+            '/api/middleware/action/',
+            {
+                'action': 'create_asset',
+                'payload': {
+                    'name': 'orders-db',
+                    'asset_type': 'database',
+                    'environment': 'prod',
+                    'endpoint': 'mysql://db.internal:3306/orders',
+                    'username': 'ops_reader',
+                    'password': 'secret-for-test',
+                },
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 201)
+        asset = MiddlewareAsset.objects.get()
+        self.assertEqual(asset.username, 'ops_reader')
+        self.assertEqual(asset.password, 'secret-for-test')
+        item = response.json()['asset']
+        self.assertTrue(item['password_configured'])
+        self.assertNotIn('password', item)
 
     def test_validation_rejects_missing_endpoint_and_unsupported_type(self):
         missing_endpoint = self.client.post(
@@ -2043,6 +2068,49 @@ class MiddlewareViewsTests(TestCase):
         self.assertEqual(missing_endpoint.status_code, 400)
         self.assertEqual(unsupported.status_code, 400)
         self.assertFalse(MiddlewareAsset.objects.exists())
+
+
+class K8sOnlyDeploymentTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = get_user_model().objects.create_superuser('deploy-admin', 'deploy@example.com', 'Admin@123456')
+        self.client.force_authenticate(user=self.user)
+        self.business = ResourceNode.objects.create(name='交易系统', node_type='biz')
+        ResourceNode.objects.create(name='prod', node_type='env', parent=self.business)
+        self.cluster = K8sCluster.objects.create(name='production-k8s', api_server='https://k8s.example:6443')
+
+    def test_new_deployments_require_a_k8s_cluster(self):
+        payload = {
+            'app_name': 'orders-api',
+            'business_line': self.business.name,
+            'version': '1.0.0',
+            'environment': 'prod',
+            'deploy_mode': 'docker_compose',
+        }
+        response = self.client.post('/api/deployments/', payload, format='json')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('deploy_mode', response.json())
+
+    def test_new_k8s_deployment_is_accepted(self):
+        response = self.client.post(
+            '/api/deployments/',
+            {
+                'app_name': 'orders-api',
+                'business_line': self.business.name,
+                'version': '1.0.0',
+                'environment': 'prod',
+                'deploy_mode': 'k8s',
+                'cluster': self.cluster.id,
+                'namespace': 'orders',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        deployment = Deployment.objects.get()
+        self.assertEqual(deployment.deploy_mode, 'k8s')
+        self.assertEqual(deployment.cluster_id, self.cluster.id)
 
 
 class AlertViewSetFilterTests(TestCase):
@@ -2567,7 +2635,7 @@ class AlertActionApiTests(TestCase):
         channel = AlertNotificationChannel.objects.create(
             name='feishu',
             channel_type='feishu',
-            config={'webhook_url': 'https://open.feishu.cn/open-apis/bot/v2/hook/test'},
+            config={'webhook_url': 'https://open.feishu.cn/open-apis/bot/v2/hook/test', 'secret': 'sign-secret'},
         )
 
         response = self.client.post(f'/api/alert-notification-channels/{channel.id}/test/')
@@ -2604,7 +2672,7 @@ class AlertActionApiTests(TestCase):
         channel = AlertNotificationChannel.objects.create(
             name='feishu',
             channel_type='feishu',
-            config={'webhook_url': 'https://open.feishu.cn/open-apis/bot/v2/hook/test'},
+            config={'webhook_url': 'https://open.feishu.cn/open-apis/bot/v2/hook/test', 'secret': 'sign-secret'},
         )
 
         response = self.client.post(f'/api/alert-notification-channels/{channel.id}/test/')
@@ -2620,7 +2688,7 @@ class AlertActionApiTests(TestCase):
         channel = AlertNotificationChannel.objects.create(
             name='feishu',
             channel_type='feishu',
-            config={'webhook_url': 'https://open.feishu.cn/open-apis/bot/v2/hook/test'},
+            config={'webhook_url': 'https://open.feishu.cn/open-apis/bot/v2/hook/test', 'secret': 'sign-secret'},
         )
         from ops.alerting import send_alert_notification
 
@@ -2658,3 +2726,16 @@ class AlertActionApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         channel.refresh_from_db()
         self.assertEqual(channel.config['secret'], 'old-secret')
+
+    def test_feishu_channel_requires_a_signing_secret(self):
+        response = self.client.post(
+            '/api/alert-notification-channels/',
+            {
+                'name': 'unsigned-feishu',
+                'channel_type': 'feishu',
+                'config': {'webhook_url': 'https://open.feishu.cn/open-apis/bot/v2/hook/test'},
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('签名密钥', str(response.json()))

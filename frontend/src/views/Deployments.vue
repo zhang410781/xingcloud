@@ -73,7 +73,6 @@
           </el-select>
           <el-input v-model="search" clearable placeholder="搜索应用 / 版本 / 镜像 / 目标 / 申请人" style="width: 280px" />
           <el-select v-model="modeFilter" clearable placeholder="模式" style="width: 104px">
-            <el-option label="容器环境" value="docker_compose" />
             <el-option label="K8S 集群" value="k8s" />
           </el-select>
           <el-select v-model="strategyFilter" clearable placeholder="策略" style="width: 104px">
@@ -134,12 +133,9 @@
             </el-table-column>
             <el-table-column label="发布目标" min-width="160">
               <template #default="{ row }">
-                <div v-if="row.deploy_mode === 'k8s'" class="stack-cell">
+                <div class="stack-cell">
                   <span>{{ row.cluster_name || '-' }}</span>
                   <div class="sub-text">NS: {{ row.namespace || 'default' }}</div>
-                </div>
-                <div v-else class="stack-cell">
-                  <span>{{ row.docker_host_name || row.target_display }}</span>
                 </div>
               </template>
             </el-table-column>
@@ -272,27 +268,14 @@
             <el-option v-for="item in releaseEnvironmentOptions" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
         </el-form-item>
-        <el-form-item label="发布模式" required>
-          <el-radio-group v-model="releaseForm.deploy_mode">
-            <el-radio-button label="docker_compose">容器环境</el-radio-button>
-            <el-radio-button label="k8s">K8S 集群</el-radio-button>
-          </el-radio-group>
-        </el-form-item>
-        <el-form-item v-if="releaseForm.deploy_mode === 'docker_compose'" label="容器环境" class="span-2" required>
-          <el-select v-model="releaseForm.docker_host" filterable placeholder="选择 容器环境" style="width: 100%">
-            <el-option v-for="host in dockerHosts" :key="host.id" :label="host.name" :value="host.id" />
+        <el-form-item label="目标集群" required>
+          <el-select v-model="releaseForm.cluster" filterable placeholder="选择 K8S 集群" style="width: 100%">
+            <el-option v-for="cluster in clusters" :key="cluster.id" :label="cluster.name" :value="cluster.id" />
           </el-select>
         </el-form-item>
-        <template v-else>
-          <el-form-item label="目标集群" required>
-            <el-select v-model="releaseForm.cluster" filterable placeholder="选择 K8S 集群" style="width: 100%">
-              <el-option v-for="cluster in clusters" :key="cluster.id" :label="cluster.name" :value="cluster.id" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="命名空间"><el-input v-model="releaseForm.namespace" placeholder="default" /></el-form-item>
-          <el-form-item label="发布名称"><el-input v-model="releaseForm.release_name" placeholder="为空时自动生成" /></el-form-item>
-          <el-form-item label="副本数"><el-input-number v-model="releaseForm.replicas" :min="1" :max="99" /></el-form-item>
-        </template>
+        <el-form-item label="命名空间"><el-input v-model="releaseForm.namespace" placeholder="default" /></el-form-item>
+        <el-form-item label="发布名称"><el-input v-model="releaseForm.release_name" placeholder="为空时自动生成" /></el-form-item>
+        <el-form-item label="副本数"><el-input-number v-model="releaseForm.replicas" :min="1" :max="99" /></el-form-item>
         <el-form-item label="容器端口"><el-input-number v-model="releaseForm.container_port" :min="1" :max="65535" /></el-form-item>
         <el-form-item label="服务端口"><el-input-number v-model="releaseForm.service_port" :min="1" :max="65535" /></el-form-item>
         <el-form-item label="发布策略" class="span-2">
@@ -411,12 +394,9 @@
           <el-descriptions-item label="系统">{{ detailItem.business_line || '-' }}</el-descriptions-item>
           <el-descriptions-item label="镜像">{{ detailItem.image || '-' }}</el-descriptions-item>
           <el-descriptions-item label="发布目标">
-            <div v-if="detailItem.deploy_mode === 'k8s'" class="stack-cell detail-target-cell">
+            <div class="stack-cell detail-target-cell">
               <span>{{ detailItem.cluster_name || '-' }}</span>
               <div class="sub-text">NS: {{ detailItem.namespace || 'default' }}</div>
-            </div>
-            <div v-else class="stack-cell detail-target-cell">
-              <span>{{ detailItem.docker_host_name || detailItem.target_display }}</span>
             </div>
           </el-descriptions-item>
           <el-descriptions-item label="CMDB 配置项">{{ detailItem.cmdb_item_name || '-' }}</el-descriptions-item>
@@ -492,7 +472,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Promotion, RefreshRight } from '@element-plus/icons-vue'
-import { getDockerHosts, getK8sClusters } from '@/api/modules/container'
+import { getK8sClusters } from '@/api/modules/container'
 import { advanceDeploymentBatch, approveDeployment, createDeployment, createDeploymentApprovalFlow, deleteDeploymentApprovalFlow, getDeploymentApprovalFlows, getDeployments, getDeploymentStatus, getUsers, rejectDeployment, removeDeployment, rerunDeployment, rollbackDeployment, startDeployment, updateDeploymentApprovalFlow } from '@/api/modules/ops'
 import { getGroups, getRoles } from '@/api/modules/rbac'
 import { useAuthStore } from '@/stores/auth'
@@ -509,7 +489,6 @@ const saving = ref(false)
 const flowSaving = ref(false)
 const deployments = ref([])
 const flows = ref([])
-const dockerHosts = ref([])
 const clusters = ref([])
 const users = ref([])
 const roles = ref([])
@@ -638,12 +617,7 @@ function safeList(payload) {
   return payload?.results || payload || []
 }
 
-function releaseTargetSearchText(item) {
-  if (item.deploy_mode === 'k8s') {
-    return [item.cluster_name, item.namespace, item.target_display].join(' ')
-  }
-  return [item.docker_host_name, item.target_display].join(' ')
-}
+function releaseTargetSearchText(item) { return [item.cluster_name, item.namespace, item.target_display].join(' ') }
 
 function parseJsonText(text, fieldName) {
   if (!text || !text.trim()) return {}
@@ -702,8 +676,7 @@ async function fetchFlows() {
 }
 
 async function fetchLookups() {
-  const [dockerHostRes, clusterRes, userRes, roleRes, groupRes] = await Promise.allSettled([getDockerHosts(), getK8sClusters(), getUsers(), getRoles(), getGroups()])
-  dockerHosts.value = dockerHostRes.status === 'fulfilled' ? safeList(dockerHostRes.value) : []
+  const [clusterRes, userRes, roleRes, groupRes] = await Promise.allSettled([getK8sClusters(), getUsers(), getRoles(), getGroups()])
   clusters.value = clusterRes.status === 'fulfilled' ? safeList(clusterRes.value) : []
   users.value = userRes.status === 'fulfilled' ? safeList(userRes.value) : []
   roles.value = roleRes.status === 'fulfilled' ? safeList(roleRes.value) : []
@@ -714,7 +687,7 @@ async function fetchLookups() {
 const releaseDialogVisible = ref(false)
 const releaseForm = ref({})
 function resetReleaseForm() {
-  releaseForm.value = { app_name: '', business_line: '', version: '', image: '', environment: '', deploy_mode: 'docker_compose', docker_host: null, host: null, cluster: null, namespace: 'default', release_name: '', replicas: 1, container_port: null, service_port: null, release_strategy: 'standard', canary_percent: 10, batch_total: 2, batch_size: 1, change_summary: '', description: '', env_config_text: '', strategy_config_text: '' }
+  releaseForm.value = { app_name: '', business_line: '', version: '', image: '', environment: '', deploy_mode: 'k8s', cluster: null, namespace: 'default', release_name: '', replicas: 1, container_port: null, service_port: null, release_strategy: 'standard', canary_percent: 10, batch_total: 2, batch_size: 1, change_summary: '', description: '', env_config_text: '', strategy_config_text: '' }
 }
 function handleBusinessLineChange(value) {
   const matched = (resourceTree.value || []).find(item => item.node_type === 'biz' && item.name === value)
@@ -732,8 +705,7 @@ async function handleSaveRelease() {
   if (!releaseForm.value.app_name || !releaseForm.value.version) return ElMessage.warning('请填写应用名称和版本号')
   if (!releaseForm.value.business_line) return ElMessage.warning('请选择系统')
   if (!releaseForm.value.environment) return ElMessage.warning('请选择环境')
-  if (releaseForm.value.deploy_mode === 'docker_compose' && !releaseForm.value.docker_host) return ElMessage.warning('请选择 容器环境')
-  if (releaseForm.value.deploy_mode === 'k8s' && !releaseForm.value.cluster) return ElMessage.warning('请选择目标集群')
+  if (!releaseForm.value.cluster) return ElMessage.warning('请选择目标 K8S 集群')
   let envConfig = {}
   let strategyConfig = {}
   try {

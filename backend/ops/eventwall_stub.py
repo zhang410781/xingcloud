@@ -14,9 +14,30 @@ class EventWallModelViewSetMixin:
 
 
 class EventRecord:
+    """Compatibility constants for callers left after the event-wall removal.
+
+    Event recording is intentionally a no-op in this module.  Keeping the
+    value constants prevents otherwise unrelated actions (for example a K8S
+    deployment) from failing while they prepare an event payload.
+    """
     SEVERITY_INFO = 'info'
     SEVERITY_WARNING = 'warning'
     SEVERITY_ERROR = 'error'
+    SEVERITY_DANGER = 'danger'
+
+    RESULT_PENDING = 'pending'
+    RESULT_SUCCESS = 'success'
+    RESULT_FAILED = 'failed'
+    RESULT_PARTIAL = 'partial'
+    RESULT_REJECTED = 'rejected'
+
+    SOURCE_ASYNC = 'async'
+    SOURCE_SCHEDULER = 'scheduler'
+    SOURCE_EXTERNAL = 'external'
+    SOURCE_SEED = 'seed'
+
+    ACTOR_SYSTEM = 'system'
+    ACTOR_USER = 'user'
 
 
 class EventSource:

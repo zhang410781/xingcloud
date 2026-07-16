@@ -1640,8 +1640,6 @@ def deployment_event_metadata(deployment, **extra):
 
 class DeploymentViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = Deployment.objects.select_related(
-        'host',
-        'docker_host',
         'cluster',
         'approval_flow',
         'previous_success',
@@ -1706,10 +1704,6 @@ class DeploymentViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewset
         related = []
         if instance.cluster_id:
             related.append(build_resource('ops', 'k8s_cluster', instance.cluster_id, instance.cluster.name))
-        if instance.docker_host_id:
-            related.append(build_resource('ops', 'docker_host', instance.docker_host_id, instance.docker_host.name))
-        if instance.host_id:
-            related.append(build_resource('ops', 'host', instance.host_id, instance.host.hostname))
         return related
 
     def _clone_release(
@@ -1728,11 +1722,9 @@ class DeploymentViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewset
             version=source.version,
             image=source.image,
             environment=source.environment,
-            deploy_mode=source.deploy_mode,
+            deploy_mode='k8s',
             release_strategy=source.release_strategy,
             submitter=actor,
-            host=source.host,
-            docker_host=source.docker_host,
             cluster=source.cluster,
             namespace=source.namespace,
             release_name=source.release_name,
@@ -2706,7 +2698,7 @@ def dashboard_stats(request):
     )
 
     recent_deploys = DeploymentSerializer(
-        Deployment.objects.select_related('host', 'docker_host', 'cluster', 'approval_flow').prefetch_related('approval_steps').all()[:10],
+        Deployment.objects.select_related('cluster', 'approval_flow').prefetch_related('approval_steps').all()[:10],
         many=True,
     ).data
     recent_alerts = AlertSerializer(

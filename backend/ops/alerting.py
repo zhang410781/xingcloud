@@ -794,6 +794,9 @@ def send_alert_notification(channel, alert, recipients, action='fire', rule=None
             if not url:
                 status = AlertNotificationLog.STATUS_SKIPPED
                 response_body = '未配置飞书 webhook_url'
+            elif not _text(config.get('secret') or config.get('sign_secret')):
+                status = AlertNotificationLog.STATUS_SKIPPED
+                response_body = '飞书渠道未配置签名密钥，已拒绝发送未签名通知'
             else:
                 buttons = _card_buttons(alert, 'feishu', request=request)
                 payload = {
@@ -814,11 +817,11 @@ def send_alert_notification(channel, alert, recipients, action='fire', rule=None
                     },
                 }
                 secret = _text(config.get('secret') or config.get('sign_secret'))
-                if secret:
-                    timestamp, sign = _feishu_sign(secret)
-                    payload['timestamp'] = timestamp
-                    payload['sign'] = sign
+                timestamp, sign = _feishu_sign(secret)
+                payload['timestamp'] = timestamp
+                payload['sign'] = sign
                 request_summary['buttons'] = [item['action'] for item in buttons]
+                request_summary['signing'] = 'enabled'
                 response_body = _post_feishu_json(url, payload, timeout=channel.timeout_seconds)
         elif channel.channel_type == AlertNotificationChannel.CHANNEL_WECOM:
             url = _channel_url(channel)

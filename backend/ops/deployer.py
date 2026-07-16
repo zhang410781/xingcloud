@@ -1,10 +1,7 @@
-import json
 import logging
 import re
 import threading
 
-import paramiko
-import yaml
 from django.core.cache import cache
 from django.db import close_old_connections, transaction
 from django.utils import timezone
@@ -21,7 +18,6 @@ from .models import Deployment
 
 logger = logging.getLogger(__name__)
 
-DEPLOY_BASE = '/opt/xing-cloud/apps'
 SERVICE_STATUS_CACHE_TTL = 8
 SERVICE_STATUS_STALE_CACHE_TTL = 300
 CMDB_ENV_MAP = {
@@ -57,30 +53,6 @@ def _cmdb_environment(value):
 
 def _cmdb_ci_name(deployment):
     return f'{deployment.app_name}-{_cmdb_environment(deployment.environment)}'
-
-
-def _docker_target(deployment):
-    return deployment.docker_host or deployment.host
-
-
-def _docker_target_name(target):
-    return getattr(target, 'name', '') or getattr(target, 'hostname', '') or '-'
-
-
-def _docker_target_cmdb_status(target):
-    status = getattr(target, 'status', '')
-    if status in ('connected', 'online'):
-        return 'active'
-    return 'offline'
-
-
-def _is_demo_docker(deployment):
-    docker_target = _docker_target(deployment)
-    if not docker_target:
-        return False
-    description = str(getattr(docker_target, 'description', '') or '')
-    image = str(getattr(deployment, 'image', '') or '')
-    return '婕旂ず' in description or image.startswith('registry.demo.local/')
 
 
 def _cmdb_status_for_deployment(deployment, override=None):
@@ -145,34 +117,7 @@ def _ensure_cmdb_ci_type(name, icon, color, description):
 
 def _ensure_target_cmdb_item(deployment):
     environment = _cmdb_environment(deployment.environment)
-    docker_target = _docker_target(deployment)
-    if deployment.deploy_mode == 'docker_compose' and docker_target:
-        ci_type = _ensure_cmdb_ci_type('Docker环境', 'Box', '#10b981', '由应用发布模块自动同步的 Docker 发布目标')
-        ci, _ = ConfigItem.objects.get_or_create(
-            ci_type=ci_type,
-            name=_docker_target_name(docker_target),
-            business_line=deployment.business_line,
-            environment=environment,
-            defaults={
-                'admin_user': docker_target.ssh_user or '',
-                'status': _docker_target_cmdb_status(docker_target),
-                'attributes': {},
-            },
-        )
-        ci.admin_user = docker_target.ssh_user or ci.admin_user
-        ci.status = _docker_target_cmdb_status(docker_target)
-        ci.attributes = {
-            **(ci.attributes or {}),
-            'source': 'app_release_target',
-            'target_kind': 'docker_environment',
-            'environment_name': _docker_target_name(docker_target),
-            'ip_address': docker_target.ip_address,
-            'ssh_port': docker_target.ssh_port,
-        }
-        ci.save()
-        return ci
-
-    if deployment.deploy_mode == 'k8s' and deployment.cluster_id:
+    if deployment.cluster_id:
         ci_type = _ensure_cmdb_ci_type('K8s 集群', 'Connection', '#0ea5e9', '由应用发布模块自动同步的集群发布目标')
         ci, _ = ConfigItem.objects.get_or_create(
             ci_type=ci_type,
@@ -242,15 +187,7 @@ def sync_deployment_to_cmdb(deployment, override_status=None):
         'submitter': deployment.submitter,
         'deployer': deployment.deployer,
         'cluster_name': deployment.cluster.name if deployment.cluster_id else '',
-        'docker_environment_name': deployment.docker_host.name if deployment.docker_host_id else '',
-        'docker_environment_ip': deployment.docker_host.ip_address if deployment.docker_host_id else '',
-        'host_name': deployment.host.hostname if deployment.host_id else '',
-        'host_ip': deployment.host.ip_address if deployment.host_id else '',
-        'ip_address': (
-            deployment.host.ip_address if deployment.host_id else
-            deployment.docker_host.ip_address if deployment.docker_host_id else
-            (ci.attributes or {}).get('ip_address', '')
-        ),
+        'ip_address': (ci.attributes or {}).get('ip_address', ''),
     }
     ci.save()
     target_ci = _ensure_target_cmdb_item(deployment)
@@ -266,52 +203,13 @@ def sync_deployment_to_cmdb(deployment, override_status=None):
 
 def sync_current_deployments_to_cmdb():
     for deployment in (
-        Deployment.objects.select_related('host', 'docker_host', 'cluster')
+        Deployment.objects.select_related('cluster')
         .filter(is_current=True, approval_status='approved', status__in=['running', 'stopped', 'removed'])
     ):
         try:
             sync_deployment_to_cmdb(deployment)
         except Exception:
             logger.exception('sync_current_deployments_to_cmdb error for deployment %s', deployment.id)
-
-
-def _get_ssh_client(host):
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(
-        hostname=host.ip_address,
-        port=getattr(host, 'ssh_port', 22) or 22,
-        username=getattr(host, 'ssh_user', 'root') or 'root',
-        password=getattr(host, 'ssh_password', '') or None,
-        timeout=15,
-    )
-    return client
-
-
-def _ssh_exec(client, cmd):
-    stdin, stdout, stderr = client.exec_command(cmd, timeout=120)
-    exit_code = stdout.channel.recv_exit_status()
-    out = stdout.read().decode('utf-8', errors='replace')
-    err = stderr.read().decode('utf-8', errors='replace')
-    return exit_code, out, err
-
-
-def _build_compose_payload(deployment):
-    env_vars = deployment.env_config or {}
-    service = {
-        'image': deployment.image,
-        'restart': 'always',
-    }
-    if env_vars:
-        service['environment'] = env_vars
-    if deployment.container_port and deployment.service_port:
-        service['ports'] = [f'{deployment.service_port}:{deployment.container_port}']
-    compose = {
-        'services': {
-            deployment.release_name_display: service,
-        }
-    }
-    return yaml.safe_dump(compose, sort_keys=False, allow_unicode=True)
 
 
 def _build_k8s_documents(deployment):
@@ -408,43 +306,6 @@ def start_deployment_thread(deployment_id):
     return thread
 
 
-def _deploy_docker_compose(deployment, log_lines):
-    docker_target = _docker_target(deployment)
-    if not docker_target:
-        raise RuntimeError('未配置 Docker 发布环境')
-    release_name = deployment.release_name_display or _default_release_name(deployment)
-    service_dir = f'{DEPLOY_BASE}/{release_name}'
-    deployment.release_name = release_name
-    deployment.deploy_dir = service_dir
-    deployment.save(update_fields=['release_name', 'deploy_dir'])
-
-    compose_content = _build_compose_payload(deployment)
-    client = _get_ssh_client(docker_target)
-    try:
-        log_lines.append(f'[INFO] SSH 连接成功: {_docker_target_name(docker_target)} ({docker_target.ip_address})')
-        _ssh_exec(client, f'mkdir -p {service_dir}')
-        log_lines.append(f'[INFO] 创建目录: {service_dir}')
-        sftp = client.open_sftp()
-        with sftp.file(f'{service_dir}/docker-compose.yml', 'w') as file_obj:
-            file_obj.write(compose_content)
-        sftp.close()
-        log_lines.append('[INFO] 已上传 docker-compose.yml')
-
-        code, out, err = _ssh_exec(
-            client,
-            f'cd {service_dir} && docker-compose up -d 2>&1 || docker compose up -d 2>&1',
-        )
-        log_lines.append('[CMD] docker-compose up -d')
-        if out.strip():
-            log_lines.append(out.strip())
-        if err.strip():
-            log_lines.append(err.strip())
-        if code != 0:
-            raise RuntimeError(f'docker-compose 执行失败，退出码: {code}')
-    finally:
-        client.close()
-
-
 def _ensure_k8s_namespace(client_module, namespace):
     namespace = namespace or 'default'
     core_v1 = client_module.CoreV1Api()
@@ -497,7 +358,7 @@ def _deploy_k8s(deployment, log_lines):
 def deploy_service(deployment_id):
     close_old_connections()
     try:
-        deployment = Deployment.objects.select_related('host', 'docker_host', 'cluster').get(pk=deployment_id)
+        deployment = Deployment.objects.select_related('cluster').get(pk=deployment_id)
     except Deployment.DoesNotExist:
         logger.error('Deployment %s not found', deployment_id)
         return
@@ -520,10 +381,9 @@ def deploy_service(deployment_id):
         log_lines.append(f'[INFO] 变更说明: {deployment.change_summary}')
 
     try:
-        if deployment.deploy_mode == 'k8s':
-            _deploy_k8s(deployment, log_lines)
-        else:
-            _deploy_docker_compose(deployment, log_lines)
+        if deployment.deploy_mode != 'k8s' or not deployment.cluster_id:
+            raise RuntimeError('容器环境发布已下线；请新建 K8S 集群发布单')
+        _deploy_k8s(deployment, log_lines)
         deployment.status = 'running'
         deployment.finished_at = timezone.now()
         if deployment.release_strategy == 'batch':
@@ -611,35 +471,14 @@ def stop_service(deployment):
         deployment.deploy_log += '\n[WARN] 只能停止当前生效版本'
         deployment.save(update_fields=['deploy_log'])
         return deployment
-    if deployment.deploy_mode == 'k8s':
-        try:
-            scaled = _scale_k8s_workloads(deployment, 0)
-            deployment.status = 'stopped'
-            deployment.deploy_log += f'\n[SUCCESS] 已缩容到 0 副本: {", ".join(scaled)}'
-        except Exception as exc:
-            deployment.deploy_log += f'\n[ERROR] 停止失败: {str(exc)}'
-        deployment.finished_at = timezone.now()
-        deployment.save(update_fields=['status', 'deploy_log', 'finished_at'])
-        try:
-            sync_deployment_to_cmdb(deployment, override_status='idle')
-        except Exception:
-            logger.exception('sync_deployment_to_cmdb error after stop')
-        return deployment
-
-    if not deployment.deploy_dir:
-        deployment.deploy_log += '\n[ERROR] 无发布目录，无法停止'
-        deployment.save(update_fields=['deploy_log'])
-        return deployment
-    docker_target = _docker_target(deployment)
-    client = _get_ssh_client(docker_target)
     try:
-        _, out, err = _ssh_exec(client, f'cd {deployment.deploy_dir} && docker-compose stop 2>&1 || docker compose stop 2>&1')
+        if deployment.deploy_mode != 'k8s' or not deployment.cluster_id:
+            raise RuntimeError('历史容器环境发布已停止管理')
+        scaled = _scale_k8s_workloads(deployment, 0)
         deployment.status = 'stopped'
-        deployment.deploy_log += f'\n[SUCCESS] 应用已停止\n{out}{err}'
+        deployment.deploy_log += f'\n[SUCCESS] 已缩容到 0 副本: {", ".join(scaled)}'
     except Exception as exc:
         deployment.deploy_log += f'\n[ERROR] 停止失败: {str(exc)}'
-    finally:
-        client.close()
     deployment.finished_at = timezone.now()
     deployment.save(update_fields=['status', 'deploy_log', 'finished_at'])
     try:
@@ -654,31 +493,14 @@ def start_service(deployment):
         deployment.deploy_log += '\n[WARN] 只能启动当前生效版本'
         deployment.save(update_fields=['deploy_log'])
         return deployment
-    if deployment.deploy_mode == 'k8s':
-        try:
-            scaled = _scale_k8s_workloads(deployment, max(deployment.replicas or 1, 1))
-            deployment.status = 'running'
-            deployment.deploy_log += f'\n[SUCCESS] 已恢复副本数: {", ".join(scaled)}'
-        except Exception as exc:
-            deployment.deploy_log += f'\n[ERROR] 启动失败: {str(exc)}'
-        deployment.finished_at = timezone.now()
-        deployment.save(update_fields=['status', 'deploy_log', 'finished_at'])
-        try:
-            sync_deployment_to_cmdb(deployment, override_status='active')
-        except Exception:
-            logger.exception('sync_deployment_to_cmdb error after start')
-        return deployment
-
-    docker_target = _docker_target(deployment)
-    client = _get_ssh_client(docker_target)
     try:
-        _, out, err = _ssh_exec(client, f'cd {deployment.deploy_dir} && docker-compose start 2>&1 || docker compose start 2>&1')
+        if deployment.deploy_mode != 'k8s' or not deployment.cluster_id:
+            raise RuntimeError('历史容器环境发布已停止管理')
+        scaled = _scale_k8s_workloads(deployment, max(deployment.replicas or 1, 1))
         deployment.status = 'running'
-        deployment.deploy_log += f'\n[SUCCESS] 应用已启动\n{out}{err}'
+        deployment.deploy_log += f'\n[SUCCESS] 已恢复副本数: {", ".join(scaled)}'
     except Exception as exc:
         deployment.deploy_log += f'\n[ERROR] 启动失败: {str(exc)}'
-    finally:
-        client.close()
     deployment.finished_at = timezone.now()
     deployment.save(update_fields=['status', 'deploy_log', 'finished_at'])
     try:
@@ -711,34 +533,15 @@ def remove_service(deployment):
         deployment.deploy_log += '\n[WARN] 只能下线当前生效版本'
         deployment.save(update_fields=['deploy_log'])
         return deployment
-    if deployment.deploy_mode == 'k8s':
-        try:
-            deleted = _remove_k8s_resources(deployment)
-            deployment.deploy_log += f'\n[SUCCESS] 已删除 K8s 资源: {", ".join(deleted)}'
-            deployment.status = 'removed'
-            deployment.is_current = False
-        except Exception as exc:
-            deployment.deploy_log += f'\n[ERROR] 下线失败: {str(exc)}'
-        deployment.finished_at = timezone.now()
-        deployment.save(update_fields=['status', 'is_current', 'deploy_log', 'finished_at'])
-        try:
-            sync_deployment_to_cmdb(deployment, override_status='offline')
-        except Exception:
-            logger.exception('sync_deployment_to_cmdb error after remove')
-        return deployment
-
-    docker_target = _docker_target(deployment)
-    client = _get_ssh_client(docker_target)
     try:
-        _, out, err = _ssh_exec(client, f'cd {deployment.deploy_dir} && docker-compose down -v 2>&1 || docker compose down -v 2>&1')
-        _ssh_exec(client, f'rm -rf {deployment.deploy_dir}')
-        deployment.deploy_log += f'\n[SUCCESS] 应用已下线\n{out}{err}'
+        if deployment.deploy_mode != 'k8s' or not deployment.cluster_id:
+            raise RuntimeError('历史容器环境发布已停止管理')
+        deleted = _remove_k8s_resources(deployment)
+        deployment.deploy_log += f'\n[SUCCESS] 已删除 K8s 资源: {", ".join(deleted)}'
         deployment.status = 'removed'
         deployment.is_current = False
     except Exception as exc:
         deployment.deploy_log += f'\n[ERROR] 下线失败: {str(exc)}'
-    finally:
-        client.close()
     deployment.finished_at = timezone.now()
     deployment.save(update_fields=['status', 'is_current', 'deploy_log', 'finished_at'])
     try:
@@ -777,95 +580,20 @@ def advance_batch(deployment, actor='', change_summary=''):
 def get_service_logs(deployment, tail=100):
     if not deployment.is_current:
         return '该发布已被后续版本接管，以下展示归档日志：\n\n' + (deployment.deploy_log or '暂无日志')
-    if deployment.deploy_mode == 'k8s':
-        if _is_demo(deployment.cluster):
-            return f'[{deployment.namespace or "default"}/{deployment.release_name_display}] demo pod running'
-        try:
-            client_module = _get_k8s_client(deployment.cluster)
-            core_v1 = client_module.CoreV1Api()
-            pods = core_v1.list_namespaced_pod(deployment.namespace or 'default', label_selector=_label_selector(deployment)).items
-            if not pods:
-                return '未找到关联 Pod'
-            pod = sorted(pods, key=lambda item: item.metadata.name)[0]
-            return core_v1.read_namespaced_pod_log(pod.metadata.name, deployment.namespace or 'default', tail_lines=tail)
-        except Exception as exc:
-            return f'获取日志失败: {str(exc)}'
-
-    if _is_demo_docker(deployment):
-        return (
-            f'[{deployment.release_name_display}] demo container running\n'
-            f'image={deployment.image}\n'
-            f'target={deployment.target_display}\n'
-            f'batch={deployment.batch_current or 1}/{deployment.batch_total or 1}'
-        )
-
+    if deployment.deploy_mode != 'k8s' or not deployment.cluster_id:
+        return '历史容器环境发布记录不再提供实时日志'
+    if _is_demo(deployment.cluster):
+        return f'[{deployment.namespace or "default"}/{deployment.release_name_display}] demo pod running'
     try:
-        docker_target = _docker_target(deployment)
-        client = _get_ssh_client(docker_target)
-        _, out, err = _ssh_exec(client, f'cd {deployment.deploy_dir} && docker-compose logs --tail={tail} 2>&1 || docker compose logs --tail={tail} 2>&1')
-        client.close()
-        return out or err
+        client_module = _get_k8s_client(deployment.cluster)
+        core_v1 = client_module.CoreV1Api()
+        pods = core_v1.list_namespaced_pod(deployment.namespace or 'default', label_selector=_label_selector(deployment)).items
+        if not pods:
+            return '未找到关联 Pod'
+        pod = sorted(pods, key=lambda item: item.metadata.name)[0]
+        return core_v1.read_namespaced_pod_log(pod.metadata.name, deployment.namespace or 'default', tail_lines=tail)
     except Exception as exc:
         return f'获取日志失败: {str(exc)}'
-
-
-def _docker_runtime_status(deployment):
-    if not deployment.deploy_dir:
-        return {'mode': 'docker_compose', 'summary': '尚未生成发布目录', 'items': []}
-    if _is_demo_docker(deployment):
-        current_batch = max(deployment.batch_current or 1, 1)
-        batch_total = max(deployment.batch_total or 1, 1)
-        return {
-            'mode': 'docker_compose',
-            'summary': f'Demo Docker 环境 {deployment.target_display} 运行正常',
-            'items': [
-                {
-                    'kind': 'container',
-                    'name': deployment.release_name_display,
-                    'state': 'running',
-                    'ports': (
-                        f'{deployment.service_port}:{deployment.container_port}'
-                        if deployment.service_port and deployment.container_port
-                        else ''
-                    ),
-                },
-                {
-                    'kind': 'strategy',
-                    'name': deployment.get_release_strategy_display(),
-                    'state': deployment.strategy_summary,
-                    'ports': f'批次 {current_batch}/{batch_total}' if deployment.release_strategy == 'batch' else '',
-                },
-            ],
-        }
-    docker_target = _docker_target(deployment)
-    client = _get_ssh_client(docker_target)
-    try:
-        _, out, err = _ssh_exec(
-            client,
-            f'cd {deployment.deploy_dir} && (docker compose ps --all --format json 2>/dev/null || docker-compose ps 2>&1 || docker compose ps 2>&1)',
-        )
-    finally:
-        client.close()
-    raw = (out or err or '').strip()
-    items = []
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
-            items.append({
-                'kind': 'container',
-                'name': payload.get('Name') or payload.get('Service') or '-',
-                'state': payload.get('State') or payload.get('Status') or '-',
-                'ports': payload.get('Publishers') or payload.get('Ports') or '',
-            })
-    if items:
-        return {'mode': 'docker_compose', 'summary': f'容器数量: {len(items)}', 'items': items}
-    return {'mode': 'docker_compose', 'summary': '已返回原始 docker compose 状态', 'items': [], 'raw': raw}
 
 
 def _k8s_runtime_status(deployment):
@@ -935,7 +663,10 @@ def get_service_status(deployment):
     if cached is not None:
         return cached
     try:
-        runtime = _k8s_runtime_status(deployment) if deployment.deploy_mode == 'k8s' else _docker_runtime_status(deployment)
+        if deployment.deploy_mode != 'k8s' or not deployment.cluster_id:
+            runtime = {'mode': 'retired', 'summary': '历史容器环境发布记录已停止管理', 'items': []}
+        else:
+            runtime = _k8s_runtime_status(deployment)
         base.update(runtime)
         cache.set(cache_key, base, SERVICE_STATUS_CACHE_TTL)
         cache.set(stale_key, base, SERVICE_STATUS_STALE_CACHE_TTL)

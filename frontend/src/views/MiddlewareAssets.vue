@@ -4,12 +4,12 @@
       <div class="hero-copy">
         <span class="hero-icon"><el-icon><Coin /></el-icon></span>
         <div>
-          <h2>中间件资产</h2>
+          <h2>中间件与数据库资产</h2>
           <p>只展示已登记的真实资产。运行指标与健康状态由后续监控接入产生，平台不会自动填充任何资产记录。</p>
         </div>
       </div>
       <div class="hero-actions">
-        <el-button v-if="canManage" type="primary" :icon="Plus" @click="openRegistration()">登记中间件</el-button>
+        <el-button v-if="canManage" type="primary" :icon="Plus" @click="openRegistration()">登记资产</el-button>
         <el-button :icon="Refresh" :loading="loading" @click="loadOverview">刷新</el-button>
       </div>
     </section>
@@ -60,6 +60,9 @@
         <el-table-column prop="endpoint" label="访问地址" min-width="230" show-overflow-tooltip>
           <template #default="{ row }"><code>{{ row.endpoint }}</code></template>
         </el-table-column>
+        <el-table-column label="认证" width="150">
+          <template #default="{ row }">{{ row.username || '-' }}<span v-if="row.password_configured"> / 已配置密码</span></template>
+        </el-table-column>
         <el-table-column prop="version" label="版本" width="110">
           <template #default="{ row }">{{ row.version || '-' }}</template>
         </el-table-column>
@@ -106,6 +109,12 @@
         <el-form-item label="访问地址" required>
           <el-input v-model="registrationForm.endpoint" placeholder="请输入实际连接地址或管理地址" maxlength="255" />
         </el-form-item>
+        <el-form-item label="用户名">
+          <el-input v-model="registrationForm.username" placeholder="部分资产需要认证时填写" maxlength="128" autocomplete="off" />
+        </el-form-item>
+        <el-form-item label="密码">
+          <el-input v-model="registrationForm.password" type="password" show-password :placeholder="editingId ? '留空则保留现有密码' : '可选'" maxlength="255" autocomplete="new-password" />
+        </el-form-item>
         <el-form-item label="版本">
           <el-input v-model="registrationForm.version" placeholder="可选" maxlength="64" />
         </el-form-item>
@@ -125,7 +134,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Coin, Connection, Grid, Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Coin, Connection, Grid, Plus, Refresh } from '@element-plus/icons-vue'
 
 import { getMiddlewareOverview, runMiddlewareAction } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
@@ -143,7 +152,7 @@ const typeCards = [
   { key: 'redis', label: 'Redis', description: '缓存与会话存储', icon: Grid },
   { key: 'kafka', label: 'Kafka', description: '消息流与消费队列', icon: Connection },
   { key: 'rocketmq', label: 'RocketMQ', description: '消息队列与 Broker', icon: Connection },
-  { key: 'elasticsearch', label: 'Elasticsearch', description: '搜索与日志索引', icon: Search },
+  { key: 'database', label: '数据库', description: 'MySQL、PostgreSQL 等', icon: Coin },
 ]
 
 const canManage = computed(() => authStore.hasPermission('ops.middleware.manage'))
@@ -153,7 +162,7 @@ const filteredAssets = computed(() => activeType.value
   : assets.value)
 
 function emptyForm(assetType = 'redis') {
-  return { asset_type: assetType, name: '', environment: 'prod', endpoint: '', version: '', description: '' }
+  return { asset_type: assetType, name: '', environment: 'prod', endpoint: '', username: '', password: '', version: '', description: '' }
 }
 
 function typeCount(type) {
@@ -195,6 +204,8 @@ function openRegistration(row = null, preferredType = '') {
     name: row.name,
     environment: row.environment,
     endpoint: row.endpoint,
+    username: row.username || '',
+    password: '',
     version: row.version || '',
     description: row.description || '',
   } : emptyForm(preferredType || activeType.value || 'redis'))
@@ -248,7 +259,7 @@ onMounted(loadOverview)
 .is-redis .summary-icon { color: #dc2626; background: #fef2f2; }
 .is-kafka .summary-icon { color: #7c3aed; background: #f5f3ff; }
 .is-rocketmq .summary-icon { color: #d97706; background: #fffbeb; }
-.is-elasticsearch .summary-icon { color: #0f766e; background: #f0fdfa; }
+.is-database .summary-icon { color: #0f766e; background: #f0fdfa; }
 .summary-body { display: flex; flex-direction: column; min-width: 0; }
 .summary-body strong { color: #0f172a; font-size: 24px; line-height: 1; }
 .summary-body span { margin-top: 5px; color: #334155; font-size: 13px; font-weight: 700; }
@@ -264,7 +275,7 @@ onMounted(loadOverview)
 .asset-dot.is-redis { background: #ef4444; }
 .asset-dot.is-kafka { background: #8b5cf6; }
 .asset-dot.is-rocketmq { background: #f59e0b; }
-.asset-dot.is-elasticsearch { background: #14b8a6; }
+.asset-dot.is-database { background: #14b8a6; }
 code { color: #334155; font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; }
 .asset-empty { min-height: 280px; }
 @media (max-width: 1100px) { .asset-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

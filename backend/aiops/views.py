@@ -11,9 +11,8 @@ from rest_framework.exceptions import NotFound
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from ops.eventwall_stub import EventRecord
 from ops.eventwall_stub import record_event
-from ops.models import Alert, DockerHost, K8sCluster, LogDataSource, MetricDataSource, TaskResource, TaskResourceGroup
+from ops.models import Alert, K8sCluster, LogDataSource, MetricDataSource, TaskResource, TaskResourceGroup
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from rbac.services import is_demo_account, user_has_permissions
 
@@ -631,15 +630,6 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
 
     @action(detail=False, methods=['get'])
     def catalog(self, request):
-        event_environments = list(
-            EventRecord.objects
-            .filter(is_demo=False)
-            .exclude(source_type=EventRecord.SOURCE_SEED)
-            .exclude(environment='')
-            .values_list('environment', flat=True)
-            .distinct()
-            .order_by('environment')[:100]
-        )
         alert_environments = list(
             Alert.objects
             .exclude(environment='')
@@ -685,17 +675,6 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
             for item in K8sCluster.objects.order_by('name', 'id')
             if not _is_demoish_catalog_item(item.name, item.description, item.api_server)
         ]
-        docker_hosts = [
-            {
-                'id': item.id,
-                'name': item.name,
-                'ip_address': item.ip_address,
-                'status': item.status,
-                'description': item.description,
-            }
-            for item in DockerHost.objects.order_by('name', 'id')
-            if not _is_demoish_catalog_item(item.name, item.description, item.ip_address)
-        ]
         resource_counts = TaskResource.objects.values('environment_id').annotate(total=Count('id'))
         env_counts = {}
         for item in resource_counts:
@@ -712,16 +691,10 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
         ]
 
         return Response({
-            'event_environments': [
-                _clean_catalog_value(item)
-                for item in event_environments
-                if not _is_invalid_environment_value(item)
-            ],
             'metric_datasources': metric_datasources,
             'log_datasources': log_datasources,
             'alert_environments': [_clean_catalog_value(item) for item in alert_environments if _clean_catalog_value(item)],
             'k8s_clusters': k8s_clusters,
-            'docker_hosts': docker_hosts,
             'task_resource_environments': task_resource_environments,
         })
 

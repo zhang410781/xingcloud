@@ -460,7 +460,7 @@ def resolve_knowledge_environment(name):
     return {
         'name': config.name,
         'aliases': _clean_list(getattr(config, 'aliases', []) or []),
-        'event_environments': _clean_list(config.event_environments),
+        'event_environments': [],
         'metric_datasource_id': metric_datasource_id,
         'log_datasource_id': log_datasource_id,
         'metric_datasource_ids': [metric_datasource_id] if metric_datasource_id else [],
@@ -468,7 +468,7 @@ def resolve_knowledge_environment(name):
         'alert_environments': _clean_list(config.alert_environments),
         'k8s_cluster_ids': _int_list(config.k8s_cluster_ids),
         'k8s_namespaces': config.k8s_namespaces if isinstance(config.k8s_namespaces, dict) else {},
-        'docker_host_ids': _int_list(config.docker_host_ids),
+        'docker_host_ids': [],
         'task_resource_environment_ids': _int_list(getattr(config, 'task_resource_environment_ids', []) or []),
         'association_snapshot': config.association_snapshot if isinstance(config.association_snapshot, dict) else {},
         'child_node_snapshot': config.child_node_snapshot if isinstance(config.child_node_snapshot, dict) else {},
@@ -1444,10 +1444,6 @@ def build_knowledge_graph(params=None):
     if use_knowledge_env:
         selected_env = {config.name for config in selected_knowledge_configs}
         for config in selected_knowledge_configs:
-            for environment in _clean_list(config.event_environments):
-                selected_event_environments.add(environment)
-                event_env_to_graph[environment] = config.name
-                source_env_to_graph.setdefault(environment, config.name)
             for environment in _clean_list(config.alert_environments):
                 selected_alert_environments.add(environment)
                 alert_env_to_graph[environment] = config.name
@@ -1466,7 +1462,6 @@ def build_knowledge_graph(params=None):
             selected_k8s_cluster_ids.update(config_k8s_cluster_ids)
             for cluster_id in config_k8s_cluster_ids:
                 selected_k8s_namespaces[cluster_id].update(_namespaces_for_cluster(config, cluster_id))
-            selected_docker_host_ids.update(_int_list(config.docker_host_ids))
             selected_task_resource_environment_ids.update(_int_list(getattr(config, 'task_resource_environment_ids', []) or []))
 
     def graph_environment(source_environment, kind=''):
@@ -1652,7 +1647,7 @@ def build_knowledge_graph(params=None):
     event_records = []
 
     k8s_clusters = list(K8sCluster.objects.filter(id__in=selected_k8s_cluster_ids).order_by('name', 'id')) if use_knowledge_env and selected_k8s_cluster_ids else []
-    docker_hosts = list(DockerHost.objects.filter(id__in=selected_docker_host_ids).order_by('name', 'id')) if use_knowledge_env and selected_docker_host_ids else []
+    docker_hosts = []
     task_resource_env_groups = list(TaskResourceGroup.objects.filter(id__in=selected_task_resource_environment_ids, group_type=TaskResourceGroup.GROUP_ENVIRONMENT).order_by('sort_order', 'name', 'id')) if use_knowledge_env and selected_task_resource_environment_ids else []
     infrastructure_warehouse = _cached_external_batch([
         (
@@ -1878,27 +1873,6 @@ def build_knowledge_graph(params=None):
                 allowed_namespaces = selected_k8s_namespaces.get(cluster.id) or set()
                 deployment_namespace = _clean(getattr(deployment, 'namespace', ''))
                 if allowed_namespaces and deployment_namespace and deployment_namespace not in allowed_namespaces:
-                    continue
-                runtime_services.add(service_name)
-                matched_service_name = service_name
-                if matched_service_name:
-                    remember_service_context(
-                        matched_service_name,
-                        _clean(getattr(deployment, 'business_line', '')),
-                        next(iter(selected_env), ''),
-                        2,
-                    )
-
-        for host in docker_hosts:
-            deployments = Deployment.objects.select_related('cluster', 'docker_host').filter(
-                is_current=True,
-                deploy_mode='docker_compose',
-            ).filter(
-                Q(docker_host_id=host.id) | Q(host__hostname=host.name) | Q(host__ip_address=host.ip_address)
-            ).order_by('-id')[:120]
-            for deployment in deployments:
-                service_name = _clean(deployment.app_name)
-                if not service_name:
                     continue
                 runtime_services.add(service_name)
                 matched_service_name = service_name
@@ -2215,16 +2189,6 @@ def build_knowledge_graph(params=None):
                     continue
                 add_runtime_component_node(deployment, node_id, cluster=cluster)
 
-        for host in docker_hosts:
-            node_id = _node_key('infrastructure', 'docker', host.id)
-            deployments = ServiceDeployment.objects.select_related('template', 'cluster', 'host').filter(
-                deploy_mode='docker_compose',
-            ).filter(
-                Q(host__hostname=host.name) | Q(host__ip_address=host.ip_address)
-            ).exclude(status__in=['pending', 'removing']).order_by('template__category', 'template__name', 'id')[:80]
-            for deployment in deployments:
-                add_runtime_component_node(deployment, node_id)
-
     log_datasource_queryset = LogDataSource.objects.filter(is_enabled=True).order_by('provider', 'name')
     if use_knowledge_env:
         log_datasource_queryset = log_datasource_queryset.filter(id__in=selected_log_datasource_ids) if selected_log_datasource_ids else LogDataSource.objects.none()
@@ -2402,7 +2366,7 @@ def build_knowledge_graph(params=None):
             infra_id = _node_key('infrastructure', 'docker', host.id)
             deployments = Deployment.objects.select_related('cluster', 'docker_host').filter(
                 is_current=True,
-                deploy_mode='docker_compose',
+                deploy_mode='retired_container',
             ).filter(
                 Q(docker_host_id=host.id) | Q(host__hostname=host.name) | Q(host__ip_address=host.ip_address)
             ).order_by('-id')[:120]

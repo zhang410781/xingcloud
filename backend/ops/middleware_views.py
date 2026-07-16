@@ -26,6 +26,8 @@ def _serialize_asset(asset):
         'asset_type_label': asset.get_asset_type_display(),
         'environment': asset.environment,
         'endpoint': asset.endpoint,
+        'username': asset.username,
+        'password_configured': bool(asset.password),
         'version': asset.version,
         'status': asset.status,
         'status_label': asset.get_status_display(),
@@ -69,9 +71,14 @@ def _validate_payload(payload, *, partial=False):
     if 'asset_type' in cleaned and cleaned['asset_type'] not in ASSET_TYPES:
         return None, 'Unsupported middleware asset type.'
 
-    for field in ('version', 'description'):
+    for field in ('version', 'description', 'username'):
         if field in payload:
             cleaned[field] = _clean(payload.get(field))
+
+    if 'password' in payload:
+        password = str(payload.get('password') or '')
+        if password and password != '******':
+            cleaned['password'] = password
 
     if 'status' in payload:
         cleaned['status'] = _clean(payload.get('status'))
@@ -121,10 +128,12 @@ def middleware_action(request):
         cleaned, error = _validate_payload(payload)
         if error:
             return Response({'detail': error}, status=400)
+        password = cleaned.pop('password', '')
         try:
             with transaction.atomic():
                 asset = MiddlewareAsset.objects.create(
                     **cleaned,
+                    password=password,
                     created_by=actor,
                     updated_by=actor,
                 )
