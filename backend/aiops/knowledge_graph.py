@@ -230,6 +230,67 @@ def _append_unique(target, value, limit=4):
         target.append(value)
 
 
+def _collapse_unassigned_system_nodes(nodes, edges):
+    """Remove synthetic system placeholders and reconnect their real neighbors."""
+    nodes = {node_id: dict(node) for node_id, node in nodes.items()}
+    edges = {edge_id: dict(edge) for edge_id, edge in edges.items()}
+    unassigned_system_ids = {
+        node_id
+        for node_id, node in nodes.items()
+        if node.get('kind') == 'system'
+        and _clean(node.get('system_name') or node.get('label')) == UNASSIGNED_SYSTEM
+    }
+    if not unassigned_system_ids:
+        return nodes, edges
+
+    relation_map = {
+        'system_service': ('包含服务', 'environment_service'),
+        'system_runtime': ('依赖组件', 'environment_runtime'),
+    }
+    for system_id in unassigned_system_ids:
+        environment_edges = [
+            edge for edge in edges.values()
+            if edge.get('target') == system_id and edge.get('relation') == 'environment_system'
+        ]
+        outgoing_edges = [edge for edge in edges.values() if edge.get('source') == system_id]
+        for environment_edge in environment_edges:
+            for outgoing_edge in outgoing_edges:
+                relation = relation_map.get(outgoing_edge.get('relation'))
+                if not relation:
+                    continue
+                label, relation_key = relation
+                source = environment_edge.get('source')
+                target = outgoing_edge.get('target')
+                if not source or not target or source == target:
+                    continue
+                edge_id = f'{source}->{target}:{relation_key}:{label}'
+                weight = max(environment_edge.get('weight') or 1, outgoing_edge.get('weight') or 1)
+                if edge_id in edges:
+                    edges[edge_id]['weight'] += weight
+                else:
+                    edges[edge_id] = {
+                        'id': edge_id,
+                        'source': source,
+                        'target': target,
+                        'label': label,
+                        'relation': relation_key,
+                        'weight': weight,
+                    }
+
+        for edge_id, edge in list(edges.items()):
+            if edge.get('source') == system_id or edge.get('target') == system_id:
+                edges.pop(edge_id, None)
+        nodes.pop(system_id, None)
+
+    for node in nodes.values():
+        if node.get('kind') != 'service':
+            continue
+        if _clean(node.get('system_name') or node.get('business_line')) == UNASSIGNED_SYSTEM:
+            node['system_name'] = ''
+            node['business_line'] = ''
+    return nodes, edges
+
+
 def _call_with_timeout(loader, timeout=FAST_EXTERNAL_TIMEOUT, default=None):
     executor = ThreadPoolExecutor(max_workers=1)
     future = executor.submit(loader)
@@ -2477,6 +2538,8 @@ def build_knowledge_graph(params=None):
                 if edge['source'] not in removable_unassigned_system_ids and edge['target'] not in removable_unassigned_system_ids
             }
 
+    nodes, edges = _collapse_unassigned_system_nodes(nodes, edges)
+
     visible_capability_ids = set()
     if use_knowledge_env:
         for edge in edges.values():
@@ -2539,6 +2602,7 @@ def build_knowledge_graph(params=None):
         },
         'relation_legend': [
             {'key': 'environment_system', 'label': '环境包含系统'},
+            {'key': 'environment_service', 'label': '环境包含服务'},
             {'key': 'system_service', 'label': '系统承载服务'},
             {'key': 'service_capability', 'label': '服务产生数据'},
             {'key': 'system_dependency', 'label': '系统依赖'},
@@ -2550,6 +2614,7 @@ def build_knowledge_graph(params=None):
             {'key': 'infrastructure_member', 'label': '集群包含主机'},
             {'key': 'service_runtime', 'label': '服务依赖'},
             {'key': 'system_runtime', 'label': '系统依赖运行组件'},
+            {'key': 'environment_runtime', 'label': '环境依赖运行组件'},
         ],
     }
     _cache_set(cache_key, result, GRAPH_RESPONSE_CACHE_TTL)

@@ -318,7 +318,7 @@ const LANE_NODE_TOP = 68
 const LANE_NODE_STEP = 82
 const LANE_BODY_TOP = 76
 const LANE_LEFT_PADDING = 18
-const hiddenNodeKinds = new Set(['environment', 'external_event'])
+const hiddenNodeKinds = new Set(['external_event'])
 const graphZoom = ref(DEFAULT_GRAPH_ZOOM)
 const graphDrag = reactive({ active: false, moved: false, x: 0, y: 0, scrollLeft: 0, scrollTop: 0 })
 const legendPosition = reactive({ x: null, y: null })
@@ -339,10 +339,14 @@ const graphEdges = computed(() => (graph.value.edges || []).filter(edge => {
   const kinds = new Set([source.kind, target.kind])
   return (
     (edge.relation === 'system_service' && kinds.has('system') && kinds.has('service'))
+    || (edge.relation === 'environment_service' && kinds.has('environment') && kinds.has('service'))
+    || (edge.relation === 'environment_system' && kinds.has('environment') && kinds.has('system'))
+    || edge.relation === 'environment_infrastructure'
     || edge.relation === 'service_deployment'
     || edge.relation === 'infrastructure_member'
     || edge.relation === 'service_runtime'
     || edge.relation === 'system_runtime'
+    || edge.relation === 'environment_runtime'
   )
 }))
 const visibleSummary = computed(() => {
@@ -566,9 +570,10 @@ const LANE_TINT_BY_KIND = {
 }
 
 const laneDefinitions = [
-  { kind: 'infrastructure', label: '基础设施' },
+  { kind: 'environment', label: '环境' },
   { kind: 'system', label: '系统' },
   { kind: 'service', label: '服务' },
+  { kind: 'infrastructure', label: '基础设施' },
   { kind: 'runtime_component', label: '中间件 / DB' },
   { kind: 'observability', label: '可观测性', kinds: ['datasource', 'dashboard', 'logs'] },
   { kind: 'alert', label: '告警' },
@@ -618,11 +623,13 @@ function nodeKindLabel(value) {
 
 function edgeRelationLabel(value) {
   return {
+    environment_service: '环境包含服务',
     system_service: '系统承载服务',
     service_deployment: '部署在',
     infrastructure_member: '集群包含主机',
     service_runtime: '服务依赖',
     system_runtime: '系统依赖组件',
+    environment_runtime: '环境依赖组件',
     environment_system: '环境包含系统',
     environment_observability: '环境关联可观测性',
     environment_infrastructure: '环境运行于基础设施',
@@ -1654,6 +1661,11 @@ onBeforeUnmount(() => {
 
 .board-edge.is-system_service {
   stroke: rgba(139, 92, 246, 0.36);
+}
+
+.board-edge.is-environment_service {
+  stroke: rgba(37, 99, 235, 0.48);
+  stroke-width: 1.8;
 }
 
 .board-edge.is-environment_system {

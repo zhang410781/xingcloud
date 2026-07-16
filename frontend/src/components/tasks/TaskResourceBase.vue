@@ -7,7 +7,7 @@
           title="点击查看全部"
           @click="clearTreeFilter"
         >
-          <el-icon style="margin-right:4px;vertical-align:-2px;"><Connection /></el-icon>一级业务
+          <el-icon style="margin-right:4px;vertical-align:-2px;"><Connection /></el-icon>资产分组
         </span>
         <el-button v-if="canManage" link type="primary" size="small" class="tree-head-btn" @click="openNodeDialog()">
           <el-icon><Plus /></el-icon>
@@ -28,21 +28,10 @@
         <template #default="{ node, data }">
           <div class="custom-tree-node tree-node-content">
             <span class="tree-node-label">
-              <el-icon v-if="data.group_type === 'environment'" style="color:#10b981;margin-right:4px;"><Monitor /></el-icon>
-              <el-icon v-else style="color:#8b5cf6;margin-right:4px;"><Files /></el-icon>
+              <el-icon style="color:#10b981;margin-right:4px;"><Monitor /></el-icon>
               {{ node.label }}
             </span>
             <span class="tree-actions" @click.stop>
-              <el-button
-                v-if="canManage && data.group_type === 'environment'"
-                link
-                type="success"
-                class="tree-action-btn"
-                title="新增项目/系统"
-                @click="openNodeDialog(null, data)"
-              >
-                <el-icon><Plus /></el-icon>
-              </el-button>
               <el-button
                 v-if="canManage"
                 link
@@ -67,7 +56,7 @@
 
       <el-empty
         v-if="!loading.tree && !treeData.length"
-        description="暂无一级业务"
+        description="暂无资产分组"
         :image-size="72"
         class="tree-empty"
       />
@@ -80,11 +69,8 @@
             <el-option label="主机" value="host" />
             <el-option label="K8S 集群" value="k8s" />
           </el-select>
-          <el-select v-model="filters.environment" placeholder="一级业务" clearable filterable style="width:128px" size="small" @change="onEnvironmentFilterChange">
+          <el-select v-model="filters.environment" placeholder="资产分组" clearable filterable style="width:128px" size="small" @change="onEnvironmentFilterChange">
             <el-option v-for="env in environments" :key="env.id" :label="env.name" :value="env.id" />
-          </el-select>
-          <el-select v-model="filters.system" placeholder="项目/系统" clearable filterable style="width:132px" size="small" :disabled="!filters.environment" @change="refreshResourceView">
-            <el-option v-for="system in systemsForFilter" :key="system.id" :label="system.name" :value="system.id" />
           </el-select>
           <el-select v-model="filters.asset_environment" placeholder="环境" clearable style="width:108px" size="small" @change="refreshResourceView">
             <el-option v-for="item in assetEnvironmentOptions" :key="item.value" :label="item.label" :value="item.value" />
@@ -148,10 +134,7 @@
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="environment_name" label="一级业务" width="120" show-overflow-tooltip />
-          <el-table-column prop="system_name" label="项目/系统" width="120" show-overflow-tooltip>
-            <template #default="{ row }">{{ row.system_name || '-' }}</template>
-          </el-table-column>
+          <el-table-column prop="environment_name" label="资产分组" width="128" show-overflow-tooltip />
           <el-table-column label="环境" width="92">
             <template #default="{ row }">{{ assetEnvironmentLabel(row.asset_environment) }}</template>
           </el-table-column>
@@ -161,7 +144,7 @@
           <el-table-column prop="owner" label="运维负责人" width="118" show-overflow-tooltip>
             <template #default="{ row }">{{ row.owner || '-' }}</template>
           </el-table-column>
-          <el-table-column prop="project_owner" label="项目负责人" width="118" show-overflow-tooltip>
+          <el-table-column prop="project_owner" label="业务负责人" width="118" show-overflow-tooltip>
             <template #default="{ row }">{{ row.project_owner || '-' }}</template>
           </el-table-column>
           <el-table-column label="状态" width="90">
@@ -192,21 +175,8 @@
       destroy-on-close
     >
       <el-form :model="nodeForm" label-width="96px" class="resource-compact-form">
-        <el-form-item v-if="!editingNodeId" label="节点类型">
-          <el-radio-group v-model="nodeForm.group_type">
-            <el-radio label="environment">一级业务</el-radio>
-            <el-radio label="system">项目/系统</el-radio>
-          </el-radio-group>
-        </el-form-item>
-        <el-form-item v-else label="节点类型">
-          <el-tag size="small" :type="nodeForm.group_type === 'environment' ? 'success' : 'info'" effect="plain">
-            {{ nodeForm.group_type === 'environment' ? '一级业务' : '项目/系统' }}
-          </el-tag>
-        </el-form-item>
-        <el-form-item v-if="nodeForm.group_type === 'system'" label="所属业务" required>
-          <el-select v-model="nodeForm.parent" style="width:100%" placeholder="选择一级业务">
-            <el-option v-for="env in environments" :key="env.id" :label="env.name" :value="env.id" />
-          </el-select>
+        <el-form-item label="节点类型">
+          <el-tag size="small" type="success" effect="plain">资产分组</el-tag>
         </el-form-item>
         <el-form-item label="名称" required>
           <el-input v-model="nodeForm.name" placeholder="请输入节点名称" />
@@ -253,30 +223,23 @@
           </el-form-item>
         </div>
         <div class="form-row">
-          <el-form-item label="一级业务" required class="form-col">
+          <el-form-item label="资产分组" required class="form-col">
             <el-select v-model="resourceForm.environment" filterable style="width:100%" @change="resourceForm.system = ''">
               <el-option v-for="env in environments" :key="env.id" :label="env.name" :value="env.id" />
             </el-select>
           </el-form-item>
-          <el-form-item label="项目/系统" class="form-col">
-            <el-select v-model="resourceForm.system" clearable filterable style="width:100%" :disabled="!resourceForm.environment">
-              <el-option v-for="system in systemsForResource" :key="system.id" :label="system.name" :value="system.id" />
-            </el-select>
-          </el-form-item>
-        </div>
-        <div class="form-row">
           <el-form-item label="环境" required class="form-col">
             <el-select v-model="resourceForm.asset_environment" style="width:100%">
               <el-option v-for="item in assetEnvironmentOptions" :key="item.value" :label="item.label" :value="item.value" />
             </el-select>
           </el-form-item>
+        </div>
+        <div class="form-row">
           <el-form-item label="运维负责人" class="form-col">
             <el-input v-model="resourceForm.owner" placeholder="例如 xinghai / 平台运维组" />
           </el-form-item>
-        </div>
-        <div class="form-row">
-          <el-form-item label="项目负责人" class="form-col">
-            <el-input v-model="resourceForm.project_owner" placeholder="例如 项目负责人 / 研发负责人" />
+          <el-form-item label="业务负责人" class="form-col">
+            <el-input v-model="resourceForm.project_owner" placeholder="例如 研发负责人 / 业务负责人" />
           </el-form-item>
         </div>
         <el-form-item v-if="resourceForm.resource_type === 'host'" label="资产名称" required>
@@ -330,7 +293,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Connection, Delete, Edit, Files, Monitor, Plus, Search } from '@element-plus/icons-vue'
+import { Connection, Delete, Edit, Monitor, Plus, Search } from '@element-plus/icons-vue'
 import { getK8sClusters } from '@/api/modules/container'
 import {
   createTaskResource,
@@ -355,7 +318,7 @@ const resources = ref([])
 const stats = ref({})
 const k8sClusters = ref([])
 const loading = reactive({ tree: false, resources: false, submit: false })
-const filters = reactive({ search: '', resource_type: '', status: '', environment: '', system: '', asset_environment: '' })
+const filters = reactive({ search: '', resource_type: '', status: '', environment: '', asset_environment: '' })
 
 const nodeDialogVisible = ref(false)
 const editingNodeId = ref(null)
@@ -366,8 +329,6 @@ const editingResourceId = ref(null)
 const resourceForm = reactive(defaultResourceForm())
 
 const environments = computed(() => treeData.value)
-const systemsForFilter = computed(() => environments.value.find(item => item.id === filters.environment)?.children || [])
-const systemsForResource = computed(() => environments.value.find(item => item.id === resourceForm.environment)?.children || [])
 const selectedK8sClusterName = computed(() => k8sClusters.value.find(item => item.id === resourceForm.cluster)?.name || '')
 const assetEnvironmentOptions = [
   { label: '生产', value: 'prod' },
@@ -376,9 +337,9 @@ const assetEnvironmentOptions = [
   { label: '预发', value: 'staging' },
   { label: '其他', value: 'other' },
 ]
-const nodeDialogTitle = computed(() => `${editingNodeId.value ? '编辑' : '新增'}${nodeForm.group_type === 'environment' ? '一级业务' : '项目/系统'}`)
+const nodeDialogTitle = computed(() => `${editingNodeId.value ? '编辑' : '新增'}资产分组`)
 const resourceDialogTitle = computed(() => `${editingResourceId.value ? '编辑' : '新增'}资产`)
-const emptyText = computed(() => (treeData.value.length ? '暂无匹配资产' : '暂无资产，请先维护左侧一级业务 / 项目系统'))
+const emptyText = computed(() => (treeData.value.length ? '暂无匹配资产' : '暂无资产，请先创建左侧资产分组'))
 const statCards = computed(() => [
   { key: 'total', label: '资产总数', value: stats.value.total || 0, color: '#8b5cf6' },
   { key: 'host', label: '主机', value: stats.value.host || 0, color: '#10b981', resourceType: 'host', active: filters.resource_type === 'host' },
@@ -420,9 +381,9 @@ function normalizeList(res) {
 }
 
 function normalizeTree(list = []) {
-  return list.map(env => ({
+  return list.filter(env => env.group_type === 'environment').map(env => ({
     ...env,
-    children: (env.children || []).map(system => ({ ...system, children: [] })),
+    children: [],
   }))
 }
 
@@ -455,29 +416,21 @@ function statusType(status) {
 function clearTreeFilter() {
   treeRef.value?.setCurrentKey(null)
   filters.environment = ''
-  filters.system = ''
   refreshResourceView()
 }
 
 function onNodeClick(data) {
-  if (data.group_type === 'environment') {
-    filters.environment = data.id
-    filters.system = ''
-  } else {
-    filters.environment = data.parent || ''
-    filters.system = data.id
-  }
+  filters.environment = data.id
   refreshResourceView()
 }
 
 function onEnvironmentFilterChange() {
-  filters.system = ''
   treeRef.value?.setCurrentKey(filters.environment || null)
   refreshResourceView()
 }
 
 function resetFilters() {
-  Object.assign(filters, { search: '', resource_type: '', status: '', environment: '', system: '', asset_environment: '' })
+  Object.assign(filters, { search: '', resource_type: '', status: '', environment: '', asset_environment: '' })
   treeRef.value?.setCurrentKey(null)
   refreshResourceView()
 }
@@ -499,7 +452,7 @@ function syncK8sResourceName() {
   }
 }
 
-function openNodeDialog(row = null, parent = null) {
+function openNodeDialog(row = null) {
   if (!canManage.value) return
   editingNodeId.value = row?.id || null
   Object.assign(nodeForm, defaultNodeForm())
@@ -511,11 +464,6 @@ function openNodeDialog(row = null, parent = null) {
       code: row.code || '',
       sort_order: row.sort_order || 100,
       description: row.description || '',
-    })
-  } else {
-    Object.assign(nodeForm, {
-      group_type: parent ? 'system' : 'environment',
-      parent: parent?.id || '',
     })
   }
   nodeDialogVisible.value = true
@@ -548,7 +496,6 @@ function openResourceDialog(row = null, preferredType = '') {
     Object.assign(resourceForm, {
       resource_type: preferredType || 'host',
       environment: filters.environment || '',
-      system: filters.system || '',
     })
   }
   resourceDialogVisible.value = true
@@ -578,7 +525,6 @@ async function fetchResources() {
 function statFilterParams() {
   return {
     environment: filters.environment || undefined,
-    system: filters.system || undefined,
     asset_environment: filters.asset_environment || undefined,
     status: filters.status || undefined,
     search: filters.search || undefined,
@@ -609,13 +555,13 @@ async function reloadAll() {
 
 async function submitNode() {
   if (!nodeForm.name.trim()) return ElMessage.warning('请填写节点名称')
-  if (nodeForm.group_type === 'system' && !nodeForm.parent) return ElMessage.warning('请选择所属一级业务')
   loading.submit = true
   try {
     const payload = {
       ...nodeForm,
+      group_type: 'environment',
       name: nodeForm.name.trim(),
-      parent: nodeForm.group_type === 'system' ? nodeForm.parent : null,
+      parent: null,
       event_environment: null,
     }
     if (editingNodeId.value) {
@@ -624,7 +570,7 @@ async function submitNode() {
       await createTaskResourceGroup(payload)
     }
     nodeDialogVisible.value = false
-    ElMessage.success('一级业务已保存')
+    ElMessage.success('资产分组已保存')
     await reloadAll()
   } finally {
     loading.submit = false
@@ -632,7 +578,7 @@ async function submitNode() {
 }
 
 async function submitResource() {
-  if (!resourceForm.environment) return ElMessage.warning('请选择一级业务')
+  if (!resourceForm.environment) return ElMessage.warning('请选择资产分组')
   if (!resourceForm.asset_environment) return ElMessage.warning('请选择环境')
   if (resourceForm.resource_type === 'host') {
     if (!resourceForm.name.trim()) return ElMessage.warning('请填写资产名称')

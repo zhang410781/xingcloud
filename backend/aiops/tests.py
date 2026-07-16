@@ -6,7 +6,7 @@ from django.test import TestCase
 
 from ops.models import K8sCluster, LogDataSource, MetricDataSource
 
-from .knowledge_graph import resolve_knowledge_environment
+from .knowledge_graph import _collapse_unassigned_system_nodes, resolve_knowledge_environment
 from .models import AIOpsAgentConfig, AIOpsKnowledgeEnvironment, AIOpsModelInvocation, AIOpsModelProvider
 from .serializers import AIOpsKnowledgeEnvironmentSerializer
 from .services import _ensure_builtin_model_provider, list_model_provider_presets
@@ -16,6 +16,61 @@ User = get_user_model()
 
 
 class AIOpsConfigurationTests(TestCase):
+    def test_knowledge_graph_collapses_unassigned_system_into_environment_service_edge(self):
+        nodes = {
+            'environment:production': {
+                'id': 'environment:production',
+                'kind': 'environment',
+                'label': 'production',
+                'environment': 'production',
+            },
+            'system:production:未归属系统': {
+                'id': 'system:production:未归属系统',
+                'kind': 'system',
+                'label': '未归属系统',
+                'system_name': '未归属系统',
+                'environment': 'production',
+            },
+            'service:production:未归属系统:api': {
+                'id': 'service:production:未归属系统:api',
+                'kind': 'service',
+                'label': 'api',
+                'service': 'api',
+                'system_name': '未归属系统',
+                'business_line': '未归属系统',
+                'environment': 'production',
+            },
+        }
+        edges = {
+            'environment-system': {
+                'id': 'environment-system',
+                'source': 'environment:production',
+                'target': 'system:production:未归属系统',
+                'label': '包含系统',
+                'relation': 'environment_system',
+                'weight': 1,
+            },
+            'system-service': {
+                'id': 'system-service',
+                'source': 'system:production:未归属系统',
+                'target': 'service:production:未归属系统:api',
+                'label': '承载服务',
+                'relation': 'system_service',
+                'weight': 2,
+            },
+        }
+
+        collapsed_nodes, collapsed_edges = _collapse_unassigned_system_nodes(nodes, edges)
+
+        self.assertNotIn('system:production:未归属系统', collapsed_nodes)
+        self.assertEqual(collapsed_nodes['service:production:未归属系统:api']['system_name'], '')
+        self.assertTrue(any(
+            edge['source'] == 'environment:production'
+            and edge['target'] == 'service:production:未归属系统:api'
+            and edge['relation'] == 'environment_service'
+            for edge in collapsed_edges.values()
+        ))
+
     def test_knowledge_environment_catalog_works_without_event_wall_models(self):
         user = User.objects.create_superuser(username='catalog-admin', password='Admin@123456')
         self.client.force_login(user)

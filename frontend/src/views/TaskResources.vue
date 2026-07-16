@@ -5,7 +5,7 @@
         <div class="hero-title-row">
           <span class="hero-icon hero-icon-monitor"><el-icon><Monitor /></el-icon></span>
           <h2>资产登记</h2>
-          <p class="page-inline-desc">服务器按单机登记；K8S 按集群登记，Node、Namespace 和工作负载由集群自动发现。</p>
+          <p class="page-inline-desc">服务器按单机登记，K8S 按集群登记；业务系统不作为必填层级，Node、Namespace 和工作负载由集群自动发现。</p>
         </div>
       </div>
       <div class="hero-actions">
