@@ -274,14 +274,40 @@ class AIOpsConfigurationTests(TestCase):
         config.refresh_from_db()
 
         self.assertEqual(config.default_provider_id, provider.id)
-        self.assertTrue(AIOpsModelProvider.objects.filter(name='智能助手体验版').exists())
+        self.assertTrue(AIOpsModelProvider.objects.filter(name='Agnes AI').exists())
+
+    def test_builtin_provider_bootstrap_replaces_legacy_sail_default_with_ready_agnes(self):
+        legacy = AIOpsModelProvider.objects.create(
+            name='智能助手体验版',
+            provider_preset='sail_cloud',
+            base_url='https://api.sail-cloud.com/v1',
+            default_model='Qwen2.5-72B-Instruct',
+            is_enabled=True,
+        )
+        agnes = AIOpsModelProvider.objects.create(
+            name='Agnes AI',
+            provider_preset='agnes_ai',
+            base_url='https://apihub.agnes-ai.com/v1',
+            default_model='agnes-2.0-flash',
+            is_enabled=True,
+        )
+        agnes.set_api_key('agnes-test-key')
+        agnes.save(update_fields=['api_key_encrypted'])
+        config = AIOpsAgentConfig.objects.create(name='default', default_provider=legacy)
+
+        _ensure_builtin_model_provider(config)
+        config.refresh_from_db()
+        legacy.refresh_from_db()
+
+        self.assertEqual(config.default_provider_id, agnes.id)
+        self.assertFalse(legacy.is_enabled)
 
     def test_builtin_provider_bootstrap_repairs_matching_garbled_record_in_place(self):
         provider = AIOpsModelProvider.objects.create(
             name='�������������',
-            provider_preset='sail_cloud',
-            base_url='https://api.sail-cloud.com/v1',
-            default_model='Qwen2.5-72B-Instruct',
+            provider_preset='agnes_ai',
+            base_url='https://apihub.agnes-ai.com/v1',
+            default_model='agnes-2.0-flash',
             is_enabled=True,
         )
         config = AIOpsAgentConfig.objects.create(name='default', default_provider=provider)
@@ -291,12 +317,12 @@ class AIOpsConfigurationTests(TestCase):
         config.refresh_from_db()
 
         self.assertEqual(repaired.id, provider.id)
-        self.assertEqual(provider.name, '智能助手体验版')
+        self.assertEqual(provider.name, 'Agnes AI')
         self.assertEqual(config.default_provider_id, provider.id)
         self.assertEqual(
             AIOpsModelProvider.objects.filter(
-                base_url='https://api.sail-cloud.com/v1',
-                default_model='Qwen2.5-72B-Instruct',
+                base_url='https://apihub.agnes-ai.com/v1',
+                default_model='agnes-2.0-flash',
             ).count(),
             1,
         )

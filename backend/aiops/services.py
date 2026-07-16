@@ -978,25 +978,26 @@ BUILTIN_ACTION_REGISTRY = [
 ]
 
 BUILTIN_MODEL_PROVIDER = {
-    'name': '智能助手体验版',
+    'name': 'Agnes AI',
     'provider_type': AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
-    'provider_preset': 'sail_cloud',
-    'base_url': 'https://api.sail-cloud.com/v1',
-    'default_model': 'Qwen2.5-72B-Instruct',
-    'backup_model': '',
+    'provider_preset': 'agnes_ai',
+    'base_url': 'https://apihub.agnes-ai.com/v1',
+    'default_model': 'agnes-2.0-flash',
+    'backup_model': 'agnes-1.5-flash',
     'temperature': 0.2,
     'max_tokens': 10000,
     'timeout_seconds': 30,
     'price_currency': AIOpsModelProvider.CURRENCY_CNY,
     'api_key': '',
-    'last_test_message': '预置 Sail Cloud 配置，需填写 API Key 后使用',
+    'last_test_message': '预置 Agnes AI 配置，需填写 API Key 后使用',
 }
 
 LEGACY_BUILTIN_MODEL_PROVIDER = {
-    'base_url': 'https://api.openai.example.com/v1',
-    'default_model': 'gpt-4o-mini',
-    'backup_model': 'gpt-4.1-mini',
-    'api_key': 'demo-openai-compatible-key',
+    'provider_preset': 'sail_cloud',
+    'base_url': 'https://api.sail-cloud.com/v1',
+    'default_model': 'Qwen2.5-72B-Instruct',
+    'backup_model': '',
+    'api_key': '',
 }
 
 MODEL_PROVIDER_PRESETS = [
@@ -1174,7 +1175,7 @@ def _builtin_experience_provider_needs_setup(provider):
 
 def get_model_provider_setup_hint(provider):
     if _builtin_experience_provider_needs_setup(provider):
-        return '“智能助手体验版”已预置 Sail Cloud Base URL 和默认模型，请填写 API Key 后使用。'
+        return '“Agnes AI”已预置 Base URL 和 agnes-2.0-flash，请填写 API Key 后使用。'
     if not provider:
         return '请先启用并配置一个可用的模型提供商。'
     missing_items = []
@@ -2712,9 +2713,23 @@ def _ensure_builtin_model_provider(config):
     if changed_fields:
         provider.save(update_fields=list(dict.fromkeys(changed_fields)))
 
-    if not config.default_provider_id:
+    current_default = config.default_provider
+    default_is_legacy_builtin = bool(
+        current_default
+        and current_default.id != provider.id
+        and current_default.name == '智能助手体验版'
+        and (current_default.base_url or '').rstrip('/') == LEGACY_BUILTIN_MODEL_PROVIDER['base_url'].rstrip('/')
+    )
+    if (not config.default_provider_id or default_is_legacy_builtin) and _provider_is_ready(provider):
         config.default_provider = provider
         config.save(update_fields=['default_provider'])
+
+    if _provider_is_ready(provider):
+        AIOpsModelProvider.objects.filter(
+            name='智能助手体验版',
+            provider_preset=LEGACY_BUILTIN_MODEL_PROVIDER['provider_preset'],
+            base_url=LEGACY_BUILTIN_MODEL_PROVIDER['base_url'],
+        ).exclude(id=provider.id).update(is_enabled=False)
 
     return provider
 
@@ -15348,18 +15363,46 @@ def _dispatch_with_tool_runtime(session, user_message, user, question, progress_
                         'content': '你上一轮没有调用任何工具。请重新决策，并且这一次必须至少调用 1 个最相关的工具后再回答；不要直接自由作答。',
                     })
                     continue
-                emit(
-                    step={
-                        'title': '未命中任何工具',
-                        'detail': '模型未调用任何工具，当前策略不允许直接自由回答。',
-                        'status': PROCESSING_STATUS_FAILED,
-                    },
-                    text='模型未命中任何工具',
-                )
+                fallback_tool_name = 'query_knowledge_graph' if 'query_knowledge_graph' in registry else ''
+                if fallback_tool_name:
+                    emit(
+                        step={
+                            'title': '平台自动补充证据查询',
+                            'detail': 'Agnes 本轮未生成工具调用，平台自动使用知识图谱查询作为证据兜底。',
+                            'status': PROCESSING_STATUS_RUNNING,
+                        },
+                        text='正在自动补充平台证据',
+                    )
+                    fallback_arguments = {'query': scoped_question, 'limit': 8}
+                    tool_result = _run_tool_call(
+                        session,
+                        user_message,
+                        user,
+                        fallback_tool_name,
+                        fallback_arguments,
+                        registry_entry=registry[fallback_tool_name],
+                    )
+                    executed_tool_names.append(fallback_tool_name)
+                    tool_output = tool_result.get('tool_output') or {}
+                    collected_tool_outputs.append({'tool_name': fallback_tool_name, 'tool_output': tool_output})
+                    sections.extend(tool_result.get('sections', []))
+                    citations.extend(tool_result.get('citations', []))
+                    if tool_result.get('message_type') == AIOpsChatMessage.TYPE_ANALYSIS:
+                        message_type = AIOpsChatMessage.TYPE_ANALYSIS
+                    emit(
+                        step={
+                            'title': '平台自动补充证据查询',
+                            'detail': _summarize_tool_result(tool_result),
+                            'status': PROCESSING_STATUS_FAILED if isinstance(tool_output, dict) and tool_output.get('error') else PROCESSING_STATUS_COMPLETED,
+                        },
+                        text='平台证据查询完成',
+                    )
+                    final_content = ''
+                    break
                 return _build_dispatch_error_result(
-                    '模型未调用任何工具，请检查当前模型是否支持 tool-calling，或检查 MCP/Skill 配置是否完整。',
-                    code='no_tool_called',
-                    message='模型未调用任何工具，无法完成问答。',
+                    '当前没有可用于兜底查询的平台工具，请检查 MCP 配置。',
+                    code='tool_unavailable',
+                    message='当前没有可用工具，无法完成问答。',
                 )
             emit(
                 step={
