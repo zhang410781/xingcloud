@@ -25,6 +25,7 @@ from .services import (
     _is_k8s_analysis_question,
     _is_k8s_resource_count_question,
     _k8s_cluster_search_context,
+    _select_k8s_cluster,
     list_model_provider_presets,
     query_k8s_resources,
 )
@@ -55,6 +56,29 @@ class AIOpsConfigurationTests(TestCase):
         self.assertEqual(scoped_query, '巡检集群')
         self.assertEqual(cluster_query, '数智管理平台')
         self.assertEqual(tokens, [])
+
+    def test_k8s_cluster_selection_requires_name_when_environment_has_multiple_clusters(self):
+        first = K8sCluster.objects.create(name='production-k8s', kubeconfig='')
+        second = K8sCluster.objects.create(name='staging-k8s', kubeconfig='')
+        cluster, candidates, selection_required = _select_k8s_cluster(
+            K8sCluster.objects.filter(id__in=[first.id, second.id]),
+            tokens=[],
+        )
+
+        self.assertIsNone(cluster)
+        self.assertTrue(selection_required)
+        self.assertEqual({item.name for item in candidates}, {'production-k8s', 'staging-k8s'})
+
+    def test_k8s_cluster_selection_uses_explicit_cluster_name(self):
+        first = K8sCluster.objects.create(name='production-k8s', kubeconfig='')
+        second = K8sCluster.objects.create(name='staging-k8s', kubeconfig='')
+        cluster, _, selection_required = _select_k8s_cluster(
+            K8sCluster.objects.filter(id__in=[first.id, second.id]),
+            cluster_name='staging',
+        )
+
+        self.assertEqual(cluster, second)
+        self.assertFalse(selection_required)
 
     @patch('aiops.services._load_k8s_nodes')
     @patch('aiops.services._resolve_knowledge_environment_for_query')

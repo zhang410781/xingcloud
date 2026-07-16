@@ -8440,7 +8440,7 @@ def _load_k8s_nodes(cluster):
 
 def _k8s_cluster_search_context(query='', knowledge_environment=None, cluster_name=''):
     scoped_query = _strip_knowledge_environment_name(query, knowledge_environment)
-    cluster_query = cluster_name or _strip_common_query_phrases(
+    explicit_query = _strip_common_query_phrases(
         scoped_query,
         [
             '有没有', '是否', '异常', 'pod', 'Pod', '集群', 'k8s', 'K8s', 'Kubernetes',
@@ -8448,11 +8448,67 @@ def _k8s_cluster_search_context(query='', knowledge_environment=None, cluster_na
             '概览', '摘要', '整体', '全部', '所有',
         ],
     )
+    cluster_query = explicit_query or cluster_name
     tokens = _clean_tokens(cluster_query)
     cluster_ids = (knowledge_environment or {}).get('k8s_cluster_ids') or []
     if len(cluster_ids) == 1:
         tokens = []
     return scoped_query, cluster_query, tokens
+
+
+def _select_k8s_cluster(queryset, *, cluster_name='', tokens=None, allow_single_default=True):
+    """Select a K8s cluster without silently choosing the wrong one.
+
+    A model may pass the environment label as ``cluster_name``.  That is safe
+    to ignore only when the environment is bound to exactly one cluster.  For
+    multiple clusters we require an actual name match; otherwise callers can
+    present the candidates and ask the user to choose.
+    """
+    tokens = list(tokens or [])
+    candidates = list(queryset.order_by('-updated_at', '-id'))
+    if tokens:
+        lowered = [str(token).lower() for token in tokens if token]
+        matched = [
+            item for item in candidates
+            if any(token in str(item.name or '').lower() or token in str(item.api_server or '').lower() for token in lowered)
+        ]
+        if len(matched) == 1:
+            return matched[0], candidates, False
+        if len(matched) > 1:
+            return None, matched, True
+    if cluster_name:
+        matched = [item for item in candidates if str(cluster_name).lower() in str(item.name or '').lower()]
+        if matched:
+            return matched[0], candidates, False
+        if allow_single_default and len(candidates) == 1:
+            return candidates[0], candidates, False
+        return None, candidates, True
+    if len(candidates) == 1:
+        return candidates[0], candidates, False
+    if len(candidates) > 1:
+        return None, candidates, True
+    return None, [], False
+
+
+def _k8s_cluster_selection_result(candidates, *, citation_title='K8s 集群'):
+    names = [str(item.name or item.id) for item in candidates]
+    return {
+        'summary': {
+            'count': 0,
+            'selection_required': True,
+            'candidate_clusters': names,
+        },
+        'sections': [{
+            'title': '请选择 K8s 集群',
+            'items': [
+                '当前环境绑定了多个 K8s 集群，未能唯一确定巡检目标。',
+                *[f'{index}. {name}' for index, name in enumerate(names, 1)],
+                '请在问题中带上集群名称，例如“巡检 production-k8s 集群”。',
+            ],
+        }],
+        'citations': [{'title': citation_title, 'path': '/containers/k8s'}],
+        'candidates': names,
+    }
 
 
 def _extract_k8s_query_object_name(query, resource_type):
@@ -8536,6 +8592,7 @@ def _k8s_resource_title(resource_type):
 def query_k8s_resources(session, user_message, user, query='', resource_type='', cluster_name='', limit=8):
     started_at = time.time()
     knowledge_environment = _resolve_knowledge_environment_for_query(query)
+    _, _, cluster_tokens = _k8s_cluster_search_context(query, knowledge_environment, cluster_name)
     resource_type = (resource_type or _detect_k8s_resource_type(query) or 'deployments').strip().lower()
     if resource_type == 'pod':
         resource_type = 'pods'
@@ -8560,9 +8617,15 @@ def query_k8s_resources(session, user_message, user, query='', resource_type='',
     environment_cluster_ids = (knowledge_environment or {}).get('k8s_cluster_ids') or []
     if environment_cluster_ids:
         queryset = queryset.filter(id__in=environment_cluster_ids)
-    if cluster_name and len(environment_cluster_ids) != 1:
-        queryset = queryset.filter(name__icontains=cluster_name)
-    cluster = queryset.order_by('-updated_at', '-id').first()
+    cluster, cluster_candidates, selection_required = _select_k8s_cluster(
+        queryset,
+        cluster_name=cluster_name,
+        tokens=cluster_tokens,
+        allow_single_default=True,
+    )
+    if selection_required:
+        _finish_tool_invocation(invocation, {'count': 0, 'selection_required': True}, started_at, success=True)
+        return _k8s_cluster_selection_result(cluster_candidates)
     if not cluster:
         _finish_tool_invocation(invocation, {'count': 0}, started_at, success=True)
         return {'summary': {'count': 0, 'resource_type': resource_type}, 'sections': [], 'citations': [{'title': 'K8s 集群', 'path': '/containers/k8s'}], 'items': []}
@@ -8674,11 +8737,15 @@ def query_k8s_cluster_summary(session, user_message, user, query='', cluster_nam
     environment_cluster_ids = (knowledge_environment or {}).get('k8s_cluster_ids') or []
     if environment_cluster_ids:
         queryset = queryset.filter(id__in=environment_cluster_ids)
-    if cluster_name and len(environment_cluster_ids) != 1:
-        queryset = queryset.filter(name__icontains=cluster_name)
-    elif tokens:
-        queryset = _queryset_search(queryset, ['name', 'api_server', 'description'], tokens)
-    cluster = queryset.order_by('-updated_at', '-id').first()
+    cluster, cluster_candidates, selection_required = _select_k8s_cluster(
+        queryset,
+        cluster_name=cluster_name,
+        tokens=tokens,
+        allow_single_default=True,
+    )
+    if selection_required:
+        _finish_tool_invocation(invocation, {'count': 0, 'selection_required': True}, started_at, success=True)
+        return _k8s_cluster_selection_result(cluster_candidates)
     if not cluster:
         _finish_tool_invocation(invocation, {'count': 0}, started_at, success=True)
         return {'summary': {'count': 0}, 'sections': [], 'citations': [{'title': 'K8s 集群', 'path': '/containers/k8s'}]}
@@ -10109,6 +10176,11 @@ def _build_formatter_fact_digest(collected_tool_outputs, citations=None, pending
         tool_output = item.get('tool_output') or {}
         summary = tool_output.get('summary') or {}
         if item.get('tool_name') == 'query_k8s_resources':
+            if summary.get('selection_required'):
+                lines.append(
+                    f"- K8s 集群选择：候选集群为 {'、'.join(summary.get('candidate_clusters') or [])}，"
+                    '必须由用户明确指定巡检目标。'
+                )
             lines.append(
                 f"- K8s 资源事实：集群 {summary.get('cluster_name') or '-'}，"
                 f"资源类型 {summary.get('resource_type') or '-'}，总数 {summary.get('count', 0)}。"
@@ -10119,6 +10191,11 @@ def _build_formatter_fact_digest(collected_tool_outputs, citations=None, pending
                     f"NotReady={summary.get('not_ready_count', 0)}。"
                 )
         else:
+            if summary.get('selection_required'):
+                lines.append(
+                    f"- K8s 集群选择：候选集群为 {'、'.join(summary.get('candidate_clusters') or [])}，"
+                    '必须由用户明确指定巡检目标。'
+                )
             lines.append(
                 f"- K8s 集群事实：集群 {summary.get('cluster_name') or '-'}，"
                 f"状态 {summary.get('status') or '-'}，节点 {summary.get('nodes_ready', 0)}/{summary.get('nodes_total', 0)} Ready，"
@@ -10185,6 +10262,7 @@ def _build_answer_formatter_messages(question, draft_content, sections, citation
         '如果 query_logs 的 summary.count 等于 0，禁止声称发现了具体日志样本；只能说明当前查询条件未命中，并提出放宽条件或检查采集链路。',
         '如果 query_k8s_cluster_summary 已返回 cluster_name、节点、Pod 或工作负载统计，禁止说“工具未返回摘要/无法巡检/集群未注册”；必须直接报告集群状态和数量。',
         '如果 query_k8s_resources 已返回 count，必须直接报告对应资源总数；不得要求用户再次提供已经由当前环境唯一确定的集群名称。',
+        '如果 K8s 工具返回 selection_required=true，必须列出候选集群并明确要求用户指定名称；不要猜测或默认选择其中一个。',
         '如果事实不足，要明确说明“当前工具结果未覆盖该信息”。',
         '如果涉及任务生成：必须明确区分“任务草稿 / 待确认创建 / 已在任务中心创建待执行任务”，不能混淆为已执行完成。',
         '输出保持简洁、结构化、可读，优先使用短标题和项目符号，不要输出你的推理过程。',
