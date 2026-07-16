@@ -2629,6 +2629,66 @@ class AlertActionApiTests(TestCase):
         self.assertEqual(policy.channels.count(), 1)
         self.assertEqual(policy.recipient_groups.count(), 1)
 
+    def test_recipient_group_reports_contact_health_and_policy_references(self):
+        recipient = AlertRecipient.objects.create(
+            name='Primary operator',
+            email='primary@example.com',
+            phone='13800000000',
+            feishu_user_id='ou_primary',
+        )
+        group = AlertRecipientGroup.objects.create(name='primary-oncall')
+        group.recipients.add(recipient)
+        policy = AlertNotificationPolicy.objects.create(name='primary routing')
+        policy.recipient_groups.add(group)
+
+        response = self.client.get('/api/alert-recipient-groups/?page_size=200')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()['results'][0]
+        self.assertEqual(payload['member_count'], 1)
+        self.assertEqual(payload['active_member_count'], 1)
+        self.assertEqual(payload['reachable_member_count'], 1)
+        self.assertEqual(payload['health_status'], 'ready')
+        self.assertEqual(payload['contact_coverage']['email'], 1)
+        self.assertEqual(payload['contact_coverage']['phone'], 1)
+        self.assertEqual(payload['contact_coverage']['feishu'], 1)
+        self.assertEqual(payload['policy_count'], 1)
+        self.assertEqual(payload['policy_refs'][0]['name'], 'primary routing')
+
+    def test_enabled_recipient_group_requires_at_least_one_member(self):
+        response = self.client.post(
+            '/api/alert-recipient-groups/',
+            {'name': 'empty-oncall', 'is_enabled': True, 'recipient_ids': [], 'user_ids': []},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('至少需要一个成员', str(response.data))
+
+    def test_referenced_recipient_group_cannot_be_deleted(self):
+        recipient = AlertRecipient.objects.create(name='Operator', email='operator@example.com')
+        group = AlertRecipientGroup.objects.create(name='protected-oncall')
+        group.recipients.add(recipient)
+        policy = AlertNotificationPolicy.objects.create(name='protected routing')
+        policy.recipient_groups.add(group)
+
+        response = self.client.delete(f'/api/alert-recipient-groups/{group.id}/')
+
+        self.assertEqual(response.status_code, 409)
+        self.assertTrue(AlertRecipientGroup.objects.filter(pk=group.id).exists())
+        self.assertEqual(response.json()['policy_refs'][0]['name'], 'protected routing')
+
+    def test_group_member_cannot_be_deleted_until_removed_from_group(self):
+        recipient = AlertRecipient.objects.create(name='Protected operator', email='protected@example.com')
+        group = AlertRecipientGroup.objects.create(name='member-protection')
+        group.recipients.add(recipient)
+
+        response = self.client.delete(f'/api/alert-recipients/{recipient.id}/')
+
+        self.assertEqual(response.status_code, 409)
+        self.assertTrue(AlertRecipient.objects.filter(pk=recipient.id).exists())
+        self.assertEqual(response.json()['group_refs'][0]['name'], 'member-protection')
+
     @patch('ops.alerting.requests.post')
     def test_feishu_business_error_is_logged_as_error(self, mock_post):
         mock_post.return_value = SimpleNamespace(status_code=200, text='{"code":19021,"msg":"sign match fail"}')

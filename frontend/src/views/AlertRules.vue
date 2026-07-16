@@ -159,22 +159,55 @@
     </template>
 
     <template v-else>
-      <section class="resource-grid">
-        <div class="panel table-panel">
-          <div class="section-head"><div><h2>通知渠道</h2><p>邮件、钉钉、飞书、企微、短信和语音渠道全局复用。</p></div><el-button type="primary" :icon="Plus" @click="openChannel">新增渠道</el-button></div>
-          <el-table :data="channels" stripe>
-            <el-table-column prop="name" label="渠道名称" min-width="150" />
-            <el-table-column label="类型" width="100"><template #default="{ row }">{{ row.channel_type_display || row.channel_type }}</template></el-table-column>
+      <section class="resource-workspace">
+        <nav class="resource-tabs panel">
+          <button :class="{ active: resourceTab === 'channels' }" @click="resourceTab = 'channels'">通知渠道</button>
+          <button :class="{ active: resourceTab === 'recipients' }" @click="resourceTab = 'recipients'">接收人</button>
+          <button :class="{ active: resourceTab === 'groups' }" @click="resourceTab = 'groups'">接收组</button>
+        </nav>
+
+        <div v-if="resourceTab === 'channels'" class="panel table-panel resource-panel">
+          <div class="section-head">
+            <div><h2>通知渠道</h2><p>渠道是全局发送资源，由通知策略统一选择；接收组不重复绑定渠道。</p></div>
+            <el-button type="primary" :icon="Plus" @click="openChannel()">新增渠道</el-button>
+          </div>
+          <el-table :data="filteredChannels" stripe empty-text="暂无通知渠道">
+            <el-table-column prop="name" label="渠道名称" min-width="180" />
+            <el-table-column label="类型" width="110"><template #default="{ row }">{{ row.channel_type_display || channelTypeText(row.channel_type) }}</template></el-table-column>
+            <el-table-column label="恢复通知" width="110"><template #default="{ row }">{{ row.send_resolved ? '发送' : '不发送' }}</template></el-table-column>
+            <el-table-column prop="updated_at" label="更新时间" width="180"><template #default="{ row }">{{ formatTime(row.updated_at) }}</template></el-table-column>
             <el-table-column label="状态" width="90"><template #default="{ row }"><el-tag :type="row.is_enabled ? 'success' : 'info'">{{ row.is_enabled ? '启用' : '停用' }}</el-tag></template></el-table-column>
-            <el-table-column label="操作" width="150"><template #default="{ row }"><el-button link type="success" @click="testChannel(row)">测试</el-button><el-button link @click="openChannel(row)">编辑</el-button></template></el-table-column>
+            <el-table-column label="操作" width="160" fixed="right"><template #default="{ row }"><el-button link type="success" @click="testChannel(row)">测试</el-button><el-button link @click="openChannel(row)">编辑</el-button></template></el-table-column>
           </el-table>
         </div>
-        <div class="panel table-panel">
-          <div class="section-head"><div><h2>接收组</h2><p>通知策略引用平台统一接收组。</p></div></div>
-          <el-table :data="recipientGroups" stripe>
-            <el-table-column prop="name" label="接收组" min-width="150" />
-            <el-table-column label="成员" min-width="200"><template #default="{ row }">{{ recipientGroupMembers(row) }}</template></el-table-column>
+
+        <div v-else-if="resourceTab === 'recipients'" class="panel table-panel resource-panel">
+          <div class="section-head">
+            <div><h2>接收人</h2><p>统一维护手机号、邮箱及钉钉、飞书、企微身份，接收组从这里选择成员。</p></div>
+            <div class="resource-actions"><el-input v-model="resourceSearch" clearable :prefix-icon="Search" placeholder="搜索姓名、联系方式或所属组" /><el-button type="primary" :icon="Plus" @click="openRecipient()">新增接收人</el-button></div>
+          </div>
+          <el-table :data="filteredRecipients" stripe empty-text="暂无接收人">
+            <el-table-column label="接收人" min-width="190"><template #default="{ row }"><div class="primary-cell"><strong>{{ row.name }}</strong><small>{{ row.user_detail?.display_name || row.user_detail?.username || '独立联系人' }}</small></div></template></el-table-column>
+            <el-table-column label="联系方式" min-width="300"><template #default="{ row }"><div class="tag-list"><el-tag v-for="item in row.contact_channels" :key="item" size="small" effect="plain">{{ channelTypeText(item) }}</el-tag><span v-if="!row.contact_channels?.length" class="warning-text">未配置有效联系方式</span></div></template></el-table-column>
+            <el-table-column label="所属接收组" min-width="220"><template #default="{ row }">{{ (row.group_refs || []).map((item) => item.name).join('、') || '-' }}</template></el-table-column>
             <el-table-column label="状态" width="90"><template #default="{ row }"><el-tag :type="row.is_enabled ? 'success' : 'info'">{{ row.is_enabled ? '启用' : '停用' }}</el-tag></template></el-table-column>
+            <el-table-column label="操作" width="150" fixed="right"><template #default="{ row }"><el-button link @click="openRecipient(row)">编辑</el-button><el-popconfirm title="删除该接收人？" @confirm="removeRecipient(row)"><template #reference><el-button link type="danger">删除</el-button></template></el-popconfirm></template></el-table-column>
+          </el-table>
+        </div>
+
+        <div v-else class="panel table-panel resource-panel">
+          <div class="section-head">
+            <div><h2>接收组</h2><p>静态成员组由通知策略引用；列表直接展示成员健康度、联系方式覆盖和策略引用。</p></div>
+            <div class="resource-actions"><el-input v-model="resourceSearch" clearable :prefix-icon="Search" placeholder="搜索组名、成员或策略" /><el-button type="primary" :icon="Plus" @click="openRecipientGroup()">新增接收组</el-button></div>
+          </div>
+          <el-table :data="filteredRecipientGroups" stripe empty-text="暂无接收组">
+            <el-table-column label="接收组" min-width="210"><template #default="{ row }"><div class="primary-cell"><strong>{{ row.name }}</strong><small>{{ row.description || '未填写说明' }}</small></div></template></el-table-column>
+            <el-table-column label="成员" width="150"><template #default="{ row }"><span>{{ row.active_member_count || 0 }} / {{ row.member_count || 0 }} 可用</span></template></el-table-column>
+            <el-table-column label="联系方式覆盖" min-width="300"><template #default="{ row }"><div class="tag-list"><el-tag v-for="item in coverageTags(row)" :key="item.key" size="small" effect="plain">{{ item.label }} {{ item.count }}</el-tag><span v-if="!coverageTags(row).length" class="warning-text">无可用联系方式</span></div></template></el-table-column>
+            <el-table-column label="策略引用" min-width="220"><template #default="{ row }">{{ (row.policy_refs || []).map((item) => item.name).join('、') || '未引用' }}</template></el-table-column>
+            <el-table-column label="健康度" width="110"><template #default="{ row }"><el-tag :type="groupHealth(row).type">{{ groupHealth(row).label }}</el-tag></template></el-table-column>
+            <el-table-column label="状态" width="90"><template #default="{ row }"><el-tag :type="row.is_enabled ? 'success' : 'info'">{{ row.is_enabled ? '启用' : '停用' }}</el-tag></template></el-table-column>
+            <el-table-column label="操作" width="150" fixed="right"><template #default="{ row }"><el-button link @click="openRecipientGroup(row)">编辑</el-button><el-button link type="danger" :disabled="Boolean(row.policy_count)" @click="removeRecipientGroup(row)">删除</el-button></template></el-table-column>
           </el-table>
         </div>
       </section>
@@ -270,6 +303,50 @@
       <template #footer><el-button @click="channelDialog = false">取消</el-button><el-button type="primary" :loading="saving" @click="saveChannel">保存渠道</el-button></template>
     </el-dialog>
 
+    <el-dialog v-model="recipientDialog" :title="recipientForm.id ? '编辑接收人' : '新增接收人'" width="680px">
+      <el-form label-width="110px">
+        <el-form-item label="姓名" required><el-input v-model="recipientForm.name" /></el-form-item>
+        <el-form-item label="平台用户"><el-select v-model="recipientForm.user" clearable filterable placeholder="可选，关联平台账号"><el-option v-for="item in users" :key="item.id" :label="item.display_name || item.username" :value="item.id" /></el-select></el-form-item>
+        <div class="form-grid">
+          <el-form-item label="手机号"><el-input v-model="recipientForm.phone" /></el-form-item>
+          <el-form-item label="邮箱"><el-input v-model="recipientForm.email" /></el-form-item>
+          <el-form-item label="钉钉用户 ID"><el-input v-model="recipientForm.dingtalk_user_id" /></el-form-item>
+          <el-form-item label="飞书用户 ID"><el-input v-model="recipientForm.feishu_user_id" /></el-form-item>
+          <el-form-item label="企微用户 ID"><el-input v-model="recipientForm.wecom_user_id" /></el-form-item>
+          <el-form-item label="启用"><el-switch v-model="recipientForm.is_enabled" /></el-form-item>
+        </div>
+        <el-form-item label="说明"><el-input v-model="recipientForm.description" type="textarea" :rows="2" /></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="recipientDialog = false">取消</el-button><el-button type="primary" :loading="saving" @click="saveRecipient">保存接收人</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="recipientGroupDialog" :title="recipientGroupForm.id ? '编辑接收组' : '新增接收组'" width="860px">
+      <el-form label-width="110px">
+        <div class="form-grid">
+          <el-form-item label="接收组名称" required><el-input v-model="recipientGroupForm.name" /></el-form-item>
+          <el-form-item label="启用"><el-switch v-model="recipientGroupForm.is_enabled" /></el-form-item>
+        </div>
+        <el-form-item label="接收人">
+          <div class="member-selector">
+            <el-select v-model="recipientGroupForm.recipient_ids" multiple filterable collapse-tags collapse-tags-tooltip placeholder="选择已登记接收人">
+              <el-option v-for="item in recipients" :key="item.id" :label="recipientOptionLabel(item)" :value="item.id" :disabled="!item.is_enabled" />
+            </el-select>
+            <el-button plain :icon="Plus" @click="openRecipient(null, true)">内联新增</el-button>
+          </div>
+        </el-form-item>
+        <el-form-item label="平台用户"><el-select v-model="recipientGroupForm.user_ids" multiple filterable collapse-tags collapse-tags-tooltip placeholder="选择平台用户"><el-option v-for="item in users" :key="item.id" :label="item.display_name || item.username" :value="item.id" :disabled="item.is_active === false" /></el-select></el-form-item>
+        <el-form-item label="成员诊断">
+          <div class="group-diagnostic">
+            <strong>{{ recipientGroupDraft.memberCount }} 名成员，{{ recipientGroupDraft.reachableCount }} 名具备联系方式</strong>
+            <div class="tag-list"><el-tag v-for="item in recipientGroupDraft.coverage" :key="item.key" size="small" effect="plain">{{ item.label }} {{ item.count }}</el-tag><span v-if="!recipientGroupDraft.coverage.length" class="warning-text">当前成员没有可用于通知的联系方式</span></div>
+          </div>
+        </el-form-item>
+        <el-form-item v-if="recipientGroupForm.policy_refs?.length" label="引用策略"><div class="tag-list"><el-tag v-for="item in recipientGroupForm.policy_refs" :key="item.id" size="small">{{ item.name }}</el-tag></div></el-form-item>
+        <el-form-item label="说明"><el-input v-model="recipientGroupForm.description" type="textarea" :rows="2" /></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="recipientGroupDialog = false">取消</el-button><el-button type="primary" :loading="saving" @click="saveRecipientGroup">保存接收组</el-button></template>
+    </el-dialog>
+
     <el-dialog v-model="resultDialog" title="规则试运行结果" width="760px"><pre class="result-json">{{ runResult }}</pre></el-dialog>
   </div>
 </template>
@@ -282,22 +359,30 @@ import ObservabilityRouteTabs from '@/components/observability/ObservabilityRout
 import {
   createAlertNotificationChannel,
   createAlertNotificationPolicy,
+  createAlertRecipient,
+  createAlertRecipientGroup,
   createAlertRule,
   deleteAlertNotificationPolicy,
+  deleteAlertRecipient,
+  deleteAlertRecipientGroup,
   deleteAlertRule,
   evaluateAlertRule,
   getAlertNotificationChannels,
   getAlertNotificationPolicies,
+  getAlertRecipients,
   getAlertRecipientGroups,
   getAlertRuleTemplates,
   getAlertRules,
   getMetricDataSources,
+  getUsers,
   instantiateAlertRule,
   patchAlertRule,
   previewAlertNotificationPolicy,
   testAlertNotificationChannel,
   updateAlertNotificationChannel,
   updateAlertNotificationPolicy,
+  updateAlertRecipient,
+  updateAlertRecipientGroup,
 } from '@/api/modules/ops'
 
 const activeTab = ref('rules')
@@ -310,17 +395,23 @@ const ruleCategory = ref('')
 const ruleSearch = ref('')
 const policySourceFilter = ref('')
 const policySearch = ref('')
+const resourceTab = ref('channels')
+const resourceSearch = ref('')
 const metricSources = ref([])
 const templates = ref([])
 const rules = ref([])
 const policies = ref([])
 const channels = ref([])
+const recipients = ref([])
 const recipientGroups = ref([])
+const users = ref([])
 const instantiateDialog = ref(false)
 const ruleDialog = ref(false)
 const policyDialog = ref(false)
 const previewDialog = ref(false)
 const channelDialog = ref(false)
+const recipientDialog = ref(false)
+const recipientGroupDialog = ref(false)
 const resultDialog = ref(false)
 const runResult = ref('')
 
@@ -332,6 +423,9 @@ const ruleForm = reactive(emptyRuleForm())
 const policyForm = reactive(emptyPolicyForm())
 const previewForm = reactive({ metric_datasource_id: '', level: 'warning', labelsText: '{\n  "namespace": "xing-cloud",\n  "service": "api"\n}' })
 const channelForm = reactive(emptyChannelForm())
+const recipientForm = reactive(emptyRecipientForm())
+const recipientGroupForm = reactive(emptyRecipientGroupForm())
+const addRecipientToOpenGroup = ref(false)
 const previewResult = ref(null)
 
 const k8sTemplates = computed(() => templates.value.filter((item) => item.category === 'k8s' && item.source_type === 'prometheus'))
@@ -347,6 +441,38 @@ const filteredPolicies = computed(() => policies.value.filter((item) => {
   if (policySourceFilter.value && policySourceFilter.value !== 'global' && String(item.metric_datasource) !== policySourceFilter.value) return false
   return !policySearch.value.trim() || item.name.toLowerCase().includes(policySearch.value.trim().toLowerCase())
 }))
+const normalizedResourceSearch = computed(() => resourceSearch.value.trim().toLowerCase())
+const filteredChannels = computed(() => channels.value.filter((item) => {
+  const text = normalizedResourceSearch.value
+  return !text || [item.name, item.channel_type_display, item.channel_type].some((value) => String(value || '').toLowerCase().includes(text))
+}))
+const filteredRecipients = computed(() => recipients.value.filter((item) => {
+  const text = normalizedResourceSearch.value
+  return !text || [
+    item.name, item.phone, item.email, item.dingtalk_user_id, item.feishu_user_id,
+    item.wecom_user_id, item.user_detail?.display_name, item.user_detail?.username,
+    ...(item.group_refs || []).map((group) => group.name),
+  ].some((value) => String(value || '').toLowerCase().includes(text))
+}))
+const filteredRecipientGroups = computed(() => recipientGroups.value.filter((item) => {
+  const text = normalizedResourceSearch.value
+  return !text || [
+    item.name, item.description, recipientGroupMembers(item),
+    ...(item.policy_refs || []).map((policy) => policy.name),
+  ].some((value) => String(value || '').toLowerCase().includes(text))
+}))
+const recipientGroupDraft = computed(() => {
+  const selectedRecipients = recipients.value.filter((item) => recipientGroupForm.recipient_ids.includes(item.id) && item.is_enabled)
+  const selectedUsers = users.value.filter((item) => recipientGroupForm.user_ids.includes(item.id) && item.is_active !== false)
+  const coverage = contactCoverage(selectedRecipients, selectedUsers)
+  const reachableRecipients = selectedRecipients.filter((item) => item.contact_channels?.length).length
+  const reachableUsers = selectedUsers.filter((item) => item.email).length
+  return {
+    memberCount: selectedRecipients.length + selectedUsers.length,
+    reachableCount: reachableRecipients + reachableUsers,
+    coverage: coverageTags({ contact_coverage: coverage }),
+  }
+})
 
 function listOf(response) { return Array.isArray(response) ? response : (response?.results || []) }
 function sourceLabel(item) { return `${item.cluster_name || item.name}${item.environment ? ` · ${item.environment}` : ''}` }
@@ -358,20 +484,26 @@ function cloneMatchers(value) { return Array.isArray(value) ? value.map((item) =
 function emptyRuleForm() { return { id: null, metric_datasource: '', name: '', promql: '', operator: '>', threshold: 80, level: 'warning', duration_seconds: 300, interval_seconds: 60, auto_analyze: true, description: '' } }
 function emptyPolicyForm() { return { id: null, name: '', metric_datasource: '', min_level: '', priority: 100, continue_matching: false, matchers: [], channel_ids: [], recipient_group_ids: [], group_by: ['cluster', 'namespace', 'service'], group_wait_seconds: 30, group_interval_seconds: 300, repeat_interval_minutes: 30, mute_enabled: false, mute_range: [], escalation_after_minutes: 0, notify_on_fire: true, notify_on_resolved: true, notify_on_analysis: true, is_enabled: true, description: '' } }
 function emptyChannelForm() { return { id: null, name: '', channel_type: 'email', destination: '', secret: '', send_resolved: true, is_enabled: true, config: {} } }
+function emptyRecipientForm() { return { id: null, name: '', user: null, phone: '', email: '', dingtalk_user_id: '', feishu_user_id: '', wecom_user_id: '', is_enabled: true, description: '' } }
+function emptyRecipientGroupForm() { return { id: null, name: '', recipient_ids: [], user_ids: [], policy_refs: [], is_enabled: true, description: '' } }
 
 async function loadAll() {
   loading.value = true
   try {
-    const [sourceResult, templateResult, channelResult, groupResult] = await Promise.all([
+    const [sourceResult, templateResult, channelResult, recipientResult, groupResult, userResult] = await Promise.all([
       getMetricDataSources({ is_enabled: true, page_size: 200 }),
       getAlertRuleTemplates({ page_size: 200 }),
       getAlertNotificationChannels({ page_size: 200 }),
+      getAlertRecipients({ page_size: 200 }),
       getAlertRecipientGroups({ page_size: 200 }),
+      getUsers({ page_size: 500 }),
     ])
     metricSources.value = listOf(sourceResult)
     templates.value = listOf(templateResult)
     channels.value = listOf(channelResult)
+    recipients.value = listOf(recipientResult)
     recipientGroups.value = listOf(groupResult)
+    users.value = listOf(userResult)
     if (viewMode.value === 'source' && !selectedSourceId.value) selectedSourceId.value = metricSources.value[0]?.id || ''
     await Promise.all([loadRules(), loadPolicies()])
   } catch (error) {
@@ -443,13 +575,153 @@ async function saveChannel() { if (!channelForm.name.trim()) return ElMessage.wa
 async function testChannel(row) { try { await testAlertNotificationChannel(row.id); ElMessage.success('渠道测试已执行，请在通知记录中查看结果') } catch (error) { ElMessage.error(error.response?.data?.detail || '渠道测试失败') } }
 function recipientGroupMembers(row) { return [...(row.recipients || []).map((item) => item.name), ...(row.users || []).map((item) => item.display_name || item.username)].join('、') || '-' }
 
+function channelTypeText(value) {
+  return { email: '邮件', sms: '短信', voice: '语音', dingtalk: '钉钉', feishu: '飞书', wecom: '企微' }[value] || value
+}
+function coverageTags(row) {
+  const coverage = row?.contact_coverage || {}
+  return [
+    { key: 'email', label: '邮件', count: Number(coverage.email || 0) },
+    { key: 'phone', label: '手机', count: Number(coverage.phone || 0) },
+    { key: 'dingtalk', label: '钉钉', count: Number(coverage.dingtalk || 0) },
+    { key: 'feishu', label: '飞书', count: Number(coverage.feishu || 0) },
+    { key: 'wecom', label: '企微', count: Number(coverage.wecom || 0) },
+  ].filter((item) => item.count > 0)
+}
+function groupHealth(row) {
+  return {
+    ready: { label: '可通知', type: 'success' },
+    partial: { label: '部分缺失', type: 'warning' },
+    unreachable: { label: '不可达', type: 'danger' },
+    empty: { label: '无成员', type: 'info' },
+  }[row?.health_status] || { label: '待诊断', type: 'info' }
+}
+function contactCoverage(selectedRecipients, selectedUsers) {
+  return {
+    email: selectedRecipients.filter((item) => item.contact_channels?.includes('email')).length + selectedUsers.filter((item) => item.email).length,
+    phone: selectedRecipients.filter((item) => item.phone).length,
+    dingtalk: selectedRecipients.filter((item) => item.dingtalk_user_id).length,
+    feishu: selectedRecipients.filter((item) => item.feishu_user_id).length,
+    wecom: selectedRecipients.filter((item) => item.wecom_user_id).length,
+  }
+}
+function recipientOptionLabel(item) {
+  const channels = (item.contact_channels || []).map(channelTypeText).join('/')
+  return `${item.name}${channels ? ` · ${channels}` : ' · 无联系方式'}`
+}
+async function refreshRecipientResources() {
+  const [recipientResult, groupResult, userResult] = await Promise.all([
+    getAlertRecipients({ page_size: 200 }),
+    getAlertRecipientGroups({ page_size: 200 }),
+    getUsers({ page_size: 500 }),
+  ])
+  recipients.value = listOf(recipientResult)
+  recipientGroups.value = listOf(groupResult)
+  users.value = listOf(userResult)
+}
+function openRecipient(row = null, addToGroup = false) {
+  Object.assign(recipientForm, emptyRecipientForm(), row ? {
+    id: row.id,
+    name: row.name,
+    user: row.user || null,
+    phone: row.phone || '',
+    email: row.email || '',
+    dingtalk_user_id: row.dingtalk_user_id || '',
+    feishu_user_id: row.feishu_user_id || '',
+    wecom_user_id: row.wecom_user_id || '',
+    is_enabled: row.is_enabled,
+    description: row.description || '',
+  } : {})
+  addRecipientToOpenGroup.value = addToGroup
+  recipientDialog.value = true
+}
+async function saveRecipient() {
+  if (!recipientForm.name.trim()) return ElMessage.warning('请输入接收人姓名')
+  const payload = {
+    name: recipientForm.name.trim(), user: recipientForm.user || null,
+    phone: recipientForm.phone.trim(), email: recipientForm.email.trim(),
+    dingtalk_user_id: recipientForm.dingtalk_user_id.trim(), feishu_user_id: recipientForm.feishu_user_id.trim(),
+    wecom_user_id: recipientForm.wecom_user_id.trim(), is_enabled: recipientForm.is_enabled,
+    description: recipientForm.description.trim(),
+  }
+  saving.value = true
+  try {
+    const saved = recipientForm.id
+      ? await updateAlertRecipient(recipientForm.id, payload)
+      : await createAlertRecipient(payload)
+    if (!recipientForm.id && addRecipientToOpenGroup.value && saved?.id) recipientGroupForm.recipient_ids.push(saved.id)
+    recipientDialog.value = false
+    await refreshRecipientResources()
+    ElMessage.success('接收人已保存')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '接收人保存失败')
+  } finally {
+    saving.value = false
+    addRecipientToOpenGroup.value = false
+  }
+}
+async function removeRecipient(row) {
+  try {
+    await deleteAlertRecipient(row.id)
+    await refreshRecipientResources()
+    ElMessage.success('接收人已删除')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '接收人删除失败')
+  }
+}
+function openRecipientGroup(row = null) {
+  Object.assign(recipientGroupForm, emptyRecipientGroupForm(), row ? {
+    id: row.id,
+    name: row.name,
+    recipient_ids: (row.recipients || []).map((item) => item.id),
+    user_ids: (row.users || []).map((item) => item.id),
+    policy_refs: (row.policy_refs || []).map((item) => ({ ...item })),
+    is_enabled: row.is_enabled,
+    description: row.description || '',
+  } : {})
+  recipientGroupDialog.value = true
+}
+async function saveRecipientGroup() {
+  if (!recipientGroupForm.name.trim()) return ElMessage.warning('请输入接收组名称')
+  if (recipientGroupForm.is_enabled && !recipientGroupForm.recipient_ids.length && !recipientGroupForm.user_ids.length) return ElMessage.warning('启用的接收组至少需要一个成员')
+  const payload = {
+    name: recipientGroupForm.name.trim(),
+    recipient_ids: recipientGroupForm.recipient_ids,
+    user_ids: recipientGroupForm.user_ids,
+    is_enabled: recipientGroupForm.is_enabled,
+    description: recipientGroupForm.description.trim(),
+  }
+  saving.value = true
+  try {
+    if (recipientGroupForm.id) await updateAlertRecipientGroup(recipientGroupForm.id, payload)
+    else await createAlertRecipientGroup(payload)
+    recipientGroupDialog.value = false
+    await refreshRecipientResources()
+    ElMessage.success('接收组已保存')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '接收组保存失败')
+  } finally {
+    saving.value = false
+  }
+}
+async function removeRecipientGroup(row) {
+  if (row.policy_count) return ElMessage.warning(`接收组正在被 ${row.policy_count} 条通知策略引用，请先解除引用`)
+  try {
+    await deleteAlertRecipientGroup(row.id)
+    await refreshRecipientResources()
+    ElMessage.success('接收组已删除')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '接收组删除失败')
+  }
+}
+
 watch(activeTab, async (value) => { if (value === 'policies') await loadPolicies() })
 onMounted(loadAll)
 </script>
 
 <style scoped>
 .alert-rule-page { min-height: 100%; padding: 18px 22px 36px; color: #24364b; background: #f4f7fb; }
-.page-header, .work-tabs, .toolbar, .summary-grid, .table-panel, .resource-grid { max-width: 1760px; margin-left: auto; margin-right: auto; }
+.page-header, .work-tabs, .toolbar, .summary-grid, .table-panel, .resource-workspace { max-width: 1760px; margin-left: auto; margin-right: auto; }
 .page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 12px; }
 .eyebrow { color: #7890aa; font-size: 11px; letter-spacing: .08em; } h1 { margin: 5px 0; color: #172b42; font-size: 25px; } .page-header p, .section-head p { margin: 0; color: #73879d; font-size: 12px; }
 .header-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
@@ -462,10 +734,10 @@ onMounted(loadAll)
 .summary-card { display: grid; gap: 6px; padding: 13px 16px; border: 1px solid #dce5ef; border-top: 2px solid #6fa6e8; background: #fff; box-shadow: 0 4px 12px rgba(38,64,94,.05); } .summary-card span { color: #71869c; font-size: 12px; } .summary-card strong { color: #2778cf; font-size: 26px; } .summary-card.success { border-top-color: #20b486; } .summary-card.warning { border-top-color: #e5a12a; }
 .table-panel { padding: 12px; } .primary-cell, .source-cell { display: grid; gap: 3px; } .primary-cell strong, .source-cell strong { color: #263d55; } .primary-cell small, .source-cell small { color: #8496a8; font-size: 11px; font-family: Consolas, monospace; }
 .tag-list { display: flex; flex-wrap: wrap; gap: 4px; }.policy-toolbar { justify-content: flex-start; }
-.resource-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 10px; }.section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; }.section-head h2 { margin: 0 0 4px; font-size: 16px; }
+.resource-workspace { display: grid; gap: 10px; }.resource-tabs { display: flex; gap: 4px; padding: 4px; }.resource-tabs button { min-width: 120px; padding: 8px 16px; border: 0; color: #627991; background: transparent; cursor: pointer; }.resource-tabs button.active { color: #245bdb; background: #eaf2ff; box-shadow: inset 0 0 0 1px #cfe0f7; }.resource-panel { width: 100%; box-sizing: border-box; }.section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; }.section-head h2 { margin: 0 0 4px; font-size: 16px; }.resource-actions { display: flex; align-items: center; gap: 8px; min-width: 420px; }.resource-actions .el-input { min-width: 280px; }.warning-text { color: #d97706; font-size: 12px; }.member-selector { display: flex; align-items: center; gap: 8px; width: 100%; }.member-selector .el-select { flex: 1; }.group-diagnostic { display: grid; gap: 8px; width: 100%; padding: 10px 12px; border: 1px solid #dce5ef; background: #f8fafc; }.group-diagnostic strong { color: #344b63; font-size: 13px; }
 .form-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0 12px; }.form-grid.triple { grid-template-columns: repeat(3,minmax(0,1fr)); }.suffix { margin-left: 7px; color: #71869c; font-size: 12px; }.form-help { margin-left: 9px; color: #73879d; font-size: 12px; }
 .matcher-list { display: grid; gap: 7px; width: 100%; }.matcher-row { display: grid; grid-template-columns: 1.3fr 90px 1.3fr 54px; gap: 7px; }.preview-result { display: grid; gap: 8px; padding: 12px; border: 1px solid #dce5ef; background: #f8fafc; }.preview-result > div { display: flex; justify-content: space-between; gap: 10px; }.result-json { max-height: 560px; overflow: auto; padding: 14px; color: #dbeafe; background: #172334; white-space: pre-wrap; }
 :deep(.el-select), :deep(.el-input) { width: 100%; }:deep(.el-table) { --el-table-header-bg-color: #f5f8fb; --el-table-row-hover-bg-color: #f5f9ff; }
-@media (max-width: 1000px) { .summary-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }.resource-grid { grid-template-columns: 1fr; }.form-grid,.form-grid.triple { grid-template-columns: 1fr; } }
-@media (max-width: 700px) { .alert-rule-page { padding: 12px; }.page-header { flex-direction: column; }.header-actions { justify-content: flex-start; }.summary-grid { grid-template-columns: 1fr; }.toolbar-field,.source-field,.search-field { width: 100%; }.matcher-row { grid-template-columns: 1fr; }.work-tabs { overflow-x: auto; }.work-tabs button { min-width: 110px; } }
+@media (max-width: 1000px) { .summary-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }.form-grid,.form-grid.triple { grid-template-columns: 1fr; }.section-head { flex-direction: column; }.resource-actions { width: 100%; min-width: 0; } }
+@media (max-width: 700px) { .alert-rule-page { padding: 12px; }.page-header { flex-direction: column; }.header-actions { justify-content: flex-start; }.summary-grid { grid-template-columns: 1fr; }.toolbar-field,.source-field,.search-field { width: 100%; }.matcher-row { grid-template-columns: 1fr; }.work-tabs,.resource-tabs { overflow-x: auto; }.work-tabs button,.resource-tabs button { min-width: 110px; }.resource-actions,.member-selector { align-items: stretch; flex-direction: column; }.resource-actions .el-input { min-width: 0; width: 100%; } }
 </style>

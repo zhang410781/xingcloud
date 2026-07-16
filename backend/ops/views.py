@@ -1,7 +1,7 @@
 import json
 from datetime import timedelta
 import paramiko
-from django.db.models import Avg, Count, Q
+from django.db.models import Avg, Count, Prefetch, Q
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
@@ -2470,7 +2470,7 @@ class AlertRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets
 
 
 class AlertRecipientViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
-    queryset = AlertRecipient.objects.select_related('user').all()
+    queryset = AlertRecipient.objects.select_related('user').prefetch_related('groups').all()
     serializer_class = AlertRecipientSerializer
     search_fields = ['name', 'phone', 'email', 'description']
     event_module = 'ops'
@@ -2486,9 +2486,26 @@ class AlertRecipientViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, vie
         'destroy': ['ops.alert.config.manage'],
     }
 
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        group_refs = list(instance.groups.values('id', 'name').order_by('name')[:20])
+        if group_refs:
+            return Response(
+                {
+                    'detail': '接收人仍属于接收组，请先从接收组移除后再删除',
+                    'group_refs': group_refs,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        return super().destroy(request, *args, **kwargs)
+
 
 class AlertRecipientGroupViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
-    queryset = AlertRecipientGroup.objects.prefetch_related('recipients', 'users').all()
+    queryset = AlertRecipientGroup.objects.prefetch_related(
+        Prefetch('recipients', queryset=AlertRecipient.objects.select_related('user').prefetch_related('groups')),
+        'users',
+        'notification_policies',
+    ).all()
     serializer_class = AlertRecipientGroupSerializer
     pagination_class = AlertConfigPagination
     search_fields = ['name', 'description']
@@ -2504,6 +2521,19 @@ class AlertRecipientGroupViewSet(EventWallModelViewSetMixin, RBACPermissionMixin
         'partial_update': ['ops.alert.config.manage'],
         'destroy': ['ops.alert.config.manage'],
     }
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        policy_refs = list(instance.notification_policies.values('id', 'name').order_by('priority', 'id')[:20])
+        if policy_refs:
+            return Response(
+                {
+                    'detail': '接收组正在被通知策略引用，请先解除引用后再删除',
+                    'policy_refs': policy_refs,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        return super().destroy(request, *args, **kwargs)
 
 
 class AlertNotificationChannelViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):

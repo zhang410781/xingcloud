@@ -1511,10 +1511,34 @@ class AlertSilenceSerializer(serializers.ModelSerializer):
 
 class AlertRecipientSerializer(serializers.ModelSerializer):
     user_detail = AlertUserLiteSerializer(source='user', read_only=True)
+    contact_channels = serializers.SerializerMethodField()
+    group_refs = serializers.SerializerMethodField()
 
     class Meta:
         model = AlertRecipient
-        fields = '__all__'
+        fields = [
+            'id', 'name', 'user', 'user_detail', 'phone', 'email',
+            'dingtalk_user_id', 'feishu_user_id', 'wecom_user_id',
+            'contact_channels', 'group_refs', 'is_enabled', 'description',
+            'created_at', 'updated_at',
+        ]
+
+    def get_contact_channels(self, obj):
+        channels = []
+        if obj.email or (obj.user_id and obj.user and obj.user.email):
+            channels.append('email')
+        if obj.phone:
+            channels.extend(['sms', 'voice'])
+        if obj.dingtalk_user_id:
+            channels.append('dingtalk')
+        if obj.feishu_user_id:
+            channels.append('feishu')
+        if obj.wecom_user_id:
+            channels.append('wecom')
+        return channels
+
+    def get_group_refs(self, obj):
+        return [{'id': group.id, 'name': group.name} for group in obj.groups.all()]
 
 
 class AlertRecipientGroupSerializer(serializers.ModelSerializer):
@@ -1522,13 +1546,97 @@ class AlertRecipientGroupSerializer(serializers.ModelSerializer):
     user_ids = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), many=True, write_only=True, required=False)
     recipients = AlertRecipientSerializer(many=True, read_only=True)
     users = AlertUserLiteSerializer(many=True, read_only=True)
+    member_count = serializers.SerializerMethodField()
+    active_member_count = serializers.SerializerMethodField()
+    reachable_member_count = serializers.SerializerMethodField()
+    contact_coverage = serializers.SerializerMethodField()
+    health_status = serializers.SerializerMethodField()
+    policy_refs = serializers.SerializerMethodField()
+    policy_count = serializers.SerializerMethodField()
 
     class Meta:
         model = AlertRecipientGroup
         fields = [
             'id', 'name', 'description', 'is_enabled', 'created_at', 'updated_at',
             'recipient_ids', 'user_ids', 'recipients', 'users',
+            'member_count', 'active_member_count', 'reachable_member_count',
+            'contact_coverage', 'health_status', 'policy_refs', 'policy_count',
         ]
+
+    def _members(self, obj):
+        recipients = list(obj.recipients.all())
+        users = list(obj.users.all())
+        return recipients, users
+
+    def _active_members(self, obj):
+        recipients, users = self._members(obj)
+        return (
+            [item for item in recipients if item.is_enabled],
+            [item for item in users if item.is_active],
+        )
+
+    def get_member_count(self, obj):
+        recipients, users = self._members(obj)
+        return len(recipients) + len(users)
+
+    def get_active_member_count(self, obj):
+        recipients, users = self._active_members(obj)
+        return len(recipients) + len(users)
+
+    def get_contact_coverage(self, obj):
+        recipients, users = self._active_members(obj)
+        return {
+            'email': sum(1 for item in recipients if item.email or (item.user_id and item.user and item.user.email)) + sum(1 for item in users if item.email),
+            'phone': sum(1 for item in recipients if item.phone),
+            'dingtalk': sum(1 for item in recipients if item.dingtalk_user_id),
+            'feishu': sum(1 for item in recipients if item.feishu_user_id),
+            'wecom': sum(1 for item in recipients if item.wecom_user_id),
+        }
+
+    def get_reachable_member_count(self, obj):
+        recipients, users = self._active_members(obj)
+        recipient_count = sum(1 for item in recipients if (
+            item.email or item.phone or item.dingtalk_user_id or item.feishu_user_id
+            or item.wecom_user_id or (item.user_id and item.user and item.user.email)
+        ))
+        return recipient_count + sum(1 for item in users if item.email)
+
+    def get_health_status(self, obj):
+        active_count = self.get_active_member_count(obj)
+        reachable_count = self.get_reachable_member_count(obj)
+        if active_count == 0:
+            return 'empty'
+        if reachable_count == 0:
+            return 'unreachable'
+        if reachable_count < active_count:
+            return 'partial'
+        return 'ready'
+
+    def get_policy_refs(self, obj):
+        return [
+            {
+                'id': policy.id,
+                'name': policy.name,
+                'metric_datasource_id': policy.metric_datasource_id,
+            }
+            for policy in obj.notification_policies.all()
+        ]
+
+    def get_policy_count(self, obj):
+        return len(self.get_policy_refs(obj))
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        is_enabled = attrs.get('is_enabled', getattr(self.instance, 'is_enabled', True))
+        recipients = attrs.get('recipient_ids')
+        users = attrs.get('user_ids')
+        if recipients is None and self.instance is not None:
+            recipients = list(self.instance.recipients.all())
+        if users is None and self.instance is not None:
+            users = list(self.instance.users.all())
+        if is_enabled and not (recipients or users):
+            raise serializers.ValidationError('启用的接收组至少需要一个成员')
+        return attrs
 
     def create(self, validated_data):
         recipient_ids = validated_data.pop('recipient_ids', [])
