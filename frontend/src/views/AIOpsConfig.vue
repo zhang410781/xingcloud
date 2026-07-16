@@ -49,6 +49,17 @@
     </section>
 
     <section class="panel">
+      <div v-if="activeLoadErrors.length" class="load-diagnostics">
+        <el-alert
+          v-for="item in activeLoadErrors"
+          :key="item.key"
+          :title="`${item.label}加载失败`"
+          :description="item.message"
+          type="warning"
+          show-icon
+          :closable="false"
+        />
+      </div>
       <template v-if="activeTab === 'strategy'">
         <div class="section-toolbar strategy-actions">
           <div class="toolbar-head">
@@ -921,6 +932,7 @@ const { activeTab } = useRouteTabState({
 })
 const authStore = useAuthStore()
 const loading = reactive({ page: false })
+const loadErrors = reactive({})
 const saving = reactive({ config: false, provider: false, models: false, mcp: false, skill: false })
 
 const providers = ref([])
@@ -1081,6 +1093,22 @@ const actionGroups = computed(() => {
     .sort((a, b) => a.category.localeCompare(b.category, 'zh-CN'))
 })
 const skillMarketSummary = computed(() => skillMarketplace.value?.summary || {})
+const loadErrorTabs = {
+  config: ['strategy'],
+  providers: ['strategy', 'providers'],
+  presets: ['providers'],
+  mcp: ['strategy', 'mcp'],
+  skills: ['strategy', 'skills'],
+  marketplace: ['skills'],
+  actions: ['actions'],
+  manifest: ['mcp', 'orchestration'],
+  a2a: ['orchestration'],
+  runbooks: ['orchestration'],
+  review: ['orchestration'],
+}
+const activeLoadErrors = computed(() => Object.entries(loadErrors)
+  .filter(([key]) => (loadErrorTabs[key] || []).includes(activeTab.value))
+  .map(([key, error]) => ({ key, ...error })))
 const a2aOverview = computed(() => ({
   total: a2aPagination.total || a2aTasks.value.length,
   queued: a2aTasks.value.filter(item => item.status === 'queued').length,
@@ -1520,53 +1548,61 @@ function applyConfig(payload = {}) {
   })
 }
 
-async function optionalLoad(loader, fallback) {
+function loadErrorMessage(error) {
+  const responseData = error?.response?.data
+  const detail = responseData?.detail || responseData?.message
+  if (detail) return String(detail)
+  if (error?.response?.status) return `请求返回 HTTP ${error.response.status}`
+  return String(error?.message || '服务暂时不可用，请稍后重试')
+}
+
+async function loadResource(key, label, loader, apply) {
+  delete loadErrors[key]
   try {
-    return await loader()
-  } catch {
-    if (typeof fallback === 'function') {
-      fallback()
-    }
-    return null
+    const data = await loader()
+    apply(data)
+    return true
+  } catch (error) {
+    loadErrors[key] = { label, message: loadErrorMessage(error) }
+    return false
   }
 }
 
 async function loadAll() {
   loading.page = true
   try {
-    const [config, providerData, presetData, mcpData, skillData, marketData, actionData, mcpManifestData] = await Promise.all([
-      getAIOpsConfig(),
-      getAIOpsProviders(),
-      getAIOpsProviderPresets(),
-      getAIOpsMcpServers(),
-      getAIOpsSkills(),
-      getAIOpsSkillMarketplace(),
-      getAIOpsActions(),
-      optionalLoad(() => getAIOpsPlatformMcpManifest({ skipErrorMessage: true })),
-    ])
-    applyConfig(config)
-    providerPresets.value = presetData?.presets || []
-    providers.value = normalizeProviderList(providerData)
-    mcpServers.value = mcpData || []
-    skills.value = skillData || []
-    skillMarketplace.value = marketData || { summary: {}, items: [] }
-    actionRegistry.value = actionData?.actions || []
-    actionRegistrySummary.value = actionData?.summary || {}
-    platformMcpManifest.value = mcpManifestData || { tools: [], rate_limit: {} }
-    await Promise.all([
-      optionalLoad(() => loadA2ATasks(a2aPagination.page, { skipErrorMessage: true }), () => {
-        a2aPagination.total = 0
-        a2aTasks.value = []
+    const silent = { skipErrorMessage: true }
+    const coreLoads = [
+      loadResource('config', '智能体策略', () => getAIOpsConfig(silent), applyConfig),
+      loadResource('providers', '模型提供商', () => getAIOpsProviders(silent), data => {
+        providers.value = normalizeProviderList(data)
       }),
-      optionalLoad(() => loadRunbooks(runbookPagination.page, { skipErrorMessage: true }), () => {
-        runbookPagination.total = 0
-        runbooks.value = []
+      loadResource('mcp', 'MCP', () => getAIOpsMcpServers(silent), data => {
+        mcpServers.value = data || []
       }),
-      optionalLoad(() => loadReviewKnowledge(reviewPagination.page, { skipErrorMessage: true }), () => {
-        reviewPagination.total = 0
-        reviewKnowledge.value = []
+      loadResource('skills', 'Skill', () => getAIOpsSkills(silent), data => {
+        skills.value = data || []
       }),
-    ])
+      loadResource('actions', 'Action', () => getAIOpsActions(silent), data => {
+        actionRegistry.value = data?.actions || []
+        actionRegistrySummary.value = data?.summary || {}
+      }),
+    ]
+    const optionalLoads = [
+      loadResource('presets', '模型预设', () => getAIOpsProviderPresets(silent), data => {
+        providerPresets.value = data?.presets || []
+      }),
+      loadResource('marketplace', 'Skill 市场', () => getAIOpsSkillMarketplace(silent), data => {
+        skillMarketplace.value = data || { summary: {}, items: [] }
+      }),
+      loadResource('manifest', '平台 MCP 清单', () => getAIOpsPlatformMcpManifest(silent), data => {
+        platformMcpManifest.value = data || { tools: [], rate_limit: {} }
+      }),
+      loadResource('a2a', '协同任务', () => loadA2ATasks(a2aPagination.page, silent), () => {}),
+      loadResource('runbooks', 'Runbook', () => loadRunbooks(runbookPagination.page, silent), () => {}),
+      loadResource('review', '复盘知识', () => loadReviewKnowledge(reviewPagination.page, silent), () => {}),
+    ]
+    await Promise.all([...coreLoads, ...optionalLoads])
   } finally {
     loading.page = false
   }
@@ -2280,6 +2316,13 @@ onMounted(async () => {
   gap: 12px;
   flex-wrap: wrap;
   margin-bottom: 8px;
+}
+
+.load-diagnostics {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
 }
 
 .toolbar-actions {

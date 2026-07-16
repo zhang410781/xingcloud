@@ -161,6 +161,7 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
         model = AIOpsKnowledgeEnvironment
         fields = [
             'id', 'name', 'aliases', 'description', 'event_environments',
+            'metric_datasource', 'log_datasource',
             'metric_datasource_ids', 'log_datasource_ids', 'alert_environments',
             'k8s_cluster_ids', 'k8s_namespaces', 'docker_host_ids',
             'task_resource_environment_ids',
@@ -207,6 +208,26 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
                     normalized.append(normalized_item)
             attrs[field] = normalized
 
+        datasource_fields = (
+            ('metric_datasource', 'metric_datasource_ids'),
+            ('log_datasource', 'log_datasource_ids'),
+        )
+        for relation_field, legacy_field in datasource_fields:
+            legacy_ids = attrs.get(legacy_field)
+            if legacy_ids is not None and len(legacy_ids) > 1:
+                raise serializers.ValidationError({legacy_field: '每个知识环境只能绑定一个数据源'})
+            if relation_field in attrs:
+                datasource = attrs.get(relation_field)
+                attrs[legacy_field] = [datasource.pk] if datasource else []
+                continue
+            if legacy_field in attrs:
+                datasource_id = legacy_ids[0] if legacy_ids else None
+                model = self.Meta.model._meta.get_field(relation_field).remote_field.model
+                datasource = model.objects.filter(pk=datasource_id).first() if datasource_id else None
+                if datasource_id and datasource is None:
+                    raise serializers.ValidationError({legacy_field: '数据源不存在'})
+                attrs[relation_field] = datasource
+
         if 'k8s_namespaces' in attrs:
             value = attrs.get('k8s_namespaces')
             if value in (None, ''):
@@ -236,6 +257,10 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
         has_association = any(
             attrs.get(field, getattr(instance, field, [])) for field in association_fields
         )
+        has_association = has_association or any(
+            attrs.get(field, getattr(instance, field, None))
+            for field in ('metric_datasource', 'log_datasource')
+        )
         if not has_association:
             raise serializers.ValidationError('??????????????????????????K8s ???Docker ???????????')
         is_default = attrs.get('is_default', getattr(instance, 'is_default', False))
@@ -243,6 +268,19 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
         if is_default and not is_enabled:
             raise serializers.ValidationError({'is_default': '停用图谱不能设为默认'})
         return attrs
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        for relation_field, legacy_field in (
+            ('metric_datasource', 'metric_datasource_ids'),
+            ('log_datasource', 'log_datasource_ids'),
+        ):
+            datasource_id = data.get(relation_field)
+            if datasource_id is None:
+                legacy_ids = data.get(legacy_field) if isinstance(data.get(legacy_field), list) else []
+                datasource_id = legacy_ids[0] if legacy_ids else None
+            data[legacy_field] = [datasource_id] if datasource_id else []
+        return data
 
 
 class AIOpsPendingActionSerializer(serializers.ModelSerializer):

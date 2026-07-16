@@ -165,7 +165,7 @@ const datasourceCards = computed(() => [
     tone: 'is-log',
     total: logDataSources.value.length || overview.value.modules?.logs?.datasource_count || 0,
     enabled: logDataSources.value.filter(item => item.is_enabled).length || overview.value.modules?.logs?.enabled_count || 0,
-    route: '/logs/datasources',
+    route: '/observability/data-sources',
   },
   {
     key: 'metrics',
@@ -175,7 +175,7 @@ const datasourceCards = computed(() => [
     tone: 'is-metric',
     total: metricDataSources.value.length || overview.value.modules?.metrics?.datasource_count || 0,
     enabled: metricDataSources.value.filter(item => item.is_enabled).length || overview.value.modules?.metrics?.enabled_count || 0,
-    route: { path: '/observability/metrics', query: { tab: 'datasources' } },
+    route: '/observability/data-sources',
   },
   {
     key: 'alerts',
@@ -185,7 +185,7 @@ const datasourceCards = computed(() => [
     tone: 'is-alert',
     total: alertRules.value.length,
     enabled: alertRules.value.filter(item => item.is_enabled).length,
-    route: { path: '/alerts', query: { tab: 'rules' } },
+    route: '/observability/rules',
   },
 ])
 

@@ -745,8 +745,9 @@ function firstTextValue(source = {}, keys = []) {
 }
 
 function routePageCode(path = '') {
-  if (path.startsWith('/alerts')) return 'alerts'
-  if (path.startsWith('/logs/query')) return 'logs.query'
+  if (path.startsWith('/observability/alerts')) return 'alerts'
+  if (path.startsWith('/observability/rules')) return 'alert.rules'
+  if (path.startsWith('/observability/logs')) return 'logs.query'
   if (path.startsWith('/platform/k8s') || path.startsWith('/containers/k8s')) return 'platform.k8s'
   if (path.startsWith('/platform/container-envs') || path.startsWith('/containers/docker')) return 'platform.container_envs'
   if (path.startsWith('/observability/metrics')) return 'observability.metrics'

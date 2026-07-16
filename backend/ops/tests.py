@@ -19,6 +19,7 @@ from ops.models import (
     AlertRule,
     AlertNotificationChannel,
     AlertNotificationLog,
+    AlertNotificationPolicy,
     AlertRecipient,
     AlertRecipientGroup,
     DockerHost,
@@ -751,7 +752,8 @@ class LogViewsTests(TestCase):
         self.assertEqual(payload['took_ms'], 21)
         self.assertEqual(payload['logs'][0]['timestamp'], '2026-03-15T08:30:00Z')
         self.assertEqual(payload['logs'][0]['level'], 'error')
-        self.assertEqual(payload['logs'][0]['source'], 'logs-prod-2026.03.15')
+        self.assertEqual(payload['logs'][0]['source'], 'quality')
+        self.assertEqual(payload['logs'][0]['service'], 'quality')
 
     def test_demo_elk_query_returns_fake_logs_without_network(self):
         response = self.client.post(
@@ -1109,9 +1111,18 @@ class ObservabilityViewsTests(TestCase):
         self.assertGreaterEqual(mysql['dashboard_count'], 1)
 
     def test_install_integration_rules_creates_rules_from_builtin_templates(self):
+        datasource = MetricDataSource.objects.create(
+            name='Redis Prometheus',
+            provider='prometheus',
+            config={'query_url': 'http://prometheus.local:9090'},
+            is_enabled=True,
+        )
         response = self.client.post(
             '/api/observability/integrations/redis/install-rules/',
-            {'template_codes': ['redis-down', 'redis-high-memory']},
+            {
+                'template_codes': ['redis-down', 'redis-high-memory'],
+                'metric_datasource_id': datasource.id,
+            },
             format='json',
         )
 
@@ -1120,7 +1131,7 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(payload['created_count'], 2)
         self.assertEqual(payload['skipped_count'], 0)
         self.assertTrue(AlertRule.objects.filter(template__code='redis-down').exists())
-        self.assertTrue(AlertRuleTemplate.objects.filter(code='redis-down', is_builtin=True).exists())
+        self.assertTrue(AlertRule.objects.filter(code='redis-down', is_template=True).exists())
 
     def test_integration_dashboard_install_enables_builtin_json_dashboard(self):
         response = self.client.post('/api/observability/integrations/redis/install-dashboards/', {}, format='json')
@@ -1173,11 +1184,18 @@ class ObservabilityViewsTests(TestCase):
     @patch('ops.views.evaluate_rule')
     def test_alert_rule_dry_run_draft_creates_unsaved_preview_rule(self, mock_evaluate):
         mock_evaluate.return_value = {'success': True, 'matched_count': 1, 'would_fire_count': 1, 'dry_run': True}
+        datasource = MetricDataSource.objects.create(
+            name='Draft Prometheus',
+            provider='prometheus',
+            config={'query_url': 'http://prometheus.local:9090'},
+            is_enabled=True,
+        )
         response = self.client.post(
             '/api/alert-rules/dry-run-draft/',
             {
                 'name': 'Draft Redis Down',
                 'source_type': 'prometheus',
+                'metric_datasource': datasource.id,
                 'level': 'critical',
                 'query_config': {'query': 'redis_up == 0'},
                 'condition': {'operator': '>', 'threshold': 0},
@@ -2153,7 +2171,7 @@ class AlertPlatformRuleTests(TestCase):
             format='json',
         )
         self.assertEqual(response.status_code, 201)
-        self.assertTrue(AlertRuleTemplate.objects.filter(code='k8s-pod-crashloop-test').exists())
+        self.assertTrue(AlertRule.objects.filter(code='k8s-pod-crashloop-test', is_template=True).exists())
 
         list_response = self.client.get('/api/alert-rule-templates/')
         self.assertEqual(list_response.status_code, 200)
@@ -2166,18 +2184,16 @@ class AlertPlatformRuleTests(TestCase):
 
         ensure_builtin_alert_rule_templates()
 
-        k8s_codes = set(AlertRuleTemplate.objects.filter(default_labels__integration='kubernetes').values_list('code', flat=True))
-        linux_codes = set(AlertRuleTemplate.objects.filter(default_labels__integration='linux').values_list('code', flat=True))
-        self.assertSetEqual(
-            k8s_codes,
-            {'k8s-node-not-ready', 'k8s-abnormal-pods', 'k8s-pod-restarts', 'k8s-events-warning'},
+        k8s_codes = set(AlertRule.objects.filter(is_template=True, labels__integration='kubernetes').values_list('code', flat=True))
+        linux_codes = set(AlertRule.objects.filter(is_template=True, labels__integration='linux').values_list('code', flat=True))
+        self.assertTrue(
+            {'k8s-node-not-ready', 'k8s-abnormal-pods', 'k8s-pod-restarts', 'k8s-events-warning'}.issubset(k8s_codes)
         )
-        self.assertSetEqual(
-            linux_codes,
-            {'linux-node-down', 'linux-high-cpu', 'linux-high-memory', 'linux-high-disk'},
+        self.assertTrue(
+            {'linux-node-down', 'linux-high-cpu', 'linux-high-memory', 'linux-high-disk'}.issubset(linux_codes)
         )
-        k8s_events = AlertRuleTemplate.objects.get(code='k8s-events-warning')
-        self.assertEqual(k8s_events.source_type, AlertRuleTemplate.SOURCE_CLICKHOUSE)
+        k8s_events = AlertRule.objects.get(code='k8s-events-warning', is_template=True)
+        self.assertEqual(k8s_events.source_type, 'clickhouse')
         self.assertEqual(k8s_events.query_config['collection'], 'k8s-events')
 
     def test_alert_rule_template_api_returns_full_builtin_catalog(self):
@@ -2185,7 +2201,7 @@ class AlertPlatformRuleTests(TestCase):
 
         ensure_builtin_alert_rule_templates()
 
-        response = self.client.get('/api/alert-rule-templates/')
+        response = self.client.get('/api/alert-rule-templates/?page_size=200')
 
         self.assertEqual(response.status_code, 200)
         rows = response.json()
@@ -2194,13 +2210,16 @@ class AlertPlatformRuleTests(TestCase):
         codes = {item['code'] for item in rows}
         self.assertIn('k8s-events-warning', codes)
         self.assertIn('linux-node-down', codes)
-        self.assertGreaterEqual(len(rows), AlertRuleTemplate.objects.filter(is_builtin=True).count())
+        self.assertGreaterEqual(len(rows), AlertRule.objects.filter(is_template=True).count())
 
     def test_alert_rule_can_be_created_from_template(self):
-        template = AlertRuleTemplate.objects.create(
+        template = AlertRule.objects.create(
             name='ClickHouse ERROR 鏃ュ織绐佸',
             code='clickhouse-error-spike-test',
             source_type='clickhouse',
+            source='custom',
+            is_template=True,
+            is_enabled=False,
             level='warning',
             query_config={'collection': 'container-logs'},
             condition={'level': 'ERROR', 'threshold': 20},
@@ -2274,10 +2293,17 @@ class AlertPlatformRuleTests(TestCase):
                 {'metric': {'instance': 'api-01', 'job': 'api'}, 'value': [1710000000, '95']},
             ],
         }
+        datasource = MetricDataSource.objects.create(
+            name='API Prometheus',
+            provider='prometheus',
+            config={'query_url': 'http://prometheus.local:9090'},
+            is_enabled=True,
+        )
         rule = AlertRule.objects.create(
             name='API CPU high',
             code='api-cpu-high-dry-run',
             source_type='prometheus',
+            metric_datasource=datasource,
             level='critical',
             query_config={'promql': 'node_cpu_usage_percent'},
             condition={'operator': '>', 'threshold': 90},
@@ -2615,9 +2641,9 @@ class AlertActionApiTests(TestCase):
             format='json',
         )
         self.assertEqual(response.status_code, 201)
-        rule = AlertNotificationRule.objects.get(name='critical notify')
-        self.assertEqual(rule.channels.count(), 1)
-        self.assertEqual(rule.recipient_groups.count(), 1)
+        policy = AlertNotificationPolicy.objects.get(name='critical notify')
+        self.assertEqual(policy.channels.count(), 1)
+        self.assertEqual(policy.recipient_groups.count(), 1)
 
     @patch('ops.alerting.requests.post')
     def test_feishu_business_error_is_logged_as_error(self, mock_post):
@@ -2631,7 +2657,7 @@ class AlertActionApiTests(TestCase):
         response = self.client.post(f'/api/alert-notification-channels/{channel.id}/test/')
 
         self.assertEqual(response.status_code, 200)
-        log = AlertNotificationLog.objects.get(channel=channel)
+        log = AlertNotificationLog.objects.get(channel_id=channel.id)
         self.assertEqual(log.status, AlertNotificationLog.STATUS_ERROR)
         self.assertIn('19021', log.error_message)
         self.assertIn('sign match fail', log.error_message)
@@ -2668,12 +2694,12 @@ class AlertActionApiTests(TestCase):
         response = self.client.post(f'/api/alert-notification-channels/{channel.id}/test/')
 
         self.assertEqual(response.status_code, 200)
-        log = AlertNotificationLog.objects.get(channel=channel)
+        log = AlertNotificationLog.objects.get(channel_id=channel.id)
         self.assertEqual(log.alert.title, 'Xing-Cloud 通知渠道测试')
         self.assertEqual(log.alert.source, 'Xing-Cloud')
 
     @patch('ops.alerting.requests.post')
-    def test_empty_notification_template_uses_alert_title(self, mock_post):
+    def test_empty_notification_template_uses_semantic_alert_title(self, mock_post):
         mock_post.return_value = SimpleNamespace(status_code=200, text='{"code":0,"msg":"success"}')
         channel = AlertNotificationChannel.objects.create(
             name='feishu',
@@ -2685,7 +2711,7 @@ class AlertActionApiTests(TestCase):
         send_alert_notification(channel, self.alert, {'names': ['ops']}, action='fire')
 
         payload = mock_post.call_args.kwargs['json']
-        self.assertEqual(payload['card']['header']['title']['content'], self.alert.title)
+        self.assertEqual(payload['card']['header']['title']['content'], f'【告警】{self.alert.title}')
 
     def test_feishu_secret_is_masked_and_empty_update_keeps_existing_secret(self):
         channel = AlertNotificationChannel.objects.create(

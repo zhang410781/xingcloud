@@ -1,0 +1,460 @@
+<template>
+  <div class="alert-rule-page">
+    <header class="page-header">
+      <div>
+        <span class="eyebrow">可观测 / 告警配置</span>
+        <h1>K8S 多数据源告警规则</h1>
+        <p>每个 Prometheus 源拥有独立规则实例，通知渠道全局复用，策略按数据源和标签路由。</p>
+      </div>
+      <div class="header-actions">
+        <el-button :icon="Refresh" :loading="loading" @click="loadAll">刷新</el-button>
+        <el-button v-if="activeTab === 'rules'" type="primary" :icon="Plus" @click="openInstantiate">从模板创建</el-button>
+        <el-button v-if="activeTab === 'rules'" type="primary" plain @click="openCustomRule">自定义规则</el-button>
+        <el-button v-if="activeTab === 'policies'" type="primary" :icon="Plus" @click="openPolicy">新增通知策略</el-button>
+      </div>
+    </header>
+
+    <ObservabilityRouteTabs group="observability" />
+
+    <nav class="work-tabs">
+      <button :class="{ active: activeTab === 'rules' }" @click="activeTab = 'rules'">告警规则</button>
+      <button :class="{ active: activeTab === 'policies' }" @click="activeTab = 'policies'">通知策略</button>
+      <button :class="{ active: activeTab === 'resources' }" @click="activeTab = 'resources'">通知资源</button>
+    </nav>
+
+    <template v-if="activeTab === 'rules'">
+      <section class="toolbar panel">
+        <div class="toolbar-field view-switch">
+          <span>管理视图</span>
+          <el-segmented v-model="viewMode" :options="viewModeOptions" @change="handleViewMode" />
+        </div>
+        <div class="toolbar-field source-field">
+          <span>{{ viewMode === 'source' ? '当前 K8S 源' : '指标数据源' }}</span>
+          <el-select v-model="selectedSourceId" clearable filterable placeholder="全部数据源" @change="loadRules">
+            <el-option v-for="item in metricSources" :key="item.id" :label="sourceLabel(item)" :value="item.id" />
+          </el-select>
+        </div>
+        <div class="toolbar-field">
+          <span>规则分类</span>
+          <el-select v-model="ruleCategory" clearable placeholder="全部分类">
+            <el-option label="Kubernetes" value="k8s" />
+            <el-option label="服务器" value="server" />
+            <el-option label="数据库" value="database" />
+            <el-option label="存储" value="storage" />
+          </el-select>
+        </div>
+        <div class="toolbar-field search-field">
+          <span>搜索</span>
+          <el-input v-model="ruleSearch" clearable :prefix-icon="Search" placeholder="规则名称 / 编码 / 模板" />
+        </div>
+      </section>
+
+      <section class="summary-grid">
+        <div class="summary-card"><span>规则实例</span><strong>{{ filteredRules.length }}</strong></div>
+        <div class="summary-card success"><span>已启用</span><strong>{{ enabledRuleCount }}</strong></div>
+        <div class="summary-card warning"><span>待绑定</span><strong>{{ bindingRuleCount }}</strong></div>
+        <div class="summary-card"><span>内置模板</span><strong>{{ templates.length }}</strong></div>
+      </section>
+
+      <section class="panel table-panel">
+        <el-table :data="filteredRules" stripe v-loading="loading" empty-text="当前数据源暂无规则实例">
+          <el-table-column label="规则" min-width="240">
+            <template #default="{ row }">
+              <div class="primary-cell">
+                <strong>{{ row.name }}</strong>
+                <small>{{ row.code }}</small>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="数据源 / 集群" min-width="200">
+            <template #default="{ row }">
+              <div v-if="row.metric_datasource_detail" class="source-cell">
+                <strong>{{ row.metric_datasource_detail.cluster_name || row.metric_datasource_detail.name }}</strong>
+                <small>{{ row.metric_datasource_detail.environment || row.metric_datasource_detail.name }}</small>
+              </div>
+              <el-tag v-else type="warning" effect="plain">待绑定</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="模板" min-width="180">
+            <template #default="{ row }">{{ row.template_detail?.name || row.source || '自定义' }}</template>
+          </el-table-column>
+          <el-table-column label="级别" width="90">
+            <template #default="{ row }"><el-tag :type="levelType(row.level)">{{ levelText(row.level) }}</el-tag></template>
+          </el-table-column>
+          <el-table-column label="状态" width="110">
+            <template #default="{ row }">
+              <el-switch :model-value="row.is_enabled" :disabled="row.needs_binding" @change="toggleRule(row, $event)" />
+            </template>
+          </el-table-column>
+          <el-table-column label="最近评估" width="170">
+            <template #default="{ row }">{{ formatTime(row.last_evaluated_at) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="210" fixed="right">
+            <template #default="{ row }">
+              <el-button link type="primary" @click="runRule(row)">试运行</el-button>
+              <el-button link @click="openEditRule(row)">编辑</el-button>
+              <el-popconfirm title="删除该规则实例？" @confirm="removeRule(row)">
+                <template #reference><el-button link type="danger">删除</el-button></template>
+              </el-popconfirm>
+            </template>
+          </el-table-column>
+        </el-table>
+      </section>
+    </template>
+
+    <template v-else-if="activeTab === 'policies'">
+      <section class="toolbar panel policy-toolbar">
+        <div class="toolbar-field source-field">
+          <span>策略作用域</span>
+          <el-select v-model="policySourceFilter" clearable placeholder="全部策略">
+            <el-option label="全局策略" value="global" />
+            <el-option v-for="item in metricSources" :key="item.id" :label="sourceLabel(item)" :value="String(item.id)" />
+          </el-select>
+        </div>
+        <div class="toolbar-field search-field">
+          <span>搜索</span>
+          <el-input v-model="policySearch" clearable :prefix-icon="Search" placeholder="策略名称" />
+        </div>
+        <el-button plain @click="openPreview">预览路由结果</el-button>
+      </section>
+
+      <section class="panel table-panel">
+        <el-table :data="filteredPolicies" stripe v-loading="loading" empty-text="暂无通知策略">
+          <el-table-column label="策略" min-width="210">
+            <template #default="{ row }"><div class="primary-cell"><strong>{{ row.name }}</strong><small>优先级 {{ row.priority }}</small></div></template>
+          </el-table-column>
+          <el-table-column label="作用域" min-width="190">
+            <template #default="{ row }">
+              <el-tag v-if="!row.metric_datasource" effect="plain">全局</el-tag>
+              <span v-else>{{ row.metric_datasource_detail?.cluster_name || row.metric_datasource_detail?.name }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="匹配条件" min-width="240">
+            <template #default="{ row }">
+              <div class="tag-list">
+                <el-tag v-for="(item, index) in row.matchers" :key="index" size="small" effect="plain">{{ item.key }} {{ item.operator || item.op || '=' }} {{ item.value }}</el-tag>
+                <span v-if="!row.matchers?.length">全部标签</span>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="渠道" min-width="180">
+            <template #default="{ row }"><span>{{ (row.channels || []).map((item) => item.name).join('、') || '-' }}</span></template>
+          </el-table-column>
+          <el-table-column label="聚合" min-width="180">
+            <template #default="{ row }">{{ (row.group_by || []).join(' / ') || '平台默认维度' }}</template>
+          </el-table-column>
+          <el-table-column label="状态" width="90">
+            <template #default="{ row }"><el-tag :type="row.is_enabled ? 'success' : 'info'">{{ row.is_enabled ? '启用' : '停用' }}</el-tag></template>
+          </el-table-column>
+          <el-table-column label="操作" width="160" fixed="right">
+            <template #default="{ row }">
+              <el-button link @click="openPolicy(row)">编辑</el-button>
+              <el-popconfirm title="删除该通知策略？" @confirm="removePolicy(row)">
+                <template #reference><el-button link type="danger">删除</el-button></template>
+              </el-popconfirm>
+            </template>
+          </el-table-column>
+        </el-table>
+      </section>
+    </template>
+
+    <template v-else>
+      <section class="resource-grid">
+        <div class="panel table-panel">
+          <div class="section-head"><div><h2>通知渠道</h2><p>邮件、钉钉、飞书、企微、短信和语音渠道全局复用。</p></div><el-button type="primary" :icon="Plus" @click="openChannel">新增渠道</el-button></div>
+          <el-table :data="channels" stripe>
+            <el-table-column prop="name" label="渠道名称" min-width="150" />
+            <el-table-column label="类型" width="100"><template #default="{ row }">{{ row.channel_type_display || row.channel_type }}</template></el-table-column>
+            <el-table-column label="状态" width="90"><template #default="{ row }"><el-tag :type="row.is_enabled ? 'success' : 'info'">{{ row.is_enabled ? '启用' : '停用' }}</el-tag></template></el-table-column>
+            <el-table-column label="操作" width="150"><template #default="{ row }"><el-button link type="success" @click="testChannel(row)">测试</el-button><el-button link @click="openChannel(row)">编辑</el-button></template></el-table-column>
+          </el-table>
+        </div>
+        <div class="panel table-panel">
+          <div class="section-head"><div><h2>接收组</h2><p>通知策略引用平台统一接收组。</p></div></div>
+          <el-table :data="recipientGroups" stripe>
+            <el-table-column prop="name" label="接收组" min-width="150" />
+            <el-table-column label="成员" min-width="200"><template #default="{ row }">{{ recipientGroupMembers(row) }}</template></el-table-column>
+            <el-table-column label="状态" width="90"><template #default="{ row }"><el-tag :type="row.is_enabled ? 'success' : 'info'">{{ row.is_enabled ? '启用' : '停用' }}</el-tag></template></el-table-column>
+          </el-table>
+        </div>
+      </section>
+    </template>
+
+    <el-dialog v-model="instantiateDialog" title="从模板创建规则实例" width="640px">
+      <el-form label-width="120px">
+        <el-form-item label="K8S 数据源" required><el-select v-model="instanceForm.metric_datasource_id" filterable><el-option v-for="item in metricSources" :key="item.id" :label="sourceLabel(item)" :value="item.id" /></el-select></el-form-item>
+        <el-form-item label="内置模板" required><el-select v-model="instanceForm.template_code" filterable><el-option v-for="item in k8sTemplates" :key="item.code" :label="item.name" :value="item.code" /></el-select></el-form-item>
+        <el-form-item label="规则名称"><el-input v-model="instanceForm.name" placeholder="留空使用模板名称和集群名称" /></el-form-item>
+        <div class="form-grid">
+          <el-form-item label="评估间隔"><el-input-number v-model="instanceForm.interval_seconds" :min="30" :step="30" /><span class="suffix">秒</span></el-form-item>
+          <el-form-item label="持续时间"><el-input-number v-model="instanceForm.duration_seconds" :min="0" :step="30" /><span class="suffix">秒</span></el-form-item>
+        </div>
+        <el-form-item label="智能研判"><el-switch v-model="instanceForm.auto_analyze" /><span class="form-help">告警命中后关联指标、日志和知识图谱进行分析</span></el-form-item>
+        <el-alert type="info" :closable="false" title="新实例默认停用，请先试运行确认指标存在后再启用。" />
+      </el-form>
+      <template #footer><el-button @click="instantiateDialog = false">取消</el-button><el-button type="primary" :loading="saving" @click="saveInstance">创建实例</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="ruleDialog" :title="ruleForm.id ? '编辑规则实例' : '创建自定义 Prometheus 规则'" width="760px">
+      <el-form label-width="120px">
+        <el-form-item label="指标数据源" required><el-select v-model="ruleForm.metric_datasource" filterable><el-option v-for="item in metricSources" :key="item.id" :label="sourceLabel(item)" :value="item.id" /></el-select></el-form-item>
+        <el-form-item label="规则名称" required><el-input v-model="ruleForm.name" /></el-form-item>
+        <el-form-item label="PromQL" required><el-input v-model="ruleForm.promql" type="textarea" :rows="4" spellcheck="false" /></el-form-item>
+        <div class="form-grid">
+          <el-form-item label="比较符"><el-select v-model="ruleForm.operator"><el-option label="大于" value=">" /><el-option label="大于等于" value=">=" /><el-option label="小于" value="<" /><el-option label="小于等于" value="<=" /><el-option label="等于" value="==" /></el-select></el-form-item>
+          <el-form-item label="告警阈值"><el-input-number v-model="ruleForm.threshold" /></el-form-item>
+          <el-form-item label="持续时间"><el-input-number v-model="ruleForm.duration_seconds" :min="0" /><span class="suffix">秒</span></el-form-item>
+          <el-form-item label="评估间隔"><el-input-number v-model="ruleForm.interval_seconds" :min="30" /><span class="suffix">秒</span></el-form-item>
+        </div>
+        <el-form-item label="告警级别"><el-radio-group v-model="ruleForm.level"><el-radio-button value="warning">警告</el-radio-button><el-radio-button value="critical">严重</el-radio-button><el-radio-button value="info">信息</el-radio-button></el-radio-group></el-form-item>
+        <el-form-item label="智能研判"><el-switch v-model="ruleForm.auto_analyze" /><span class="form-help">告警命中后自动研判，也可在告警详情中手动重新研判</span></el-form-item>
+        <el-form-item label="说明"><el-input v-model="ruleForm.description" type="textarea" :rows="2" /></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="ruleDialog = false">取消</el-button><el-button type="primary" :loading="saving" @click="saveRule">保存</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="policyDialog" :title="policyForm.id ? '编辑通知策略' : '新增通知策略'" width="820px">
+      <el-form label-width="130px">
+        <el-form-item label="策略名称" required><el-input v-model="policyForm.name" /></el-form-item>
+        <div class="form-grid">
+          <el-form-item label="作用数据源"><el-select v-model="policyForm.metric_datasource" clearable placeholder="全局策略"><el-option v-for="item in metricSources" :key="item.id" :label="sourceLabel(item)" :value="item.id" /></el-select></el-form-item>
+          <el-form-item label="最低级别"><el-select v-model="policyForm.min_level" clearable placeholder="全部级别"><el-option label="信息" value="info" /><el-option label="警告" value="warning" /><el-option label="严重" value="critical" /></el-select></el-form-item>
+          <el-form-item label="优先级"><el-input-number v-model="policyForm.priority" :min="0" /></el-form-item>
+          <el-form-item label="继续匹配"><el-switch v-model="policyForm.continue_matching" /></el-form-item>
+        </div>
+        <el-form-item label="标签匹配">
+          <div class="matcher-list">
+            <div v-for="(item, index) in policyForm.matchers" :key="index" class="matcher-row">
+              <el-input v-model="item.key" placeholder="namespace / service / label.team" />
+              <el-select v-model="item.operator"><el-option v-for="op in matcherOperators" :key="op" :label="op" :value="op" /></el-select>
+              <el-input v-model="item.value" placeholder="匹配值" />
+              <el-button text type="danger" @click="policyForm.matchers.splice(index, 1)">删除</el-button>
+            </div>
+            <el-button plain size="small" @click="policyForm.matchers.push(emptyMatcher())">添加匹配条件</el-button>
+          </div>
+        </el-form-item>
+        <el-form-item label="通知渠道"><el-select v-model="policyForm.channel_ids" multiple filterable><el-option v-for="item in channels" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item>
+        <el-form-item label="接收组"><el-select v-model="policyForm.recipient_group_ids" multiple filterable><el-option v-for="item in recipientGroups" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item>
+        <el-form-item label="聚合维度"><el-select v-model="policyForm.group_by" multiple allow-create filterable><el-option v-for="item in groupByOptions" :key="item" :label="item" :value="item" /></el-select></el-form-item>
+        <div class="form-grid triple">
+          <el-form-item label="首次等待"><el-input-number v-model="policyForm.group_wait_seconds" :min="0" /><span class="suffix">秒</span></el-form-item>
+          <el-form-item label="同组间隔"><el-input-number v-model="policyForm.group_interval_seconds" :min="0" /><span class="suffix">秒</span></el-form-item>
+          <el-form-item label="重复通知"><el-input-number v-model="policyForm.repeat_interval_minutes" :min="1" /><span class="suffix">分钟</span></el-form-item>
+        </div>
+        <el-form-item label="静默时段"><el-switch v-model="policyForm.mute_enabled" /><el-time-picker v-if="policyForm.mute_enabled" v-model="policyForm.mute_range" is-range format="HH:mm" value-format="HH:mm" start-placeholder="开始" end-placeholder="结束" /></el-form-item>
+        <el-form-item label="升级等待"><el-input-number v-model="policyForm.escalation_after_minutes" :min="0" /><span class="suffix">分钟，0 表示不升级</span></el-form-item>
+        <el-form-item label="通知动作"><el-checkbox v-model="policyForm.notify_on_fire">触发通知</el-checkbox><el-checkbox v-model="policyForm.notify_on_resolved">恢复通知</el-checkbox><el-checkbox v-model="policyForm.notify_on_analysis">研判完成通知</el-checkbox><el-checkbox v-model="policyForm.is_enabled">启用策略</el-checkbox></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="policyDialog = false">取消</el-button><el-button type="primary" :loading="saving" @click="savePolicy">保存策略</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="previewDialog" title="通知策略路由预览" width="650px">
+      <el-form label-width="110px">
+        <el-form-item label="指标数据源"><el-select v-model="previewForm.metric_datasource_id"><el-option v-for="item in metricSources" :key="item.id" :label="sourceLabel(item)" :value="item.id" /></el-select></el-form-item>
+        <el-form-item label="告警级别"><el-select v-model="previewForm.level"><el-option label="信息" value="info" /><el-option label="警告" value="warning" /><el-option label="严重" value="critical" /></el-select></el-form-item>
+        <el-form-item label="标签 JSON"><el-input v-model="previewForm.labelsText" type="textarea" :rows="5" spellcheck="false" /></el-form-item>
+        <el-form-item><el-button type="primary" :loading="previewing" @click="runPreview">开始匹配</el-button></el-form-item>
+      </el-form>
+      <div v-if="previewResult" class="preview-result"><strong>命中 {{ previewResult.matched_count }} 条策略</strong><div v-for="item in previewResult.policies" :key="item.id"><b>{{ item.name }}</b><span>{{ (item.channels || []).map((channel) => channel.name).join('、') || '未配置渠道' }}</span></div></div>
+    </el-dialog>
+
+    <el-dialog v-model="channelDialog" :title="channelForm.id ? '编辑通知渠道' : '新增通知渠道'" width="600px">
+      <el-form label-width="110px">
+        <el-form-item label="渠道名称" required><el-input v-model="channelForm.name" /></el-form-item>
+        <el-form-item label="渠道类型"><el-select v-model="channelForm.channel_type"><el-option label="邮件" value="email" /><el-option label="钉钉" value="dingtalk" /><el-option label="飞书" value="feishu" /><el-option label="企微" value="wecom" /><el-option label="短信" value="sms" /><el-option label="语音" value="voice" /></el-select></el-form-item>
+        <el-form-item v-if="channelForm.channel_type === 'email'" label="收件地址"><el-input v-model="channelForm.destination" placeholder="多个邮箱使用逗号分隔" /></el-form-item>
+        <el-form-item v-else label="Webhook URL"><el-input v-model="channelForm.destination" type="textarea" :rows="3" /></el-form-item>
+        <el-form-item label="通知行为"><el-checkbox v-model="channelForm.send_resolved">发送恢复通知</el-checkbox><el-checkbox v-model="channelForm.is_enabled">启用渠道</el-checkbox></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="channelDialog = false">取消</el-button><el-button type="primary" :loading="saving" @click="saveChannel">保存渠道</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="resultDialog" title="规则试运行结果" width="760px"><pre class="result-json">{{ runResult }}</pre></el-dialog>
+  </div>
+</template>
+
+<script setup>
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
+import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
+import {
+  createAlertNotificationChannel,
+  createAlertNotificationPolicy,
+  createAlertRule,
+  deleteAlertNotificationPolicy,
+  deleteAlertRule,
+  evaluateAlertRule,
+  getAlertNotificationChannels,
+  getAlertNotificationPolicies,
+  getAlertRecipientGroups,
+  getAlertRuleTemplates,
+  getAlertRules,
+  getMetricDataSources,
+  instantiateAlertRule,
+  patchAlertRule,
+  previewAlertNotificationPolicy,
+  testAlertNotificationChannel,
+  updateAlertNotificationChannel,
+  updateAlertNotificationPolicy,
+} from '@/api/modules/ops'
+
+const activeTab = ref('rules')
+const loading = ref(false)
+const saving = ref(false)
+const previewing = ref(false)
+const viewMode = ref('all')
+const selectedSourceId = ref('')
+const ruleCategory = ref('')
+const ruleSearch = ref('')
+const policySourceFilter = ref('')
+const policySearch = ref('')
+const metricSources = ref([])
+const templates = ref([])
+const rules = ref([])
+const policies = ref([])
+const channels = ref([])
+const recipientGroups = ref([])
+const instantiateDialog = ref(false)
+const ruleDialog = ref(false)
+const policyDialog = ref(false)
+const previewDialog = ref(false)
+const channelDialog = ref(false)
+const resultDialog = ref(false)
+const runResult = ref('')
+
+const viewModeOptions = [{ label: '统一列表', value: 'all' }, { label: '按 K8S 源', value: 'source' }]
+const matcherOperators = ['=', '!=', '=~', '!~']
+const groupByOptions = ['cluster', 'namespace', 'service', 'resource', 'resource_type', 'alert_rule_code', 'label.team']
+const instanceForm = reactive({ metric_datasource_id: '', template_code: '', name: '', interval_seconds: 60, duration_seconds: 0, auto_analyze: true })
+const ruleForm = reactive(emptyRuleForm())
+const policyForm = reactive(emptyPolicyForm())
+const previewForm = reactive({ metric_datasource_id: '', level: 'warning', labelsText: '{\n  "namespace": "xing-cloud",\n  "service": "api"\n}' })
+const channelForm = reactive(emptyChannelForm())
+const previewResult = ref(null)
+
+const k8sTemplates = computed(() => templates.value.filter((item) => item.category === 'k8s' && item.source_type === 'prometheus'))
+const filteredRules = computed(() => rules.value.filter((item) => {
+  if (ruleCategory.value && item.category !== ruleCategory.value) return false
+  const text = ruleSearch.value.trim().toLowerCase()
+  return !text || [item.name, item.code, item.source, item.template_detail?.name].some((value) => String(value || '').toLowerCase().includes(text))
+}))
+const enabledRuleCount = computed(() => filteredRules.value.filter((item) => item.is_enabled).length)
+const bindingRuleCount = computed(() => filteredRules.value.filter((item) => item.needs_binding).length)
+const filteredPolicies = computed(() => policies.value.filter((item) => {
+  if (policySourceFilter.value === 'global' && item.metric_datasource) return false
+  if (policySourceFilter.value && policySourceFilter.value !== 'global' && String(item.metric_datasource) !== policySourceFilter.value) return false
+  return !policySearch.value.trim() || item.name.toLowerCase().includes(policySearch.value.trim().toLowerCase())
+}))
+
+function listOf(response) { return Array.isArray(response) ? response : (response?.results || []) }
+function sourceLabel(item) { return `${item.cluster_name || item.name}${item.environment ? ` · ${item.environment}` : ''}` }
+function levelText(value) { return { critical: '严重', warning: '警告', info: '信息' }[value] || value }
+function levelType(value) { return { critical: 'danger', warning: 'warning', info: 'info' }[value] || 'info' }
+function formatTime(value) { return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-' }
+function emptyMatcher() { return { key: '', operator: '=', value: '' } }
+function emptyRuleForm() { return { id: null, metric_datasource: '', name: '', promql: '', operator: '>', threshold: 80, level: 'warning', duration_seconds: 300, interval_seconds: 60, auto_analyze: true, description: '' } }
+function emptyPolicyForm() { return { id: null, name: '', metric_datasource: '', min_level: '', priority: 100, continue_matching: false, matchers: [], channel_ids: [], recipient_group_ids: [], group_by: ['cluster', 'namespace', 'service'], group_wait_seconds: 30, group_interval_seconds: 300, repeat_interval_minutes: 30, mute_enabled: false, mute_range: [], escalation_after_minutes: 0, notify_on_fire: true, notify_on_resolved: true, notify_on_analysis: true, is_enabled: true, description: '' } }
+function emptyChannelForm() { return { id: null, name: '', channel_type: 'email', destination: '', send_resolved: true, is_enabled: true, config: {} } }
+
+async function loadAll() {
+  loading.value = true
+  try {
+    const [sourceResult, templateResult, channelResult, groupResult] = await Promise.all([
+      getMetricDataSources({ is_enabled: true, page_size: 200 }),
+      getAlertRuleTemplates({ page_size: 200 }),
+      getAlertNotificationChannels({ page_size: 200 }),
+      getAlertRecipientGroups({ page_size: 200 }),
+    ])
+    metricSources.value = listOf(sourceResult)
+    templates.value = listOf(templateResult)
+    channels.value = listOf(channelResult)
+    recipientGroups.value = listOf(groupResult)
+    if (viewMode.value === 'source' && !selectedSourceId.value) selectedSourceId.value = metricSources.value[0]?.id || ''
+    await Promise.all([loadRules(), loadPolicies()])
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '告警配置加载失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+async function loadRules() { rules.value = listOf(await getAlertRules({ is_template: false, metric_datasource_id: selectedSourceId.value || undefined, page_size: 200 })) }
+async function loadPolicies() { policies.value = listOf(await getAlertNotificationPolicies({ page_size: 200 })) }
+async function handleViewMode() { if (viewMode.value === 'source' && !selectedSourceId.value) selectedSourceId.value = metricSources.value[0]?.id || ''; if (viewMode.value === 'all') selectedSourceId.value = ''; await loadRules() }
+
+function openInstantiate() { Object.assign(instanceForm, { metric_datasource_id: selectedSourceId.value || metricSources.value[0]?.id || '', template_code: k8sTemplates.value[0]?.code || '', name: '', interval_seconds: 60, duration_seconds: 0, auto_analyze: true }); instantiateDialog.value = true }
+async function saveInstance() {
+  if (!instanceForm.metric_datasource_id || !instanceForm.template_code) return ElMessage.warning('请选择 K8S 数据源和模板')
+  saving.value = true
+  try {
+    const overrides = { interval_seconds: instanceForm.interval_seconds, duration_seconds: instanceForm.duration_seconds, auto_analyze: instanceForm.auto_analyze, is_enabled: false }
+    if (instanceForm.name.trim()) overrides.name = instanceForm.name.trim()
+    await instantiateAlertRule({ template_code: instanceForm.template_code, metric_datasource_id: instanceForm.metric_datasource_id, overrides })
+    instantiateDialog.value = false
+    selectedSourceId.value = viewMode.value === 'source' ? instanceForm.metric_datasource_id : selectedSourceId.value
+    await loadRules()
+    ElMessage.success('规则实例已创建，请先试运行后启用')
+  } catch (error) { ElMessage.error(error.response?.data?.detail || '规则实例创建失败') } finally { saving.value = false }
+}
+
+function openCustomRule() { Object.assign(ruleForm, emptyRuleForm(), { metric_datasource: selectedSourceId.value || metricSources.value[0]?.id || '' }); ruleDialog.value = true }
+function openEditRule(row) { Object.assign(ruleForm, emptyRuleForm(), { id: row.id, metric_datasource: row.metric_datasource || '', name: row.name, promql: row.query_config?.promql || row.query_config?.query || '', operator: row.condition?.operator || '>', threshold: row.condition?.threshold ?? row.condition?.levels?.[0]?.threshold ?? 80, level: row.level, duration_seconds: row.duration_seconds || 0, interval_seconds: row.interval_seconds || 60, auto_analyze: row.auto_analyze ?? true, description: row.description || '' }); ruleDialog.value = true }
+async function saveRule() {
+  if (!ruleForm.metric_datasource || !ruleForm.name.trim() || !ruleForm.promql.trim()) return ElMessage.warning('请完整填写数据源、名称和 PromQL')
+  const source = metricSources.value.find((item) => item.id === ruleForm.metric_datasource)
+  const payload = { metric_datasource: ruleForm.metric_datasource, name: ruleForm.name.trim(), category: 'k8s', source_type: 'prometheus', source: 'custom', level: ruleForm.level, query_config: { query: ruleForm.promql.trim() }, condition: { operator: ruleForm.operator, threshold: Number(ruleForm.threshold) }, labels: { environment: source?.environment || '', cluster: source?.cluster_name || '', metric_datasource_id: String(ruleForm.metric_datasource) }, annotations: {}, interval_seconds: ruleForm.interval_seconds, duration_seconds: ruleForm.duration_seconds, notify_enabled: true, auto_analyze: ruleForm.auto_analyze, is_enabled: false, is_template: false, description: ruleForm.description }
+  saving.value = true
+  try { if (ruleForm.id) await patchAlertRule(ruleForm.id, payload); else await createAlertRule(payload); ruleDialog.value = false; await loadRules(); ElMessage.success('规则已保存') } catch (error) { ElMessage.error(error.response?.data?.detail || error.response?.data?.metric_datasource?.[0] || '规则保存失败') } finally { saving.value = false }
+}
+async function toggleRule(row, value) { try { await patchAlertRule(row.id, { is_enabled: value }); row.is_enabled = value; ElMessage.success(value ? '规则已启用' : '规则已停用') } catch (error) { ElMessage.error(error.response?.data?.detail || '状态更新失败') } }
+async function runRule(row) { try { const result = await evaluateAlertRule(row.id, { dry_run: true }); runResult.value = JSON.stringify(result, null, 2); resultDialog.value = true } catch (error) { runResult.value = JSON.stringify(error.response?.data || { detail: error.message }, null, 2); resultDialog.value = true } }
+async function removeRule(row) { await deleteAlertRule(row.id); await loadRules(); ElMessage.success('规则已删除') }
+
+function openPolicy(row = null) {
+  const base = emptyPolicyForm()
+  if (row) Object.assign(base, row, { channel_ids: (row.channels || []).map((item) => item.id), recipient_group_ids: (row.recipient_groups || []).map((item) => item.id), matchers: structuredClone(row.matchers || []), mute_enabled: Boolean(row.mute_schedule?.enabled), mute_range: row.mute_schedule?.start_time && row.mute_schedule?.end_time ? [row.mute_schedule.start_time, row.mute_schedule.end_time] : [], escalation_after_minutes: row.escalation_steps?.[0]?.after_minutes || 0 })
+  Object.assign(policyForm, base)
+  policyDialog.value = true
+}
+async function savePolicy() {
+  if (!policyForm.name.trim()) return ElMessage.warning('请输入策略名称')
+  const payload = { name: policyForm.name.trim(), metric_datasource: policyForm.metric_datasource || null, min_level: policyForm.min_level || '', priority: policyForm.priority, continue_matching: policyForm.continue_matching, matchers: policyForm.matchers.filter((item) => item.key && item.value !== ''), channel_ids: policyForm.channel_ids, recipient_group_ids: policyForm.recipient_group_ids, group_by: policyForm.group_by, group_wait_seconds: policyForm.group_wait_seconds, group_interval_seconds: policyForm.group_interval_seconds, repeat_interval_minutes: policyForm.repeat_interval_minutes, mute_schedule: policyForm.mute_enabled ? { enabled: true, start_time: policyForm.mute_range?.[0] || '00:00', end_time: policyForm.mute_range?.[1] || '00:00' } : {}, inhibition_matchers: [], escalation_steps: policyForm.escalation_after_minutes > 0 ? [{ name: '一级升级', after_minutes: policyForm.escalation_after_minutes, channel_ids: policyForm.channel_ids }] : [], notify_on_fire: policyForm.notify_on_fire, notify_on_resolved: policyForm.notify_on_resolved, notify_on_analysis: policyForm.notify_on_analysis, is_enabled: policyForm.is_enabled, description: policyForm.description || '' }
+  saving.value = true
+  try { if (policyForm.id) await updateAlertNotificationPolicy(policyForm.id, payload); else await createAlertNotificationPolicy(payload); policyDialog.value = false; await loadPolicies(); ElMessage.success('通知策略已保存') } catch (error) { ElMessage.error(error.response?.data?.detail || '通知策略保存失败') } finally { saving.value = false }
+}
+async function removePolicy(row) { await deleteAlertNotificationPolicy(row.id); await loadPolicies(); ElMessage.success('通知策略已删除') }
+function openPreview() { previewForm.metric_datasource_id ||= selectedSourceId.value || metricSources.value[0]?.id || ''; previewResult.value = null; previewDialog.value = true }
+async function runPreview() { previewing.value = true; try { previewResult.value = await previewAlertNotificationPolicy({ metric_datasource_id: previewForm.metric_datasource_id, level: previewForm.level, labels: JSON.parse(previewForm.labelsText || '{}') }) } catch (error) { ElMessage.error(error.message || '标签 JSON 格式错误') } finally { previewing.value = false } }
+
+function openChannel(row = null) { const base = emptyChannelForm(); if (row) Object.assign(base, row, { destination: row.channel_type === 'email' ? (row.config?.to || []).join(', ') : row.config?.webhook_url || row.config?.url || '' }); Object.assign(channelForm, base); channelDialog.value = true }
+async function saveChannel() { if (!channelForm.name.trim()) return ElMessage.warning('请输入渠道名称'); const config = channelForm.channel_type === 'email' ? { ...(channelForm.config || {}), to: channelForm.destination.split(',').map((item) => item.trim()).filter(Boolean) } : { ...(channelForm.config || {}), webhook_url: channelForm.destination.trim() }; const payload = { name: channelForm.name.trim(), channel_type: channelForm.channel_type, config, send_resolved: channelForm.send_resolved, is_enabled: channelForm.is_enabled }; saving.value = true; try { if (channelForm.id) await updateAlertNotificationChannel(channelForm.id, payload); else await createAlertNotificationChannel(payload); channelDialog.value = false; channels.value = listOf(await getAlertNotificationChannels()); ElMessage.success('通知渠道已保存') } catch (error) { ElMessage.error(error.response?.data?.detail || '渠道保存失败') } finally { saving.value = false } }
+async function testChannel(row) { try { await testAlertNotificationChannel(row.id); ElMessage.success('渠道测试已执行，请在通知记录中查看结果') } catch (error) { ElMessage.error(error.response?.data?.detail || '渠道测试失败') } }
+function recipientGroupMembers(row) { return [...(row.recipients || []).map((item) => item.name), ...(row.users || []).map((item) => item.display_name || item.username)].join('、') || '-' }
+
+watch(activeTab, async (value) => { if (value === 'policies') await loadPolicies() })
+onMounted(loadAll)
+</script>
+
+<style scoped>
+.alert-rule-page { min-height: 100%; padding: 18px 22px 36px; color: #24364b; background: #f4f7fb; }
+.page-header, .work-tabs, .toolbar, .summary-grid, .table-panel, .resource-grid { max-width: 1760px; margin-left: auto; margin-right: auto; }
+.page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 12px; }
+.eyebrow { color: #7890aa; font-size: 11px; letter-spacing: .08em; } h1 { margin: 5px 0; color: #172b42; font-size: 25px; } .page-header p, .section-head p { margin: 0; color: #73879d; font-size: 12px; }
+.header-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.panel { border: 1px solid #dce5ef; background: #fff; box-shadow: 0 5px 16px rgba(38,64,94,.06); }
+.work-tabs { display: flex; gap: 4px; margin-top: 12px; margin-bottom: 10px; padding: 4px; border: 1px solid #dce5ef; background: #fff; }
+.work-tabs button { min-width: 130px; padding: 9px 18px; border: 0; color: #627991; background: transparent; cursor: pointer; } .work-tabs button.active { color: #fff; background: #3478d4; }
+.toolbar { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; padding: 11px; }
+.toolbar-field { display: grid; gap: 5px; width: 180px; } .toolbar-field span { color: #617891; font-size: 11px; } .source-field { width: 280px; } .search-field { flex: 1; min-width: 250px; } .view-switch { width: auto; }
+.summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 10px; margin-bottom: 10px; }
+.summary-card { display: grid; gap: 6px; padding: 13px 16px; border: 1px solid #dce5ef; border-top: 2px solid #6fa6e8; background: #fff; box-shadow: 0 4px 12px rgba(38,64,94,.05); } .summary-card span { color: #71869c; font-size: 12px; } .summary-card strong { color: #2778cf; font-size: 26px; } .summary-card.success { border-top-color: #20b486; } .summary-card.warning { border-top-color: #e5a12a; }
+.table-panel { padding: 12px; } .primary-cell, .source-cell { display: grid; gap: 3px; } .primary-cell strong, .source-cell strong { color: #263d55; } .primary-cell small, .source-cell small { color: #8496a8; font-size: 11px; font-family: Consolas, monospace; }
+.tag-list { display: flex; flex-wrap: wrap; gap: 4px; }.policy-toolbar { justify-content: flex-start; }
+.resource-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 10px; }.section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 10px; }.section-head h2 { margin: 0 0 4px; font-size: 16px; }
+.form-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0 12px; }.form-grid.triple { grid-template-columns: repeat(3,minmax(0,1fr)); }.suffix { margin-left: 7px; color: #71869c; font-size: 12px; }.form-help { margin-left: 9px; color: #73879d; font-size: 12px; }
+.matcher-list { display: grid; gap: 7px; width: 100%; }.matcher-row { display: grid; grid-template-columns: 1.3fr 90px 1.3fr 54px; gap: 7px; }.preview-result { display: grid; gap: 8px; padding: 12px; border: 1px solid #dce5ef; background: #f8fafc; }.preview-result > div { display: flex; justify-content: space-between; gap: 10px; }.result-json { max-height: 560px; overflow: auto; padding: 14px; color: #dbeafe; background: #172334; white-space: pre-wrap; }
+:deep(.el-select), :deep(.el-input) { width: 100%; }:deep(.el-table) { --el-table-header-bg-color: #f5f8fb; --el-table-row-hover-bg-color: #f5f9ff; }
+@media (max-width: 1000px) { .summary-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }.resource-grid { grid-template-columns: 1fr; }.form-grid,.form-grid.triple { grid-template-columns: 1fr; } }
+@media (max-width: 700px) { .alert-rule-page { padding: 12px; }.page-header { flex-direction: column; }.header-actions { justify-content: flex-start; }.summary-grid { grid-template-columns: 1fr; }.toolbar-field,.source-field,.search-field { width: 100%; }.matcher-row { grid-template-columns: 1fr; }.work-tabs { overflow-x: auto; }.work-tabs button { min-width: 110px; } }
+</style>

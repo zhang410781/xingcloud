@@ -6,8 +6,8 @@
           <span class="hero-icon">
             <el-icon><Bell /></el-icon>
           </span>
-          <h2>&#x544A;&#x8B66;&#x4E2D;&#x5FC3;</h2>
-          <p class="page-inline-desc">&#x7EDF;&#x4E00;&#x63A5;&#x6536;&#x591A;&#x6E90;&#x544A;&#x8B66;&#xFF0C;&#x652F;&#x6301;&#x805A;&#x5408;&#x3001;&#x6291;&#x5236;&#x3001;&#x5C4F;&#x853D;&#x3001;&#x8BA4;&#x9886;&#x3001;&#x5347;&#x7EA7;&#x4E0E;&#x901A;&#x77E5;&#x5206;&#x53D1;</p>
+          <h2>{{ pageTitle }}</h2>
+          <p class="page-inline-desc">{{ pageDescription }}</p>
         </div>
       </div>
       <div class="hero-actions">
@@ -17,7 +17,7 @@
 
     <ObservabilityRouteTabs group="observability" />
 
-    <div class="audit-grid alert-top-stats">
+    <div v-if="isEventWorkspace" class="audit-grid alert-top-stats">
       <button
         v-for="card in statCards"
         :key="card.key"
@@ -31,24 +31,12 @@
       </button>
     </div>
 
-    <div class="neo-tabs theme-blue alert-center-tabs">
-      <button v-if="canViewAlerts" class="neo-tab-btn" :class="{ active: activeTab === 'events' }" @click="switchTab('events')">
-        <el-icon style="margin-right: 4px;"><Bell /></el-icon>&#x544A;&#x8B66;&#x4E8B;&#x4EF6;
-      </button>
+    <div v-if="!isEventWorkspace" class="neo-tabs theme-blue alert-center-tabs">
       <button v-if="canViewConfig" class="neo-tab-btn" :class="{ active: activeTab === 'rules' }" @click="switchTab('rules')">
         <el-icon style="margin-right: 4px;"><Operation /></el-icon>&#x544A;&#x8B66;&#x89C4;&#x5219;
       </button>
-      <button v-if="canViewConfig" class="neo-tab-btn" :class="{ active: activeTab === 'templates' }" @click="switchTab('templates')">
-        <el-icon style="margin-right: 4px;"><Document /></el-icon>&#x89C4;&#x5219;&#x6A21;&#x677F;
-      </button>
       <button v-if="canViewConfig" class="neo-tab-btn" :class="{ active: activeTab === 'notify' }" @click="switchTab('notify')">
         <el-icon style="margin-right: 4px;"><Setting /></el-icon>&#x901A;&#x77E5;&#x914D;&#x7F6E;
-      </button>
-      <button v-if="canViewAlerts" class="neo-tab-btn" :class="{ active: activeTab === 'logs' }" @click="switchTab('logs')">
-        <el-icon style="margin-right: 4px;"><Document /></el-icon>&#x901A;&#x77E5;&#x8BB0;&#x5F55;
-      </button>
-      <button v-if="canViewConfig" class="neo-tab-btn" :class="{ active: activeTab === 'policies' }" @click="switchTab('policies')">
-        <el-icon style="margin-right: 4px;"><Operation /></el-icon>&#x9759;&#x9ED8;&#x6291;&#x5236;
       </button>
     </div>
 
@@ -157,7 +145,12 @@
         <el-table v-else :data="groups" stripe size="small" v-loading="loading" class="data-table">
           <el-table-column label="&#x5206;&#x7EC4;" min-width="280">
             <template #default="{ row }">
-              <div class="group-key">{{ row.key }}</div>
+              <div v-if="groupDimensionEntries(row).length" class="group-dimensions">
+                <span v-for="item in groupDimensionEntries(row)" :key="item.key">
+                  <strong>{{ item.label }}：</strong>{{ item.value }}
+                </span>
+              </div>
+              <div v-else class="group-key">{{ row.key }}</div>
               <div class="sub-line">{{ row.sample_title }}</div>
             </template>
           </el-table-column>
@@ -377,7 +370,9 @@
           <el-table-column prop="interval_seconds" label="&#x95F4;&#x9694;" width="90">
             <template #default="{ row }">{{ row.interval_seconds }}s</template>
           </el-table-column>
-          <el-table-column prop="template_name" label="&#x6A21;&#x677F;" min-width="150" show-overflow-tooltip />
+          <el-table-column prop="source" label="&#x6765;&#x6E90;" min-width="150" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.source === 'custom' ? '&#x81EA;&#x5B9A;&#x4E49;' : '&#x5185;&#x7F6E;&#x89C4;&#x5219;' }}</template>
+          </el-table-column>
           <el-table-column prop="last_triggered_at" label="&#x6700;&#x8FD1;&#x89E6;&#x53D1;" width="160">
             <template #default="{ row }">{{ formatTime(row.last_triggered_at) }}</template>
           </el-table-column>
@@ -398,15 +393,6 @@
           </el-table-column>
         </el-table>
       </section>
-    </template>
-
-    <template v-if="activeTab === 'templates' && canViewConfig">
-      <RuleTemplateCatalog
-        v-loading="configLoading"
-        :templates="alertRuleTemplates"
-        @import-rule="openAlertRuleFromTemplate"
-        @preview="openAlertRuleTemplate"
-      />
     </template>
 
     <template v-if="activeTab === 'logs' && canViewAlerts">
@@ -483,6 +469,39 @@
               </article>
             </div>
           </section>
+          <section class="alert-detail-card analysis-card" v-loading="alertAnalysisLoading">
+            <div class="detail-section-title">
+              <h4>智能研判</h4>
+              <div class="analysis-heading-actions">
+                <el-tag v-if="alertAnalysisLatest" size="small" :type="analysisStatusType(alertAnalysisLatest.status)">
+                  {{ analysisStatusText(alertAnalysisLatest.status) }}
+                </el-tag>
+                <el-button
+                  v-if="canManageAlerts && !['pending', 'running'].includes(alertAnalysisLatest?.status)"
+                  link
+                  type="primary"
+                  size="small"
+                  :loading="alertAnalysisSubmitting"
+                  @click="submitAlertAnalysis"
+                >{{ alertAnalysisLatest ? '重新研判' : '开始研判' }}</el-button>
+              </div>
+            </div>
+            <span v-if="alertAnalysisUnavailable" class="detail-empty">当前后端版本暂未启用智能研判接口</span>
+            <span v-else-if="!alertAnalysisLoading && !alertAnalysisLatest" class="detail-empty">该告警暂无研判记录</span>
+            <template v-else-if="alertAnalysisLatest">
+              <el-descriptions class="alert-detail-summary analysis-summary" :column="1" size="small" border>
+                <el-descriptions-item label="置信度">{{ analysisConfidenceText(alertAnalysisLatest.confidence) }}</el-descriptions-item>
+                <el-descriptions-item label="根因">{{ alertAnalysisLatest.root_cause || alertAnalysisLatest.summary || '尚未形成明确结论' }}</el-descriptions-item>
+                <el-descriptions-item label="建议">{{ analysisSuggestionText(alertAnalysisLatest) }}</el-descriptions-item>
+              </el-descriptions>
+              <div v-if="analysisEvidenceItems.length" class="analysis-evidence">
+                <strong>关键证据</strong>
+                <ol>
+                  <li v-for="(item, index) in analysisEvidenceItems" :key="index">{{ item }}</li>
+                </ol>
+              </div>
+            </template>
+          </section>
           <div v-if="canManageAlerts || canNotifyAlerts" class="detail-actions">
             <el-button v-if="!selectedAlert.current_user_claimed" size="small" type="success" @click="runAlertAction(selectedAlert, 'claim')">&#x8BA4;&#x9886;</el-button>
             <el-button v-if="selectedAlert.current_user_claimed" size="small" @click="runAlertAction(selectedAlert, 'unclaim')">&#x53D6;&#x6D88;&#x8BA4;&#x9886;</el-button>
@@ -518,7 +537,7 @@
 
     <AlertRuleWizard
       v-model="ruleWizardVisible"
-      :templates="alertRuleTemplates"
+      :templates="alertRulePresets"
       @save="saveWizardRule"
     />
 
@@ -526,11 +545,6 @@
       <el-form :model="ruleDialog.form" label-width="130px">
         <el-form-item label="&#x89C4;&#x5219;&#x540D;&#x79F0;"><el-input v-model="ruleDialog.form.name" /></el-form-item>
         <el-form-item label="&#x89C4;&#x5219;&#x7F16;&#x7801;"><el-input v-model="ruleDialog.form.code" placeholder="&#x7559;&#x7A7A;&#x5219;&#x81EA;&#x52A8;&#x751F;&#x6210;" /></el-form-item>
-        <el-form-item label="&#x6765;&#x6E90;&#x6A21;&#x677F;">
-          <el-select v-model="ruleDialog.form.template" clearable filterable @change="applyTemplateToRule">
-            <el-option v-for="item in alertRuleTemplates" :key="item.id" :label="`${item.name} / ${ruleSourceText(item.source_type)}`" :value="item.id" />
-          </el-select>
-        </el-form-item>
         <el-form-item label="&#x6570;&#x636E;&#x6E90;">
           <el-select v-model="ruleDialog.form.source_type">
             <el-option v-for="item in ruleSourceOptions" :key="item.value" :label="item.label" :value="item.value" />
@@ -543,8 +557,53 @@
             <el-option label="&#x4FE1;&#x606F;" value="info" />
           </el-select>
         </el-form-item>
-        <el-form-item label="&#x67E5;&#x8BE2;&#x914D;&#x7F6E;"><el-input v-model="ruleDialog.form.query_config_text" type="textarea" :rows="4" /></el-form-item>
-        <el-form-item label="&#x89E6;&#x53D1;&#x6761;&#x4EF6;"><el-input v-model="ruleDialog.form.condition_text" type="textarea" :rows="3" /></el-form-item>
+        <template v-if="isLogRule(ruleDialog.form)">
+          <el-form-item label="&#x65E5;&#x5FD7;&#x8303;&#x56F4;">
+            <el-select v-model="ruleDialog.form.log_collection">
+              <el-option v-for="item in logCollectionOptions" :key="item.value" :label="item.label" :value="item.value" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="&#x65E5;&#x5FD7;&#x7EA7;&#x522B;">
+            <el-checkbox-group v-model="ruleDialog.form.log_levels">
+              <el-checkbox v-for="item in logLevelOptions" :key="item" :label="item">{{ item }}</el-checkbox>
+            </el-checkbox-group>
+          </el-form-item>
+          <div class="split-grid">
+            <el-form-item label="&#x7EDF;&#x8BA1;&#x65F6;&#x95F4;"><el-input-number v-model="ruleDialog.form.window_minutes" :min="1" :max="1440" /> <span class="field-suffix">&#x5206;&#x949F;</span></el-form-item>
+            <el-form-item label="&#x805A;&#x5408;&#x7EF4;&#x5EA6;">
+              <el-select v-model="ruleDialog.form.log_group_by" clearable placeholder="&#x603B;&#x91CF;">
+                <el-option label="&#x6309;&#x5BB9;&#x5668;" value="container" />
+                <el-option label="&#x6309;&#x670D;&#x52A1;" value="service" />
+                <el-option label="&#x6309;&#x547D;&#x540D;&#x7A7A;&#x95F4;" value="namespace" />
+              </el-select>
+            </el-form-item>
+          </div>
+          <el-form-item label="&#x5305;&#x542B;&#x5173;&#x952E;&#x5B57;"><el-input v-model="ruleDialog.form.keyword" clearable placeholder="&#x4E0D;&#x586B;&#x5219;&#x4E0D;&#x9650;&#x5236;" /></el-form-item>
+        </template>
+        <template v-else>
+          <el-form-item label="&#x76D1;&#x63A7;&#x6307;&#x6807;">
+            <el-select v-if="!ruleDialog.form.custom_query_enabled" v-model="ruleDialog.form.metric_key" filterable>
+              <el-option v-for="item in metricOptionsFor(ruleDialog.form.source_type)" :key="item.value" :label="item.label" :value="item.value" />
+            </el-select>
+            <el-input v-else v-model="ruleDialog.form.custom_query" type="textarea" :rows="3" spellcheck="false" placeholder="输入 PromQL 查询语句" />
+          </el-form-item>
+          <el-form-item>
+            <el-checkbox v-model="ruleDialog.form.custom_query_enabled">使用自定义 PromQL 查询</el-checkbox>
+          </el-form-item>
+          <el-alert title="&#x7CFB;&#x7EDF;&#x6839;&#x636E;&#x6240;&#x9009;&#x6307;&#x6807;&#x81EA;&#x52A8;&#x7EC4;&#x88C5;&#x67E5;&#x8BE2;&#xFF0C;&#x65E0;&#x9700;&#x7F16;&#x5199;&#x6307;&#x6807;&#x8BED;&#x53E5;" type="info" :closable="false" show-icon class="rule-form-tip" />
+        </template>
+        <div class="split-grid">
+          <el-form-item label="&#x89E6;&#x53D1;&#x6761;&#x4EF6;">
+            <el-select v-model="ruleDialog.form.operator">
+              <el-option label="&#x5927;&#x4E8E;" value="&gt;" />
+              <el-option label="&#x5927;&#x4E8E;&#x7B49;&#x4E8E;" value="&gt;=" />
+              <el-option label="&#x5C0F;&#x4E8E;" value="&lt;" />
+              <el-option label="&#x5C0F;&#x4E8E;&#x7B49;&#x4E8E;" value="&lt;=" />
+              <el-option label="&#x7B49;&#x4E8E;" value="==" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="&#x9608;&#x503C;"><el-input-number v-model="ruleDialog.form.threshold" :min="0" :precision="2" /></el-form-item>
+        </div>
         <el-form-item label="&#x6807;&#x7B7E;"><MatcherEditor v-model="ruleDialog.form.label_rows" mode="equals" /></el-form-item>
         <el-form-item label="&#x6CE8;&#x89E3;"><MatcherEditor v-model="ruleDialog.form.annotation_rows" mode="equals" /></el-form-item>
         <div class="split-grid">
@@ -561,43 +620,6 @@
       <template #footer>
         <el-button @click="ruleDialog.visible = false">&#x53D6;&#x6D88;</el-button>
         <el-button type="primary" @click="saveAlertRule">&#x4FDD;&#x5B58;</el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog v-model="templateDialog.visible" title="&#x89C4;&#x5219;&#x6A21;&#x677F;" width="760px">
-      <el-form :model="templateDialog.form" label-width="130px">
-        <el-form-item label="&#x6A21;&#x677F;&#x540D;&#x79F0;"><el-input v-model="templateDialog.form.name" /></el-form-item>
-        <el-form-item label="&#x6A21;&#x677F;&#x7F16;&#x7801;"><el-input v-model="templateDialog.form.code" placeholder="&#x7559;&#x7A7A;&#x5219;&#x81EA;&#x52A8;&#x751F;&#x6210;" /></el-form-item>
-        <el-form-item label="&#x6570;&#x636E;&#x6E90;">
-          <el-select v-model="templateDialog.form.source_type">
-            <el-option v-for="item in ruleSourceOptions" :key="item.value" :label="item.label" :value="item.value" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="&#x9ED8;&#x8BA4;&#x7EA7;&#x522B;">
-          <el-select v-model="templateDialog.form.level">
-            <el-option label="&#x4E25;&#x91CD;" value="critical" />
-            <el-option label="&#x8B66;&#x544A;" value="warning" />
-            <el-option label="&#x4FE1;&#x606F;" value="info" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="&#x67E5;&#x8BE2;&#x914D;&#x7F6E;"><el-input v-model="templateDialog.form.query_config_text" type="textarea" :rows="4" /></el-form-item>
-        <el-form-item label="&#x89E6;&#x53D1;&#x6761;&#x4EF6;"><el-input v-model="templateDialog.form.condition_text" type="textarea" :rows="3" /></el-form-item>
-        <el-form-item label="&#x9ED8;&#x8BA4;&#x6807;&#x7B7E;"><MatcherEditor v-model="templateDialog.form.default_label_rows" mode="equals" /></el-form-item>
-        <el-form-item label="&#x9ED8;&#x8BA4;&#x6CE8;&#x89E3;"><MatcherEditor v-model="templateDialog.form.annotation_rows" mode="equals" /></el-form-item>
-        <div class="split-grid">
-          <el-form-item label="&#x5DE1;&#x68C0;&#x95F4;&#x9694;"><el-input-number v-model="templateDialog.form.interval_seconds" :min="10" /> <span class="field-suffix">s</span></el-form-item>
-          <el-form-item label="&#x6301;&#x7EED;&#x65F6;&#x95F4;"><el-input-number v-model="templateDialog.form.duration_seconds" :min="0" /> <span class="field-suffix">s</span></el-form-item>
-        </div>
-        <el-form-item label="&#x9ED8;&#x8BA4;&#x80FD;&#x529B;">
-          <el-checkbox v-model="templateDialog.form.notify_enabled">&#x547D;&#x4E2D;&#x540E;&#x901A;&#x77E5;</el-checkbox>
-          <el-checkbox v-model="templateDialog.form.auto_analyze">&#x547D;&#x4E2D;&#x540E; AI &#x7814;&#x5224;</el-checkbox>
-        </el-form-item>
-        <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="templateDialog.form.is_enabled" /></el-form-item>
-        <el-form-item label="&#x8BF4;&#x660E;"><el-input v-model="templateDialog.form.description" type="textarea" :rows="2" /></el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="templateDialog.visible = false">&#x53D6;&#x6D88;</el-button>
-        <el-button type="primary" @click="saveAlertRuleTemplate">&#x4FDD;&#x5B58;</el-button>
       </template>
     </el-dialog>
 
@@ -811,9 +833,10 @@
 <script setup>
 import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Bell, Delete, Document, Operation, Plus, Refresh, Search, Setting } from '@element-plus/icons-vue'
+import { Bell, Delete, Operation, Plus, Refresh, Search, Setting } from '@element-plus/icons-vue'
 import { ElButton, ElInput, ElMessage, ElMessageBox, ElOption, ElPopconfirm, ElSelect, ElTable, ElTableColumn, ElTag } from 'element-plus'
 import {
+  analyzeAlert,
   claimAlert,
   closeAlert,
   createAlertAggregationRule,
@@ -825,7 +848,6 @@ import {
   createAlertRecipient,
   createAlertRecipientGroup,
   createAlertRule,
-  createAlertRuleTemplate,
   deleteAlert,
   deleteAlertAggregationRule,
   deleteAlertEscalationPolicy,
@@ -836,12 +858,12 @@ import {
   deleteAlertRecipient,
   deleteAlertRecipientGroup,
   deleteAlertRule,
-  deleteAlertRuleTemplate,
   evaluateAlertRule,
   escalateAlert,
   getAlertAggregationRules,
   getAlertEscalationPolicies,
   getAlertGroups,
+  getAlertAnalysis,
   getAlertLogEvidence,
   getAlertInhibitionRules,
   getAlertMuteRules,
@@ -851,7 +873,6 @@ import {
   getAlertRecipientGroups,
   getAlertRecipients,
   getAlertRules,
-  getAlertRuleTemplates,
   getAlerts,
   getAlertSummary,
   getUsers,
@@ -870,12 +891,14 @@ import {
   updateAlertRecipient,
   updateAlertRecipientGroup,
   updateAlertRule,
-  updateAlertRuleTemplate,
 } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
 import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
 import AlertRuleWizard from '@/components/observability/AlertRuleWizard.vue'
-import RuleTemplateCatalog from '@/components/observability/RuleTemplateCatalog.vue'
+
+const props = defineProps({
+  workspace: { type: String, default: 'events' },
+})
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value || []))
@@ -899,6 +922,30 @@ function matchersToObject(rows) {
 
 function jsonText(value) {
   return JSON.stringify(value || {}, null, 2)
+}
+
+function metricOptionsFor(sourceType) {
+  const options = metricProfiles.filter((item) => item.sources.includes(sourceType))
+  return [...options, { value: 'legacy', label: '保留当前指标' }]
+}
+
+function metricKeyForQuery(query) {
+  const normalized = String(query || '').replace(/\s+/g, '')
+  const profile = metricProfiles.find((item) => item.query.replace(/\s+/g, '') === normalized)
+  return profile?.value || 'legacy'
+}
+
+function isLogRule(form) {
+  return form?.source_type === 'clickhouse' || form?.rule_kind === 'log'
+}
+
+function conditionFields(config = {}, condition = {}) {
+  const levels = Array.isArray(condition.levels) ? condition.levels : []
+  const levelCondition = levels.find((item) => item?.level === 'warning') || levels[0] || condition
+  return {
+    operator: levelCondition?.operator || levelCondition?.op || '>',
+    threshold: Number(levelCondition?.threshold ?? levelCondition?.value ?? 0),
+  }
 }
 
 function parseJsonText(value, label) {
@@ -1022,11 +1069,16 @@ const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 
-const activeTab = ref('events')
-const routeTabs = ['events', 'rules', 'templates', 'notify', 'logs', 'policies']
+const isEventWorkspace = computed(() => props.workspace !== 'rules')
+const pageTitle = computed(() => (isEventWorkspace.value ? '告警中心' : '告警规则'))
+const pageDescription = computed(() => (isEventWorkspace.value
+  ? '统一查看实时告警，支持筛选、认领、屏蔽和关联证据排查。'
+  : '通过模板或手动配置创建规则，并维护规则的通知方式和接收对象。'))
+const activeTab = ref(isEventWorkspace.value ? 'events' : 'rules')
+const routeTabs = ['events', 'rules', 'notify', 'logs', 'policies']
 const notifyTab = ref('rules')
 const policyTab = ref('aggregation')
-const eventMode = ref('list')
+const eventMode = ref('group')
 const eventModeOptions = [
   { label: '\u5217\u8868', value: 'list' },
   { label: '\u5206\u7EC4', value: 'group' },
@@ -1051,6 +1103,28 @@ const ruleSourceOptions = [
   { label: 'SLA', value: 'sla' },
   { label: '\u5E73\u53F0\u5185\u7F6E', value: 'platform' },
 ]
+
+const metricProfiles = [
+  { value: 'node-down', label: '主机离线', query: 'up{job=~".*node.*"} == 0', sources: ['prometheus'] },
+  { value: 'host-cpu', label: '主机 CPU 使用率', query: '(1 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) by (instance)) * 100', sources: ['prometheus'] },
+  { value: 'host-memory', label: '主机内存使用率', query: '(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100', sources: ['prometheus'] },
+  { value: 'host-disk', label: '主机磁盘使用率', query: '(1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}) * 100', sources: ['prometheus'] },
+  { value: 'host-load', label: '主机负载', query: 'node_load15 / count by(instance)(node_cpu_seconds_total{mode="idle"}) * 100', sources: ['prometheus'] },
+  { value: 'k8s-node-not-ready', label: 'K8S 节点不可用数', query: 'sum(kube_node_status_condition{condition="Ready",status!="true"})', sources: ['k8s', 'prometheus'] },
+  { value: 'k8s-abnormal-pods', label: 'K8S 异常 Pod 数', query: 'count(kube_pod_status_phase{phase=~"Pending|Failed|Unknown"} == 1)', sources: ['k8s', 'prometheus'] },
+  { value: 'k8s-pod-restarts', label: 'Pod 重启次数', query: 'sum by(pod, namespace) (increase(kube_pod_container_status_restarts_total[15m]))', sources: ['k8s', 'prometheus'] },
+  { value: 'k8s-pod-cpu', label: 'Pod CPU 使用率', query: 'sum(rate(container_cpu_usage_seconds_total{container!=""}[5m])) by (pod, namespace) / sum(container_spec_cpu_quota{container!=""} / 100000) by (pod,namespace) * 100', sources: ['k8s', 'prometheus'] },
+  { value: 'k8s-pod-memory', label: 'Pod 内存使用率', query: 'sum(container_memory_working_set_bytes{container!=""}) by (pod, namespace) / sum(container_spec_memory_limit_bytes{container!=""}) by (pod,namespace) * 100', sources: ['k8s', 'prometheus'] },
+  { value: 'k8s-pvc-usage', label: 'PVC 使用率', query: 'kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes * 100', sources: ['k8s', 'prometheus'] },
+]
+
+const logCollectionOptions = [
+  { label: '容器日志', value: 'container-logs' },
+  { label: 'K8S 事件', value: 'k8s-events' },
+  { label: 'Ingress 访问日志', value: 'ingress-access' },
+]
+
+const logLevelOptions = ['DEBUG', 'INFO', 'WARN', 'WARNING', 'ERROR', 'FATAL', 'CRITICAL']
 
 const channelOptions = [
   { label: '\u77ED\u4FE1', value: 'sms' },
@@ -1095,7 +1169,7 @@ const total = ref(0)
 const page = ref(1)
 const groupBy = ref(['source_type', 'environment', 'service'])
 const alertRules = ref([])
-const alertRuleTemplates = ref([])
+const alertRulePresets = ref([])
 const channels = ref([])
 const recipients = ref([])
 const recipientGroups = ref([])
@@ -1111,6 +1185,10 @@ const selectedAlert = ref(null)
 const detailVisible = ref(false)
 const alertLogEvidence = ref(null)
 const alertLogEvidenceLoading = ref(false)
+const alertAnalysis = ref(null)
+const alertAnalysisLoading = ref(false)
+const alertAnalysisSubmitting = ref(false)
+const alertAnalysisUnavailable = ref(false)
 
 const canViewAlerts = computed(() => authStore.hasPermission('ops.alert.view'))
 const canManageAlerts = computed(() => authStore.hasPermission('ops.alert.manage'))
@@ -1139,6 +1217,23 @@ const activeStatKey = computed(() => {
 })
 
 const alertLogEvidenceLogs = computed(() => alertLogEvidence.value?.logs || [])
+const alertAnalysisLatest = computed(() => {
+  const payload = alertAnalysis.value
+  if (payload?.latest) return payload.latest
+  if (Array.isArray(payload?.results) && payload.results.length) return payload.results[0]
+  if (payload && (payload.status || payload.root_cause || payload.summary)) return payload
+  const rawAnalysis = selectedAlert.value?.raw_payload?.ai_analysis
+  if (rawAnalysis && Object.keys(rawAnalysis).length) return rawAnalysis
+  if (selectedAlert.value?.root_cause || selectedAlert.value?.suggestion) {
+    return {
+      status: 'completed',
+      root_cause: selectedAlert.value.root_cause,
+      suggestion: selectedAlert.value.suggestion,
+    }
+  }
+  return null
+})
+const analysisEvidenceItems = computed(() => normalizeEvidence(alertAnalysisLatest.value?.evidence))
 
 const environmentOptions = computed(() => {
   const values = new Set()
@@ -1153,7 +1248,6 @@ const environmentOptions = computed(() => {
 
 const ruleDialog = reactive({ visible: false, form: emptyAlertRule() })
 const rulesCategoryFilter = ref('')
-const templateDialog = reactive({ visible: false, form: emptyAlertRuleTemplate() })
 const muteDialog = reactive({ visible: false, target: null, form: { minutes: 60 } })
 const channelDialog = reactive({ visible: false, form: emptyChannel() })
 const recipientDialog = reactive({ visible: false, form: emptyRecipient() })
@@ -1187,6 +1281,92 @@ function statusText(status) {
 
 function providerText(value) {
   return providerOptions.find((item) => item.value === value)?.label || value || '-'
+}
+
+const dimensionLabelMap = {
+  source_type: '来源类型',
+  environment: '环境',
+  cluster: '集群',
+  namespace: '命名空间',
+  service: '服务',
+  business_line: '业务线',
+  resource_type: '资源类型',
+  resource: '资源',
+  level: '级别',
+  region: '地域',
+}
+
+const dimensionValueMap = {
+  platform: '平台告警规则',
+  prometheus: 'Prometheus 指标',
+  clickhouse: 'ClickHouse 日志',
+  k8s: 'K8S 资源',
+  critical: '严重',
+  warning: '警告',
+  info: '信息',
+}
+
+function groupDimensionEntries(row) {
+  const dimensions = row?.dimensions
+  if (!dimensions || typeof dimensions !== 'object' || Array.isArray(dimensions)) return []
+  return Object.entries(dimensions).map(([key, value]) => ({
+    key,
+    label: dimensionLabelMap[key] || (key.startsWith('label.') ? `标签 ${key.slice(6)}` : key),
+    value: dimensionValueMap[String(value)] || value || '未设置',
+  }))
+}
+
+function analysisStatusText(value) {
+  return { pending: '等待研判', running: '研判中', completed: '已完成', partial: '部分完成', failed: '研判失败', disabled: '未启用' }[value] || value || '未知'
+}
+
+function analysisStatusType(value) {
+  return { completed: 'success', partial: 'warning', failed: 'danger', disabled: 'info' }[value] || 'primary'
+}
+
+function analysisConfidenceText(value) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return value || '未评估'
+  return `${Math.round(number <= 1 ? number * 100 : number)}%`
+}
+
+function analysisSuggestionText(analysis) {
+  const value = analysis?.suggestions || analysis?.suggested_actions || analysis?.suggestion
+  if (Array.isArray(value)) {
+    return value.map((item) => (typeof item === 'object' ? item.content || item.summary || item.action : item)).filter(Boolean).join('；') || '-'
+  }
+  return value || '-'
+}
+
+function normalizeEvidence(evidence) {
+  if (!evidence) return []
+  if (!Array.isArray(evidence) && typeof evidence === 'object') {
+    const summaries = []
+    const metrics = evidence.metrics || evidence.metric
+    const logs = evidence.logs || evidence.log
+    const graph = evidence.knowledge_graph || evidence.graph
+    if (metrics?.summary || metrics?.message) summaries.push(metrics.summary || metrics.message)
+    if (logs && typeof logs === 'object') summaries.push(`关联日志状态 ${logs.status || '未知'}，命中 ${logs.sample_count || logs.count || 0} 条样本`)
+    if (graph?.summary || graph?.message) summaries.push(graph.summary || graph.message)
+    for (const item of evidence.diagnostics || []) {
+      const text = typeof item === 'object' ? item.message || item.summary : item
+      if (text) summaries.push(text)
+    }
+    if (summaries.length) return summaries.slice(0, 8)
+  }
+  const source = Array.isArray(evidence)
+    ? evidence
+    : (evidence.items || evidence.key_evidence || evidence.results || (evidence.summary ? [evidence.summary] : []))
+  if (Array.isArray(source)) {
+    return source.slice(0, 8).map((item) => {
+      if (typeof item !== 'object') return String(item)
+      return item.summary || item.message || item.content || item.fact || item.description || ''
+    }).filter(Boolean)
+  }
+  return Object.entries(evidence).slice(0, 8).map(([key, value]) => {
+    const text = typeof value === 'object' ? JSON.stringify(value) : String(value)
+    return `${key}：${text.length > 240 ? `${text.slice(0, 240)}...` : text}`
+  })
 }
 
 function categoryText(value) {
@@ -1309,10 +1489,46 @@ async function fetchAlertLogEvidence(row) {
   }
 }
 
+async function fetchAlertAnalysis(row) {
+  alertAnalysis.value = null
+  alertAnalysisUnavailable.value = false
+  if (!row?.id || !canViewAlerts.value) return
+  const alertId = row.id
+  alertAnalysisLoading.value = true
+  try {
+    const payload = await getAlertAnalysis(alertId)
+    if (selectedAlert.value?.id === alertId) alertAnalysis.value = payload
+  } catch (error) {
+    if (selectedAlert.value?.id === alertId) {
+      alertAnalysisUnavailable.value = error?.response?.status === 404 || error?.response?.status === 405
+    }
+  } finally {
+    if (selectedAlert.value?.id === alertId) alertAnalysisLoading.value = false
+  }
+}
+
+async function submitAlertAnalysis() {
+  if (!selectedAlert.value?.id) return
+  alertAnalysisSubmitting.value = true
+  try {
+    const payload = await analyzeAlert(selectedAlert.value.id, { force: true })
+    alertAnalysis.value = payload
+    alertAnalysisUnavailable.value = false
+    ElMessage.success('智能研判任务已提交')
+    await fetchAlertAnalysis(selectedAlert.value)
+  } catch (error) {
+    if ([404, 405].includes(error?.response?.status)) alertAnalysisUnavailable.value = true
+    ElMessage.error(error?.response?.data?.detail || '智能研判任务提交失败')
+  } finally {
+    alertAnalysisSubmitting.value = false
+  }
+}
+
 function openDetail(row) {
   selectedAlert.value = row
   detailVisible.value = true
   fetchAlertLogEvidence(row)
+  fetchAlertAnalysis(row)
 }
 
 function handleSelectionChange(rows) {
@@ -1375,9 +1591,9 @@ async function handleBatchDelete() {
 
 function ensureTabAccess() {
   const tabs = []
-  if (canViewAlerts.value) tabs.push('events', 'logs')
-  if (canViewConfig.value) tabs.push('rules', 'templates', 'notify', 'policies')
-  if (!tabs.includes(activeTab.value)) activeTab.value = tabs[0] || 'events'
+  if (isEventWorkspace.value && canViewAlerts.value) tabs.push('events')
+  if (!isEventWorkspace.value && canViewConfig.value) tabs.push('rules', 'notify')
+  if (!tabs.includes(activeTab.value)) activeTab.value = tabs[0] || (isEventWorkspace.value ? 'events' : 'rules')
 }
 
 async function switchTab(tab) {
@@ -1387,7 +1603,8 @@ async function switchTab(tab) {
 
 function applyRouteTab() {
   const tab = typeof route.query.tab === 'string' ? route.query.tab.trim() : ''
-  if (routeTabs.includes(tab)) activeTab.value = tab
+  const allowedTabs = isEventWorkspace.value ? ['events'] : ['rules', 'notify']
+  if (routeTabs.includes(tab) && allowedTabs.includes(tab)) activeTab.value = tab
 }
 
 async function changeNotifyTab(tab) {
@@ -1464,21 +1681,9 @@ async function fetchAlertRules() {
   try {
     const params = {}
     if (rulesCategoryFilter.value) params.category = rulesCategoryFilter.value
-    const [ruleList, templateList] = await Promise.all([
-      getAlertRules(params),
-      getAlertRuleTemplates({ page_size: 200 }),
-    ])
+    const [ruleList, presetList] = await Promise.all([getAlertRules(params), getAlertRules({ page_size: 200 })])
     alertRules.value = listOf(ruleList)
-    alertRuleTemplates.value = listOf(templateList)
-  } finally {
-    configLoading.value = false
-  }
-}
-
-async function fetchAlertRuleTemplates() {
-  configLoading.value = true
-  try {
-    alertRuleTemplates.value = listOf(await getAlertRuleTemplates({ page_size: 200 }))
+    alertRulePresets.value = listOf(presetList).filter((item) => item.source && item.source !== 'custom')
   } finally {
     configLoading.value = false
   }
@@ -1499,9 +1704,6 @@ async function refreshAll() {
   if (activeTab.value === 'rules' && canViewConfig.value) {
     await fetchAlertRules()
   }
-  if (activeTab.value === 'templates' && canViewConfig.value) {
-    await fetchAlertRuleTemplates()
-  }
   if (activeTab.value === 'notify' && canViewConfig.value) await loadNotifyTab()
   if (activeTab.value === 'policies' && canViewConfig.value) await loadPolicyTab()
   if (activeTab.value === 'logs' && canViewAlerts.value) await fetchNotificationLogs()
@@ -1510,14 +1712,25 @@ async function refreshAll() {
 function emptyAlertRule() {
   return {
     id: null,
-    template: null,
     name: '',
     code: '',
     category: '',
     source_type: 'k8s',
+    rule_kind: 'metric',
     level: 'warning',
-    query_config_text: jsonText({}),
-    condition_text: jsonText({}),
+    query_config: {},
+    condition: {},
+    metric_key: 'k8s-node-not-ready',
+    metric_query: '',
+    custom_query_enabled: false,
+    custom_query: '',
+    log_collection: 'container-logs',
+    log_levels: ['ERROR'],
+    window_minutes: 5,
+    log_group_by: '',
+    keyword: '',
+    operator: '>',
+    threshold: 0,
     label_rows: [],
     annotation_rows: [],
     interval_seconds: 60,
@@ -1529,84 +1742,35 @@ function emptyAlertRule() {
   }
 }
 
-function emptyAlertRuleTemplate() {
-  return {
-    id: null,
-    name: '',
-    code: '',
-    category: '',
-    source_type: 'k8s',
-    level: 'warning',
-    query_config_text: jsonText({}),
-    condition_text: jsonText({}),
-    default_label_rows: [],
-    annotation_rows: [],
-    interval_seconds: 60,
-    duration_seconds: 0,
-    notify_enabled: true,
-    auto_analyze: true,
-    is_enabled: true,
-    description: '',
-  }
-}
-
 function openAlertRule(row = null) {
-  ruleDialog.form = row
-    ? {
-        ...emptyAlertRule(),
-        ...row,
-        query_config_text: jsonText(row.query_config),
-        condition_text: jsonText(row.condition),
-        label_rows: matcherRowsFromObject(row.labels),
-        annotation_rows: matcherRowsFromObject(row.annotations),
-      }
-    : emptyAlertRule()
+  const config = row?.query_config || {}
+  const condition = row?.condition || {}
+  const query = config.promql || config.query || config.metric || ''
+  const fields = conditionFields(config, condition)
+  ruleDialog.form = row ? {
+    ...emptyAlertRule(),
+    ...row,
+    query_config: config,
+    condition,
+    rule_kind: row.source_type === 'clickhouse' || (row.source_type === 'k8s' && Boolean(config.collection) && !query) ? 'log' : 'metric',
+    metric_key: metricKeyForQuery(query),
+    metric_query: query,
+    custom_query_enabled: metricKeyForQuery(query) === 'legacy' && Boolean(query),
+    custom_query: query,
+    log_collection: config.collection || 'container-logs',
+    log_levels: Array.isArray(config.levels) ? config.levels : (Array.isArray(config.level) ? config.level : [config.level || condition.level || 'ERROR'].filter(Boolean)),
+    window_minutes: Number(config.window_minutes || config.window || condition.window_minutes || 5),
+    log_group_by: config.group_by || condition.group_by || '',
+    keyword: condition.keyword || config.keyword || '',
+    ...fields,
+    label_rows: matcherRowsFromObject(row.labels),
+    annotation_rows: matcherRowsFromObject(row.annotations),
+  } : emptyAlertRule()
   ruleDialog.visible = true
-  if (!alertRuleTemplates.value.length) fetchAlertRuleTemplates()
-}
-
-function openAlertRuleTemplate(row = null) {
-  templateDialog.form = row
-    ? {
-        ...emptyAlertRuleTemplate(),
-        ...row,
-        query_config_text: jsonText(row.query_config),
-        condition_text: jsonText(row.condition),
-        default_label_rows: matcherRowsFromObject(row.default_labels),
-        annotation_rows: matcherRowsFromObject(row.annotations),
-      }
-    : emptyAlertRuleTemplate()
-  templateDialog.visible = true
-}
-
-function applyTemplateToRule(templateId) {
-  const template = alertRuleTemplates.value.find((item) => item.id === templateId)
-  if (!template) return
-  const form = ruleDialog.form
-  if (!form.name) form.name = template.name
-  if (template.category) form.category = template.category
-  form.source_type = template.source_type
-  form.level = template.level
-  form.query_config_text = jsonText(template.query_config)
-  form.condition_text = jsonText(template.condition)
-  form.label_rows = matcherRowsFromObject(template.default_labels)
-  form.annotation_rows = matcherRowsFromObject(template.annotations)
-  form.interval_seconds = template.interval_seconds || 60
-  form.duration_seconds = template.duration_seconds || 0
-  form.notify_enabled = Boolean(template.notify_enabled)
-  form.auto_analyze = Boolean(template.auto_analyze)
-  if (!form.description) form.description = template.description || ''
 }
 
 function openWizardForSource() {
   ruleWizardVisible.value = true
-  if (!alertRuleTemplates.value.length) fetchAlertRuleTemplates()
-}
-
-function openAlertRuleFromTemplate(template) {
-  openAlertRule()
-  ruleDialog.form.template = template.id
-  applyTemplateToRule(template.id)
 }
 
 async function saveWizardRule(data) {
@@ -1620,32 +1784,43 @@ async function saveWizardRule(data) {
 }
 
 function buildAlertRulePayload(form) {
+  const selectedMetric = metricProfiles.find((item) => item.value === form.metric_key)
+  const query = form.custom_query_enabled ? form.custom_query.trim() : (selectedMetric?.query || form.metric_query)
+  if (!isLogRule(form) && !query) throw new Error('请选择监控指标或填写自定义 PromQL 查询')
+  const query_config = isLogRule(form)
+    ? {
+        collection: form.log_collection,
+        levels: form.log_levels || [],
+        window_minutes: form.window_minutes,
+        ...(form.log_group_by ? { group_by: form.log_group_by } : {}),
+      }
+    : { query }
+  const condition = {
+    operator: form.operator,
+    threshold: form.threshold,
+    ...(isLogRule(form) && form.keyword ? { keyword: form.keyword } : {}),
+  }
   const data = {
     ...form,
-    template: form.template || null,
-    query_config: parseJsonText(form.query_config_text, '\u67E5\u8BE2\u914D\u7F6E'),
-    condition: parseJsonText(form.condition_text, '\u89E6\u53D1\u6761\u4EF6'),
+    source: form.id ? form.source : 'custom',
+    query_config,
+    condition,
     labels: matchersToObject(form.label_rows),
     annotations: matchersToObject(form.annotation_rows),
   }
-  delete data.query_config_text
-  delete data.condition_text
+  delete data.metric_key
+  delete data.rule_kind
+  delete data.metric_query
+  delete data.custom_query_enabled
+  delete data.custom_query
+  delete data.log_collection
+  delete data.log_levels
+  delete data.window_minutes
+  delete data.log_group_by
+  delete data.keyword
+  delete data.operator
+  delete data.threshold
   delete data.label_rows
-  delete data.annotation_rows
-  return data
-}
-
-function buildAlertRuleTemplatePayload(form) {
-  const data = {
-    ...form,
-    query_config: parseJsonText(form.query_config_text, '\u67E5\u8BE2\u914D\u7F6E'),
-    condition: parseJsonText(form.condition_text, '\u89E6\u53D1\u6761\u4EF6'),
-    default_labels: matchersToObject(form.default_label_rows),
-    annotations: matchersToObject(form.annotation_rows),
-  }
-  delete data.query_config_text
-  delete data.condition_text
-  delete data.default_label_rows
   delete data.annotation_rows
   return data
 }
@@ -1663,29 +1838,10 @@ async function saveAlertRule() {
   }
 }
 
-async function saveAlertRuleTemplate() {
-  try {
-    const data = buildAlertRuleTemplatePayload(templateDialog.form)
-    if (data.id) await updateAlertRuleTemplate(data.id, data)
-    else await createAlertRuleTemplate(data)
-    templateDialog.visible = false
-    ElMessage.success('\u89C4\u5219\u6A21\u677F\u5DF2\u4FDD\u5B58')
-    await fetchAlertRuleTemplates()
-  } catch (error) {
-    ElMessage.error(error.message || '\u89C4\u5219\u6A21\u677F\u4FDD\u5B58\u5931\u8D25')
-  }
-}
-
 async function removeAlertRule(id) {
   await deleteAlertRule(id)
   ElMessage.success('\u544A\u8B66\u89C4\u5219\u5DF2\u5220\u9664')
   await fetchAlertRules()
-}
-
-async function removeAlertRuleTemplate(id) {
-  await deleteAlertRuleTemplate(id)
-  ElMessage.success('\u89C4\u5219\u6A21\u677F\u5DF2\u5220\u9664')
-  await fetchAlertRuleTemplates()
 }
 
 async function dryRunAlertRule(row) {
@@ -2244,6 +2400,23 @@ onMounted(async () => {
   font-weight: 600;
 }
 
+.group-dimensions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 14px;
+  line-height: 1.45;
+}
+
+.group-dimensions span {
+  color: var(--alert-text);
+  font-size: 12px;
+}
+
+.group-dimensions strong {
+  color: var(--alert-subtle);
+  font-weight: 600;
+}
+
 .pager {
   display: flex;
   justify-content: flex-end;
@@ -2406,6 +2579,32 @@ onMounted(async () => {
 
 .log-evidence-card {
   min-height: 74px;
+}
+
+.analysis-card {
+  min-height: 88px;
+}
+
+.analysis-heading-actions {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+
+.analysis-evidence {
+  color: #334155;
+  font-size: 12px;
+  margin-top: 9px;
+}
+
+.analysis-evidence ol {
+  margin: 6px 0 0;
+  padding-left: 20px;
+}
+
+.analysis-evidence li {
+  line-height: 1.55;
+  margin-bottom: 3px;
 }
 
 .log-evidence-list {

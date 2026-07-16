@@ -59,6 +59,7 @@ from .services import (
     build_action_preflight_contract,
     build_platform_mcp_manifest,
     build_action_registry_summary,
+    build_skill_marketplace_catalog,
     bootstrap_payload_for_user,
     build_audit_overview,
     build_model_cost_overview,
@@ -212,7 +213,7 @@ class AIOpsSkillViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'update': ['aiops.config.manage'],
         'partial_update': ['aiops.config.manage'],
         'destroy': ['aiops.config.manage'],
-        
+        'marketplace': ['aiops.config.view'],
         'clone': ['aiops.config.manage'],
     }
 
@@ -227,7 +228,8 @@ class AIOpsSkillViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         return super().destroy(request, *args, **kwargs)
 
     @action(detail=False, methods=['get'])
-    
+    def marketplace(self, request):
+        return Response(build_skill_marketplace_catalog(user=request.user))
 
     @action(detail=True, methods=['post'])
     def clone(self, request, pk=None):

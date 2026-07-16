@@ -1,11 +1,8 @@
 <template>
   <el-dialog v-model="visible" title="创建告警规则" width="900px" class="alert-rule-wizard" destroy-on-close>
     <el-steps :active="step" finish-status="success" simple>
-      <el-step title="对象模板" />
-      <el-step title="规则模板" />
-      <el-step title="触发条件" />
-      <el-step title="响应动作" />
-      <el-step title="试运行" />
+      <el-step title="选择内置规则" />
+      <el-step title="配置与试运行" />
     </el-steps>
 
     <div class="rule-wizard-body">
@@ -27,14 +24,17 @@
             <small>{{ bundle.sourceTypes.join(' / ') }}</small>
           </button>
         </div>
+        <RuleTemplateCatalog
+          v-if="form.template_bundle"
+          :templates="matchingTemplates"
+          compact
+          @import-rule="applyTemplate"
+          @preview="applyTemplate"
+        />
+        <el-empty v-else description="请选择规则类型" :image-size="72" />
       </template>
 
-      <template v-else-if="step === 1">
-        <RuleTemplateCatalog :templates="matchingTemplates" compact @import-rule="applyTemplate" @preview="applyTemplate" />
-        <el-empty v-if="!matchingTemplates.length" description="暂无可用规则模板" :image-size="82" />
-      </template>
-
-      <template v-else-if="step === 2">
+      <template v-else>
         <el-form label-width="112px">
           <el-form-item label="规则名称"><el-input v-model="form.name" /></el-form-item>
           <el-form-item label="严重级别">
@@ -50,31 +50,22 @@
           </div>
           <el-form-item label="查询配置"><el-input v-model="form.query_config_text" type="textarea" :rows="5" spellcheck="false" /></el-form-item>
           <el-form-item label="触发条件"><el-input v-model="form.condition_text" type="textarea" :rows="4" spellcheck="false" /></el-form-item>
-        </el-form>
-      </template>
-
-      <template v-else-if="step === 3">
-        <div class="wizard-response">
           <el-checkbox v-model="form.notify_enabled">命中后通知</el-checkbox>
           <el-checkbox v-model="form.auto_analyze">命中后 AIOps 研判</el-checkbox>
           <el-checkbox v-model="form.is_enabled">保存后启用</el-checkbox>
           <el-input v-model="form.description" type="textarea" :rows="4" placeholder="规则说明" />
-        </div>
-      </template>
-
-      <template v-else>
-        <div class="wizard-run">
-          <el-button type="primary" :loading="dryRunning" @click="dryRun">试运行</el-button>
-          <pre v-if="dryRunResult">{{ dryRunResult }}</pre>
-          <el-empty v-else description="点击试运行查看匹配结果" :image-size="82" />
-        </div>
+          <div class="wizard-run">
+            <el-button type="primary" plain :loading="dryRunning" @click="dryRun">试运行</el-button>
+            <pre v-if="dryRunResult">{{ dryRunResult }}</pre>
+          </div>
+        </el-form>
       </template>
     </div>
 
     <template #footer>
       <el-button @click="visible = false">取消</el-button>
       <el-button :disabled="step === 0" @click="step -= 1">上一步</el-button>
-      <el-button v-if="step < 4" type="primary" :disabled="!canGoNext" @click="step += 1">下一步</el-button>
+      <el-button v-if="step < 1" type="primary" :disabled="!canGoNext" @click="step += 1">下一步</el-button>
       <el-button v-else type="primary" @click="save">保存</el-button>
     </template>
   </el-dialog>
@@ -120,11 +111,7 @@ const templateBundles = computed(() => BUNDLES.map((bundle) => {
 
 const activeBundle = computed(() => templateBundles.value.find((item) => item.key === form.template_bundle))
 const matchingTemplates = computed(() => activeBundle.value?.templates || [])
-const canGoNext = computed(() => {
-  if (step.value === 0) return Boolean(form.template_bundle)
-  if (step.value === 1) return Boolean(form.template)
-  return true
-})
+const canGoNext = computed(() => Boolean(form.template))
 
 watch(visible, (value) => {
   if (!value) return
@@ -137,6 +124,7 @@ function emptyForm() {
   return {
     template_bundle: '',
     template: null,
+    category: 'server',
     name: '',
     source_type: 'prometheus',
     level: 'warning',
@@ -163,23 +151,25 @@ function selectBundle(bundle) {
 function applyTemplate(template) {
   form.template = template.id
   form.name = template.name
+  form.category = template.category || (form.template_bundle === 'kubernetes' ? 'k8s' : 'server')
   form.source_type = template.source_type
   form.level = template.level
   form.query_config_text = JSON.stringify(template.query_config || {}, null, 2)
   form.condition_text = JSON.stringify(template.condition || {}, null, 2)
-  form.labels = { ...(template.default_labels || {}), integration: form.template_bundle || template.default_labels?.integration }
+  form.labels = { ...(template.labels || {}), integration: form.template_bundle || template.labels?.integration }
   form.annotations = template.annotations || {}
   form.interval_seconds = template.interval_seconds || 60
   form.duration_seconds = template.duration_seconds || 0
   form.notify_enabled = Boolean(template.notify_enabled)
   form.auto_analyze = Boolean(template.auto_analyze)
   form.description = template.description || ''
-  step.value = 2
+  step.value = 1
 }
 
 function payload() {
   return {
-    template: form.template || null,
+    source: 'custom',
+    category: form.category || 'server',
     name: form.name,
     source_type: form.source_type,
     level: form.level,

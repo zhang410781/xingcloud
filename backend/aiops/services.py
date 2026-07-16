@@ -1016,6 +1016,21 @@ MODEL_PROVIDER_PRESETS = [
         'notes': 'Sail Cloud OpenAI-compatible 入口；默认使用 Qwen2.5-72B-Instruct，保存 API Key 后即可作为智能助手默认模型使用。',
     },
     {
+        'key': 'agnes_ai',
+        'name': 'Agnes AI',
+        'provider_type': AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
+        'base_url': 'https://apihub.agnes-ai.com/v1',
+        'default_model': 'agnes-2.0-flash',
+        'backup_model': '',
+        'temperature': 0.2,
+        'max_tokens': 10000,
+        'timeout_seconds': 60,
+        'price_currency': AIOpsModelProvider.CURRENCY_CNY,
+        'api_key_placeholder': 'Agnes AI API Key',
+        'docs_url': 'https://apihub.agnes-ai.com/',
+        'notes': 'Agnes AI OpenAI-compatible 入口；保存 API Key 并通过连接测试后可设为默认提供商。',
+    },
+    {
         'key': 'deepseek',
         'name': 'DeepSeek',
         'provider_type': AIOpsModelProvider.PROVIDER_OPENAI_COMPATIBLE,
@@ -2637,24 +2652,34 @@ def _ensure_builtin_runtime_assets(config):
 
 def _ensure_builtin_model_provider(config):
     definition = BUILTIN_MODEL_PROVIDER
-    provider, created = AIOpsModelProvider.objects.get_or_create(
-        name=definition['name'],
-        defaults={
-            'provider_type': definition['provider_type'],
-            'provider_preset': definition['provider_preset'],
-            'base_url': definition['base_url'],
-            'default_model': definition['default_model'],
-            'backup_model': definition['backup_model'],
-            'temperature': definition['temperature'],
-            'max_tokens': definition['max_tokens'],
-            'timeout_seconds': definition['timeout_seconds'],
-            'price_currency': definition['price_currency'],
-            'is_enabled': True,
-            'last_test_status': AIOpsModelProvider.STATUS_UNKNOWN,
-            'last_test_message': definition['last_test_message'],
-        },
-    )
+    defaults = {
+        'provider_type': definition['provider_type'],
+        'provider_preset': definition['provider_preset'],
+        'base_url': definition['base_url'],
+        'default_model': definition['default_model'],
+        'backup_model': definition['backup_model'],
+        'temperature': definition['temperature'],
+        'max_tokens': definition['max_tokens'],
+        'timeout_seconds': definition['timeout_seconds'],
+        'price_currency': definition['price_currency'],
+        'is_enabled': True,
+        'last_test_status': AIOpsModelProvider.STATUS_UNKNOWN,
+        'last_test_message': definition['last_test_message'],
+    }
+    provider = AIOpsModelProvider.objects.filter(name=definition['name']).first()
+    created = False
+    if provider is None:
+        provider = AIOpsModelProvider.objects.filter(
+            base_url=definition['base_url'],
+            default_model=definition['default_model'],
+        ).order_by('id').first()
+        if provider is None:
+            provider = AIOpsModelProvider.objects.create(name=definition['name'], **defaults)
+            created = True
     changed_fields = []
+    if provider.name != definition['name']:
+        provider.name = definition['name']
+        changed_fields.append('name')
     for field in ['provider_type', 'provider_preset', 'base_url', 'default_model', 'backup_model']:
         current_value = getattr(provider, field)
         legacy_value = LEGACY_BUILTIN_MODEL_PROVIDER.get(field)

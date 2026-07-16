@@ -1,6 +1,6 @@
 ﻿<template>
   <div class="fade-in log-datasource-page workbench-page-shell">
-    <section class="hero panel">
+    <section v-if="!embedded" class="hero panel">
       <div class="release-hero-copy">
         <div class="release-hero-title-row release-hero-title-inline">
           <span class="log-header-icon"><el-icon><DataBoard /></el-icon></span>
@@ -16,7 +16,7 @@
       </div>
     </section>
 
-    <ObservabilityRouteTabs group="datasources" />
+    <ObservabilityRouteTabs v-if="!embedded" group="datasources" />
 
     <div class="workbench-card log-datasource-card">
       <div class="section-toolbar">
@@ -232,6 +232,10 @@ import {
 } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
 import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
+
+defineProps({
+  embedded: { type: Boolean, default: false },
+})
 
 const authStore = useAuthStore()
 const loading = ref(false)

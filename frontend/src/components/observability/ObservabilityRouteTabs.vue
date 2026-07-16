@@ -44,10 +44,11 @@ const overviewPermissions = [
 const mainTabs = [
   { key: 'overview', title: '总览', icon: 'DataLine', path: '/observability/overview', anyPermissions: overviewPermissions },
   { key: 'alerts', title: '告警中心', icon: 'Bell', path: '/observability/alerts', anyPermissions: ['ops.alert.view', 'ops.alert.config.view'] },
+  { key: 'rules', title: '告警规则', icon: 'Operation', path: '/observability/rules', permission: 'ops.alert.config.view' },
   { key: 'dashboards', title: '监控看板', icon: 'Histogram', path: '/observability/dashboards', permission: 'ops.monitor.dashboard.view' },
   { key: 'metrics-query', title: '指标查询', icon: 'DataAnalysis', path: '/observability/metrics', permission: 'ops.metric.query' },
-  { key: 'logs-query', title: '日志查询', icon: 'Search', path: '/logs/query', permission: 'ops.log.query' },
-  { key: 'datasources', title: '数据源', icon: 'DataBoard', path: '/observability/datasources', anyPermissions: ['ops.metric.datasource.view', 'ops.log.datasource.view'] },
+  { key: 'logs-query', title: '日志查询', icon: 'Search', path: '/observability/logs', permission: 'ops.log.query' },
+  { key: 'datasources', title: '数据源', icon: 'DataBoard', path: '/observability/data-sources', anyPermissions: ['ops.metric.datasource.view', 'ops.log.datasource.view'] },
 ]
 
 const tabGroups = {
@@ -66,12 +67,6 @@ function canAccess(tab) {
 const visibleTabs = computed(() => (tabGroups[props.group] || mainTabs).filter(canAccess))
 
 function isActiveTab(tab) {
-  if (tab.path === '/observability/datasources') {
-    return route.path === '/observability/datasources' || route.path === '/logs/datasources' || route.query.tab === 'datasources'
-  }
-  if (tab.path === '/logs/query') {
-    return route.path === '/logs/query'
-  }
   return route.path === tab.path
 }
 

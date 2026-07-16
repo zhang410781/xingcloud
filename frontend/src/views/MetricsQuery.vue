@@ -1,6 +1,6 @@
 <template>
   <div class="metrics-page workbench-page-shell">
-    <section class="hero panel hero-panel">
+    <section v-if="!embedded" class="hero panel hero-panel">
       <div class="release-hero-copy">
         <div class="release-hero-title-row release-hero-title-inline">
           <span class="release-header-icon"><el-icon><DataAnalysis /></el-icon></span>
@@ -16,7 +16,7 @@
       </div>
     </section>
 
-    <ObservabilityRouteTabs v-if="activeTab === 'datasources'" group="datasources" />
+    <ObservabilityRouteTabs v-if="!embedded && activeTab === 'datasources'" group="datasources" />
 
     <section v-if="activeTab === 'query'" class="metric-query-workbench">
       <div class="query-console">
@@ -388,11 +388,16 @@ import {
   updateMetricDataSource,
 } from '@/api/modules/ops'
 
+const props = defineProps({
+  embedded: { type: Boolean, default: false },
+  initialTab: { type: String, default: 'query' },
+})
+
 const route = useRoute()
 const authStore = useAuthStore()
 const canQuery = computed(() => authStore.hasPermission('ops.metric.query'))
 const canManageDatasource = computed(() => authStore.hasPermission('ops.metric.datasource.manage'))
-const activeTab = ref(route.query.tab === 'datasources' ? 'datasources' : 'query')
+const activeTab = ref(props.initialTab === 'datasources' || route.query.tab === 'datasources' ? 'datasources' : 'query')
 const loadingSources = ref(false)
 const queryLoading = ref(false)
 const savingSource = ref(false)
@@ -1760,6 +1765,7 @@ watch(
 watch(
   () => route.query.tab,
   (tabName) => {
+    if (props.embedded) return
     activeTab.value = tabName === 'datasources' ? 'datasources' : 'query'
   },
   { immediate: true }

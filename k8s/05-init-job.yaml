@@ -73,7 +73,7 @@ spec:
               conn.close()
               PY
               python manage.py migrate --noinput
-              python manage.py seed_templates
+              python manage.py shell -c "from ops.alert_rule_presets import ensure_builtin_alert_rule_templates; ensure_builtin_alert_rule_templates()"
           resources:
             requests:
               cpu: 250m

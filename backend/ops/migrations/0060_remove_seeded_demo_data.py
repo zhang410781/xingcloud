@@ -90,8 +90,8 @@ def remove_seeded_demo_data(apps, schema_editor):
     HostTask = apps.get_model('ops', 'HostTask')
     HostTaskSchedule = apps.get_model('ops', 'HostTaskSchedule')
     TransactionTicket = apps.get_model('ops', 'TransactionTicket')
-    AIOpsAgentConfig = apps.get_model('aiops', 'AIOpsAgentConfig')
-    AIOpsModelProvider = apps.get_model('aiops', 'AIOpsModelProvider')
+    AIOpsAgentConfig = _safe_get_model(apps, 'aiops', 'AIOpsAgentConfig')
+    AIOpsModelProvider = _safe_get_model(apps, 'aiops', 'AIOpsModelProvider')
     User = apps.get_model('auth', 'User')
 
     # Clean up ops data
@@ -116,7 +116,7 @@ def remove_seeded_demo_data(apps, schema_editor):
     HostTaskSchedule.objects.filter(Q(created_by='ops_demo') | Q(created_by='ops-demo')).delete()
     TransactionTicket.objects.filter(Q(applicant='ops-demo') | Q(title__startswith='示例 · ')).delete()
     K8sCluster.objects.filter(name__in=DEMO_K8S_CLUSTERS).delete()
-    DockerHost.objects.filter(hostname__in=DEMO_DOCKER_HOSTS).delete()
+    DockerHost.objects.filter(name__in=DEMO_DOCKER_HOSTS).delete()
     Host.objects.filter(hostname__in=DEMO_HOSTNAMES).delete()
 
     # Clean up deleted modules (safe wrappers)

@@ -5,6 +5,7 @@ from django.db.models import Avg, Count, Q
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
@@ -29,6 +30,7 @@ from .models import (
     AlertAction,
     AlertNotificationChannel,
     AlertNotificationLog,
+    AlertNotificationPolicy,
     AlertRecipient,
     AlertRecipientGroup,
     AlertRule,
@@ -43,6 +45,7 @@ from .models import (
     HostTaskTemplate,
     K8sCluster,
     LogEntry,
+    MetricDataSource,
     TaskResource,
     TaskResourceGroup,
     TransactionTicket,
@@ -51,6 +54,7 @@ from .serializers import (
     AlertActionSerializer,
     AlertNotificationChannelSerializer,
     AlertNotificationLogSerializer,
+    AlertNotificationPolicySerializer,
     AlertRecipientGroupSerializer,
     AlertRecipientSerializer,
     AlertRuleSerializer,
@@ -81,12 +85,21 @@ from .alerting import (
     alert_summary,
     apply_alert_action,
     dispatch_alert_notifications,
+    resolve_notification_policies,
     handle_interaction_token,
     match_matchers,
 )
 from .alert_log_evidence import build_alert_log_evidence
+from .alert_analysis import enqueue_alert_analysis, serialize_analysis
+from .alert_rule_presets import ensure_builtin_alert_rule_templates, instantiate_rule_from_template
 from .alert_rules import trigger_alert_rule
 from .sla import build_dashboard_sla as build_sla_dashboard_summary
+
+
+class AlertConfigPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 500
 
 
 SLA_TARGET_PERCENT = 99.96
@@ -2112,7 +2125,7 @@ class TransactionTicketViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, 
 
 
 class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
-    queryset = Alert.objects.select_related('host').prefetch_related('actions', 'claim_records', 'notification_logs__channel', 'notification_logs__rule').all()
+    queryset = Alert.objects.select_related('host').prefetch_related('actions', 'claim_records', 'notification_logs').all()
     serializer_class = AlertSerializer
     search_fields = ['title', 'source', 'message', 'host__hostname', 'service', 'resource', 'business_line', 'cluster', 'namespace']
     filterset_fields = ['level', 'status', 'source_type', 'source', 'is_acknowledged', 'is_suppressed', 'service', 'environment', 'cluster', 'namespace', 'region', 'business_line', 'claimed_by']
@@ -2140,6 +2153,8 @@ class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.Mod
         'reopen': ['ops.alert.manage'],
         'notify': ['ops.alert.notify'],
         'log_evidence': ['ops.alert.view'],
+        'analysis': ['ops.alert.view'],
+        'analyze': ['ops.alert.manage'],
     }
 
     def get_queryset(self):
@@ -2260,14 +2275,79 @@ class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.Mod
             limit = 10
         return Response(build_alert_log_evidence(alert, limit=limit))
 
+    @action(detail=True, methods=['get'])
+    def analysis(self, request, pk=None):
+        alert = self.get_object()
+        records = list(alert.analyses.order_by('-created_at', '-id')[:50])
+        results = [serialize_analysis(item) for item in records]
+        return Response({'results': results, 'latest': results[0] if results else None})
 
+    @action(detail=True, methods=['post'])
+    def analyze(self, request, pk=None):
+        alert = self.get_object()
+        actor = self._actor(request)
+        analysis, created = enqueue_alert_analysis(
+            alert,
+            trigger='manual',
+            requested_by=actor,
+            force=True,
+        )
+        return Response(
+            {'created': created, 'analysis': serialize_analysis(analysis)},
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+
+
+class AlertRuleTemplateViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
+    queryset = AlertRule.objects.filter(is_template=True)
+    serializer_class = AlertRuleSerializer
+    pagination_class = AlertConfigPagination
+    search_fields = ['name', 'code', 'source_type', 'description']
+    filterset_fields = ['category', 'source_type', 'level']
+    event_module = 'ops'
+    event_resource_type = 'alert_rule_template'
+    event_resource_label = '告警规则模板'
+    event_resource_name_fields = ('name',)
+    rbac_permissions = {
+        'list': ['ops.alert.config.view'],
+        'retrieve': ['ops.alert.config.view'],
+        'create': ['ops.alert.config.manage'],
+        'update': ['ops.alert.config.manage'],
+        'partial_update': ['ops.alert.config.manage'],
+        'destroy': ['ops.alert.config.manage'],
+    }
+
+    def get_queryset(self):
+        ensure_builtin_alert_rule_templates()
+        return super().get_queryset().select_related('metric_datasource', 'template')
+
+    def perform_create(self, serializer):
+        serializer.save(is_template=True, is_enabled=False, template=None, metric_datasource=None)
+
+    def create(self, request, *args, **kwargs):
+        data = request.data.copy()
+        if data.get('default_labels') and not data.get('labels'):
+            data['labels'] = data.get('default_labels')
+        data.pop('default_labels', None)
+        data.pop('is_builtin', None)
+        data['is_template'] = True
+        data['is_enabled'] = False
+        data.pop('metric_datasource', None)
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
 
 class AlertRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = AlertRule.objects.all()
     serializer_class = AlertRuleSerializer
+    pagination_class = AlertConfigPagination
     search_fields = ['name', 'code', 'source_type', 'description']
-    filterset_fields = ['category', 'source_type', 'level', 'is_enabled', 'notify_enabled', 'auto_analyze']
+    filterset_fields = ['category', 'source_type', 'level', 'is_enabled', 'notify_enabled', 'auto_analyze', 'metric_datasource', 'template', 'is_template']
     event_module = 'ops'
     event_resource_type = 'alert_rule'
     event_resource_label = '告警规则'
@@ -2286,8 +2366,55 @@ class AlertRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets
         'evaluate': ['ops.alert.config.manage'],
         'dry_run_draft': ['ops.alert.config.manage'],
         'engine_status': ['ops.alert.config.view'],
+        'instantiate': ['ops.alert.config.manage'],
     }
 
+    def get_queryset(self):
+        ensure_builtin_alert_rule_templates()
+        queryset = super().get_queryset().select_related('metric_datasource', 'template')
+        is_template = str(self.request.query_params.get('is_template', '')).lower()
+        if is_template in {'1', 'true', 'yes'}:
+            queryset = queryset.filter(is_template=True)
+        elif is_template in {'0', 'false', 'no'}:
+            queryset = queryset.filter(is_template=False)
+        else:
+            queryset = queryset.filter(is_template=False)
+        datasource_id = self.request.query_params.get('metric_datasource_id')
+        if datasource_id not in (None, ''):
+            queryset = queryset.filter(metric_datasource_id=datasource_id)
+        template_code = str(self.request.query_params.get('template_code') or '').strip()
+        if template_code:
+            queryset = queryset.filter(template__code=template_code)
+        needs_binding = str(self.request.query_params.get('needs_binding') or '').lower()
+        if needs_binding in {'1', 'true', 'yes'}:
+            queryset = queryset.filter(source_type='prometheus', metric_datasource__isnull=True)
+        return queryset
+
+    def perform_create(self, serializer):
+        serializer.save(is_template=False)
+
+    @action(detail=False, methods=['post'])
+    def instantiate(self, request):
+        template_code = str(request.data.get('template_code') or '').strip()
+        template_id = request.data.get('template_id')
+        datasource_id = request.data.get('metric_datasource_id')
+        overrides = request.data.get('overrides') or {}
+        if not isinstance(overrides, dict):
+            return Response({'detail': 'overrides 必须是对象'}, status=status.HTTP_400_BAD_REQUEST)
+        template_query = AlertRule.objects.filter(is_template=True)
+        template = template_query.filter(pk=template_id).first() if template_id else template_query.filter(code=template_code).first()
+        if not template:
+            return Response({'detail': '规则模板不存在'}, status=status.HTTP_404_NOT_FOUND)
+        datasource = None
+        if datasource_id not in (None, ''):
+            datasource = MetricDataSource.objects.filter(pk=datasource_id).first()
+            if not datasource:
+                return Response({'detail': '指标数据源不存在'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            rule, created = instantiate_rule_from_template(template, datasource=datasource, overrides=overrides)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(self.get_serializer(rule).data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
     @action(detail=False, methods=['get'], url_path='by-category')
     def by_category(self, request):
@@ -2323,6 +2450,8 @@ class AlertRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets
     @action(detail=True, methods=['post'])
     def evaluate(self, request, pk=None):
         rule = self.get_object()
+        if rule.is_template:
+            return Response({'detail': '规则模板不能直接执行，请先创建规则实例'}, status=status.HTTP_400_BAD_REQUEST)
         dry_run = str(request.data.get('dry_run', '')).lower() in {'1', 'true', 'yes'}
         result = evaluate_rule(rule, dry_run=dry_run, request=request)
         response_status = status.HTTP_200_OK if result.get('success') else status.HTTP_502_BAD_GATEWAY
@@ -2330,7 +2459,10 @@ class AlertRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets
 
     @action(detail=False, methods=['post'], url_path='dry-run-draft')
     def dry_run_draft(self, request):
-        serializer = self.get_serializer(data=request.data)
+        data = request.data.copy()
+        if data.get('metric_datasource_id') and not data.get('metric_datasource'):
+            data['metric_datasource'] = data.get('metric_datasource_id')
+        serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
         rule = AlertRule(**serializer.validated_data)
         rule.id = None
@@ -2366,6 +2498,7 @@ class AlertRecipientViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, vie
 class AlertRecipientGroupViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = AlertRecipientGroup.objects.prefetch_related('recipients', 'users').all()
     serializer_class = AlertRecipientGroupSerializer
+    pagination_class = AlertConfigPagination
     search_fields = ['name', 'description']
     event_module = 'ops'
     event_resource_type = 'alert_recipient_group'
@@ -2384,6 +2517,7 @@ class AlertRecipientGroupViewSet(EventWallModelViewSetMixin, RBACPermissionMixin
 class AlertNotificationChannelViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = AlertNotificationChannel.objects.all()
     serializer_class = AlertNotificationChannelSerializer
+    pagination_class = AlertConfigPagination
     search_fields = ['name', 'channel_type']
     event_module = 'ops'
     event_resource_type = 'alert_notification_channel'
@@ -2427,6 +2561,50 @@ class AlertNotificationChannelViewSet(EventWallModelViewSetMixin, RBACPermission
         return Response(AlertNotificationLogSerializer(logs, many=True).data)
 
 
+class AlertNotificationPolicyViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
+    queryset = AlertNotificationPolicy.objects.select_related('metric_datasource').prefetch_related('channels', 'recipient_groups').all()
+    serializer_class = AlertNotificationPolicySerializer
+    pagination_class = AlertConfigPagination
+    search_fields = ['name', 'description']
+    filterset_fields = ['metric_datasource', 'min_level', 'is_enabled']
+    event_module = 'ops'
+    event_resource_type = 'alert_notification_policy'
+    event_resource_label = '告警通知策略'
+    event_resource_name_fields = ('name',)
+    rbac_permissions = {
+        'list': ['ops.alert.config.view'],
+        'retrieve': ['ops.alert.config.view'],
+        'create': ['ops.alert.config.manage'],
+        'update': ['ops.alert.config.manage'],
+        'partial_update': ['ops.alert.config.manage'],
+        'destroy': ['ops.alert.config.manage'],
+        'preview': ['ops.alert.config.view'],
+    }
+
+    @action(detail=False, methods=['post'])
+    def preview(self, request):
+        labels = request.data.get('labels') if isinstance(request.data.get('labels'), dict) else {}
+        datasource_id = request.data.get('metric_datasource_id')
+        alert = Alert(
+            title=str(request.data.get('title') or '通知策略预览'),
+            level=str(request.data.get('level') or 'warning'),
+            source='preview',
+            source_type=Alert.SOURCE_PLATFORM,
+            message='',
+            environment=str(request.data.get('environment') or labels.get('environment') or ''),
+            cluster=str(request.data.get('cluster') or labels.get('cluster') or ''),
+            namespace=str(request.data.get('namespace') or labels.get('namespace') or ''),
+            service=str(request.data.get('service') or labels.get('service') or ''),
+            resource=str(request.data.get('resource') or labels.get('resource') or ''),
+            labels=labels,
+        )
+        policies = resolve_notification_policies(alert, metric_datasource_id=datasource_id)
+        return Response({
+            'matched_count': len(policies),
+            'policies': self.get_serializer(policies, many=True).data,
+        })
+
+
 
 
 class AlertSilenceViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
@@ -2455,7 +2633,7 @@ class AlertNotificationLogViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelVie
     queryset = AlertNotificationLog.objects.select_related('alert').all()
     serializer_class = AlertNotificationLogSerializer
     search_fields = ['recipient_summary', 'response_body', 'error_message']
-    filterset_fields = ['alert', 'rule_id', 'channel_id', 'action', 'status']
+    filterset_fields = ['alert', 'rule_id', 'policy_id', 'channel_id', 'action', 'status']
     rbac_permissions = {
         'list': ['ops.alert.view'],
         'retrieve': ['ops.alert.view'],

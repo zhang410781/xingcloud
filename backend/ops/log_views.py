@@ -1369,11 +1369,21 @@ def _normalize_clickhouse_row(row, collection):
     attributes['_table'] = collection.get('table')
     attributes['_collection'] = collection.get('key')
     timestamp_value = row.get(collection.get('time_field')) if collection.get('time_field') else None
+    namespace = row.get('namespace') or row.get('namespace_name') or ''
+    pod = row.get('pod') or row.get('pod_name') or ''
+    container = row.get('container') or row.get('container_name') or ''
+    host = row.get('host') or row.get('node') or row.get('node_name') or ''
+    service = row.get('service') or row.get('service_name') or row.get('app') or namespace or collection.get('table')
     return {
         'timestamp': _iso_from_ms(timestamp_value or row.get('timestamp') or row.get('createdtime')) if (timestamp_value or row.get('timestamp') or row.get('createdtime')) else '',
         'message': message,
         'level': level,
         'source': _clickhouse_source(row, collection.get('source_fields'), collection.get('table')),
+        'service': str(service or ''),
+        'namespace': str(namespace or ''),
+        'pod': str(pod or ''),
+        'container': str(container or ''),
+        'host': str(host or ''),
         'attributes': _with_trace_id(attributes, message),
     }
 
@@ -1584,6 +1594,7 @@ def _query_elk(config, payload):
 
         body = {
             'size': _sanitize_limit(payload.get('limit')),
+            'track_total_hits': True,
             'sort': [{time_field: {'order': 'desc', 'unmapped_type': 'date'}}],
             'query': {
                 'bool': {
@@ -1616,12 +1627,31 @@ def _query_elk(config, payload):
         timestamp = _get_nested(source, time_field) or hit.get('sort', [None])[0]
         attributes = dict(source)
         attributes['_index'] = hit.get('_index')
+        namespace = source.get('namespace') or _get_nested(source, 'kubernetes.namespace_name')
+        pod = source.get('pod') or _get_nested(source, 'kubernetes.pod_name')
+        container = source.get('container') or _get_nested(source, 'kubernetes.container_name')
+        host = source.get('host') or _get_nested(source, 'kubernetes.host')
+        raw_service = source.get('service')
+        service = (
+            _get_nested(source, 'service.name')
+            or source.get('service.name')
+            or (raw_service if isinstance(raw_service, (str, int, float)) else '')
+            or _get_nested(source, 'kubernetes.labels.app')
+            or namespace
+            or hit.get('_index')
+        )
+        message = _pick_message(source, message_fields)
         logs.append({
             'timestamp': _iso_from_ms(timestamp) if timestamp else '',
-            'message': _pick_message(source, message_fields),
+            'message': message,
             'level': _detect_level(source.get('level') or source.get('log.level') or '', source) if source else 'unknown',
-            'source': hit.get('_index') or 'elasticsearch',
-            'attributes': _with_trace_id(attributes, _pick_message(source, message_fields)),
+            'source': str(service or hit.get('_index') or 'elasticsearch'),
+            'service': str(service or ''),
+            'namespace': str(namespace or ''),
+            'pod': str(pod or ''),
+            'container': str(container or ''),
+            'host': str(host or ''),
+            'attributes': _with_trace_id(attributes, message),
         })
         if logs[-1]['level'] == 'unknown':
             logs[-1]['level'] = _detect_level(logs[-1]['message'], source)

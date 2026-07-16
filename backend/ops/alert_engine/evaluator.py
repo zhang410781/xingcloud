@@ -94,12 +94,16 @@ def _prometheus_results(rule):
     query_config = _dict(rule.query_config)
     condition = _dict(rule.condition)
     query = str(query_config.get('promql') or query_config.get('query') or query_config.get('metric') or '').strip()
+    if not rule.metric_datasource_id:
+        raise ValueError('Prometheus 规则尚未绑定指标数据源')
+    if not rule.metric_datasource or not rule.metric_datasource.is_enabled:
+        raise ValueError('Prometheus 规则绑定的指标数据源已停用或不存在')
     rule_labels = _dict(rule.labels)
     payload = execute_promql_query(
         query,
         range_query=False,
-        metric_datasource_id=query_config.get('metric_datasource_id') or query_config.get('datasource_id') or '',
-        environment=query_config.get('environment') or rule_labels.get('environment') or '',
+        metric_datasource_id=rule.metric_datasource_id,
+        environment=rule.metric_datasource.environment or query_config.get('environment') or rule_labels.get('environment') or '',
         prefer_metric_datasource=True,
     )
     results = []
@@ -107,6 +111,12 @@ def _prometheus_results(rule):
         metric = _dict(item.get('metric'))
         value = _latest_prom_value(item)
         labels = _labels(rule, metric)
+        labels['metric_datasource_id'] = str(rule.metric_datasource_id)
+        labels['metric_datasource_name'] = rule.metric_datasource.name
+        if rule.metric_datasource.environment:
+            labels.setdefault('environment', rule.metric_datasource.environment)
+        if rule.metric_datasource.cluster_name:
+            labels.setdefault('cluster', rule.metric_datasource.cluster_name)
         resource = labels.get('pod') or labels.get('instance') or labels.get('node') or labels.get('job') or ''
         matched = _compare(value, condition)
         results.append({
@@ -272,6 +282,8 @@ def _k8s_results(rule):
 
 
 def evaluate_rule(rule, *, dry_run=False, request=None):
+    if rule.is_template:
+        raise ValueError('规则模板不能直接执行，请先创建规则实例')
     if not rule.is_enabled and not dry_run:
         raise ValueError('alert rule is disabled')
     try:

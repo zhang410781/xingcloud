@@ -1,4 +1,8 @@
-from .models import AlertRule
+from copy import deepcopy
+
+from django.db import transaction
+
+from .models import AlertRule, MetricDataSource
 
 
 def _template(category, code, name, source_type, level, query_config, condition,
@@ -318,43 +322,115 @@ def ensure_builtin_alert_rule_templates():
         payload = dict(item)
         payload['labels'] = payload.pop('default_labels', {})
         payload['source'] = item['code']
-        payload['is_enabled'] = True
+        payload['is_template'] = True
+        payload['is_enabled'] = False
         payload.pop('sort_order', None)
-        rule, _ = AlertRule.objects.update_or_create(code=item['code'], defaults=payload)
+        # Seed the catalog once; subsequent edits/deletions are user-owned data.
+        rule, _ = AlertRule.objects.get_or_create(code=item['code'], defaults=payload)
         rules.append(rule)
+    k8s_templates = [item for item in rules if item.is_template and item.source_type == 'prometheus' and item.category == 'k8s']
+    for datasource in MetricDataSource.objects.filter(provider=MetricDataSource.PROVIDER_PROMETHEUS, is_enabled=True):
+        for template in k8s_templates:
+            instantiate_rule_from_template(template, datasource=datasource)
     return rules
 
 
-def install_rules_from_templates(template_codes):
-    """从指定模板编码列表批量创建告警规则（跳过已创建的）。"""
-    existing = set(AlertRule.objects.filter(source__in=template_codes).values_list('source', flat=True))
-    rules = ensure_builtin_alert_rule_templates()
-    return (
-        [rule for rule in rules if rule.source in template_codes and rule.source not in existing],
-        [code for code in template_codes if code in existing],
-    )
+INSTANCE_FIELDS = {
+    'name', 'category', 'level', 'query_config', 'condition', 'labels', 'annotations',
+    'interval_seconds', 'duration_seconds', 'notify_enabled', 'auto_analyze',
+    'group_window', 'repeat_interval', 'mute_schedule', 'escalation_minutes',
+    'description', 'is_enabled',
+}
+
+
+def instantiate_rule_from_template(template, datasource=None, overrides=None):
+    if not template.is_template:
+        raise ValueError('所选规则不是模板')
+    if template.source_type == 'prometheus' and datasource is None:
+        raise ValueError('Prometheus 规则必须选择指标数据源')
+    if datasource is not None and not datasource.is_enabled:
+        raise ValueError('指标数据源已停用')
+
+    existing = AlertRule.objects.filter(template=template, metric_datasource=datasource).first()
+    if existing:
+        return existing, False
+
+    payload = {
+        'name': f'{template.name} · {datasource.cluster_name or datasource.name}' if datasource else template.name,
+        'category': template.category,
+        'source': template.code,
+        'is_template': False,
+        'template': template,
+        'metric_datasource': datasource,
+        'source_type': template.source_type,
+        'level': template.level,
+        'query_config': deepcopy(template.query_config or {}),
+        'condition': deepcopy(template.condition or {}),
+        'labels': deepcopy(template.labels or {}),
+        'annotations': deepcopy(template.annotations or {}),
+        'interval_seconds': template.interval_seconds,
+        'duration_seconds': template.duration_seconds,
+        'notify_enabled': template.notify_enabled,
+        'auto_analyze': template.auto_analyze,
+        'group_window': template.group_window,
+        'repeat_interval': template.repeat_interval,
+        'mute_schedule': deepcopy(template.mute_schedule or {}),
+        'escalation_minutes': template.escalation_minutes,
+        'description': template.description,
+        'is_enabled': False,
+    }
+    if datasource:
+        if datasource.environment:
+            payload['labels']['environment'] = datasource.environment
+        if datasource.cluster_name:
+            payload['labels']['cluster'] = datasource.cluster_name
+        payload['labels']['metric_datasource_id'] = str(datasource.id)
+    for key, value in (overrides or {}).items():
+        if key in INSTANCE_FIELDS:
+            payload[key] = deepcopy(value)
+    return AlertRule.objects.create(**payload), True
+
+
+@transaction.atomic
+def ensure_datasource_rule_instances(datasource, category='k8s'):
+    templates = ensure_builtin_alert_rule_templates()
+    created = []
+    for template in templates:
+        if template.source_type != 'prometheus' or template.category != category:
+            continue
+        rule, was_created = instantiate_rule_from_template(template, datasource=datasource)
+        if was_created:
+            created.append(rule)
+    return created
+
+
+def install_rules_from_templates(template_codes, metric_datasource_id=None, overrides=None):
+    """从模板为指定数据源创建独立规则实例。"""
+    ensure_builtin_alert_rule_templates()
+    datasource = None
+    if metric_datasource_id not in (None, ''):
+        try:
+            datasource = MetricDataSource.objects.get(pk=metric_datasource_id)
+        except (MetricDataSource.DoesNotExist, TypeError, ValueError) as exc:
+            raise ValueError('指标数据源不存在') from exc
+    templates = AlertRule.objects.filter(is_template=True, code__in=template_codes)
+    template_map = {item.code: item for item in templates}
+    if datasource is None and any(item.source_type == 'prometheus' for item in template_map.values()):
+        raise ValueError('安装 Prometheus 规则时必须选择指标数据源')
     created = []
     skipped = []
-    for template in AlertRuleTemplate.objects.filter(code__in=template_codes, is_enabled=True).order_by('sort_order', 'name'):
-        if AlertRule.objects.filter(template=template).exists():
-            skipped.append(template.code)
+    for code in template_codes:
+        template = template_map.get(code)
+        if not template:
+            skipped.append(code)
             continue
-        rule = AlertRule.objects.create(
-            template=template,
-            name=template.name,
-            source_type=template.source_type,
-            level=template.level,
-            query_config=template.query_config,
-            condition=template.condition,
-            labels=template.default_labels,
-            annotations=template.annotations,
-            interval_seconds=template.interval_seconds,
-            duration_seconds=template.duration_seconds,
-            notify_enabled=template.notify_enabled,
-            auto_analyze=template.auto_analyze,
-            is_enabled=True,
-            description=template.description,
-            category=template.category,
-        )
-        created.append(rule)
+        try:
+            rule, was_created = instantiate_rule_from_template(template, datasource=datasource, overrides=overrides)
+        except ValueError:
+            skipped.append(code)
+            continue
+        if was_created:
+            created.append(rule)
+        else:
+            skipped.append(code)
     return created, skipped

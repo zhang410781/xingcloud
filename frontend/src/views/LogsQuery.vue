@@ -642,7 +642,7 @@ function providerTagType(provider) {
 }
 
 function goToDatasources() {
-  router.push('/logs/datasources')
+  router.push('/observability/data-sources')
 }
 
 function openSyntaxHelp(provider) {
@@ -1635,7 +1635,7 @@ watch(
     route.query.autoRun,
   ].join('|'),
   async () => {
-    if (route.path === '/logs/query') {
+    if (route.path === '/observability/logs') {
       if (!(await applyTraceRoutePreset())) {
         if (!(await applyLokiRoutePreset())) {
           await applyKeywordRoutePreset()

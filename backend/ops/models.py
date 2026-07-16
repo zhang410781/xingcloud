@@ -893,6 +893,15 @@ class AlertRule(models.Model):
     code = models.SlugField('规则编码', max_length=96, unique=True, blank=True, default='')
     category = models.CharField('分类', max_length=16, choices=CATEGORY_CHOICES, default='server', db_index=True)
     source = models.CharField('模板来源', max_length=64, blank=True, default='custom')
+    is_template = models.BooleanField('规则模板', default=False, db_index=True)
+    template = models.ForeignKey(
+        'self', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='instances', verbose_name='来源模板',
+    )
+    metric_datasource = models.ForeignKey(
+        'MetricDataSource', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='alert_rules', verbose_name='指标数据源',
+    )
     notify_config = models.JSONField('通知配置', default=dict, blank=True)
     group_window = models.PositiveIntegerField('聚合窗口(分钟)', default=5)
     repeat_interval = models.PositiveIntegerField('重复通知间隔(分钟)', default=30)
@@ -922,6 +931,14 @@ class AlertRule(models.Model):
         indexes = [
             models.Index(fields=['source_type', 'is_enabled'], name='ops_ar_src_enabled_idx'),
             models.Index(fields=['last_evaluated_at', 'last_triggered_at'], name='ops_ar_eval_trigger_idx'),
+            models.Index(fields=['metric_datasource', 'is_template', 'is_enabled'], name='ops_ar_ds_tpl_enabled_idx'),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['template', 'metric_datasource'],
+                condition=models.Q(is_template=False, template__isnull=False, metric_datasource__isnull=False),
+                name='uniq_ops_alert_rule_template_ds',
+            ),
         ]
 
     def save(self, *args, **kwargs):
@@ -1068,6 +1085,102 @@ class AlertNotificationChannel(models.Model):
         return f'{self.name} ({self.channel_type})'
 
 
+class AlertNotificationPolicy(models.Model):
+    name = models.CharField('策略名称', max_length=128)
+    metric_datasource = models.ForeignKey(
+        'MetricDataSource', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='alert_notification_policies', verbose_name='指标数据源',
+    )
+    matchers = models.JSONField('标签匹配条件', default=list, blank=True)
+    min_level = models.CharField('最低告警级别', max_length=16, blank=True, default='')
+    priority = models.IntegerField('优先级', default=100, db_index=True)
+    continue_matching = models.BooleanField('继续匹配后续策略', default=False)
+    channels = models.ManyToManyField(AlertNotificationChannel, blank=True, related_name='notification_policies', verbose_name='通知渠道')
+    recipient_groups = models.ManyToManyField(AlertRecipientGroup, blank=True, related_name='notification_policies', verbose_name='接收组')
+    group_by = models.JSONField('聚合维度', default=list, blank=True)
+    group_wait_seconds = models.PositiveIntegerField('首次聚合等待秒', default=30)
+    group_interval_seconds = models.PositiveIntegerField('同组通知间隔秒', default=300)
+    repeat_interval_minutes = models.PositiveIntegerField('重复通知间隔分钟', default=30)
+    mute_schedule = models.JSONField('静默时段', default=dict, blank=True)
+    inhibition_matchers = models.JSONField('抑制条件', default=list, blank=True)
+    escalation_steps = models.JSONField('升级步骤', default=list, blank=True)
+    notify_on_fire = models.BooleanField('发送触发通知', default=True)
+    notify_on_resolved = models.BooleanField('发送恢复通知', default=True)
+    notify_on_analysis = models.BooleanField('发送研判完成通知', default=True)
+    is_enabled = models.BooleanField('启用', default=True)
+    description = models.CharField('说明', max_length=255, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '告警通知策略'
+        verbose_name_plural = '告警通知策略'
+        ordering = ['priority', 'id']
+        indexes = [
+            models.Index(fields=['metric_datasource', 'is_enabled', 'priority'], name='ops_anp_ds_enabled_prio_idx'),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class AlertAnalysis(models.Model):
+    STATUS_PENDING = 'pending'
+    STATUS_RUNNING = 'running'
+    STATUS_COMPLETED = 'completed'
+    STATUS_PARTIAL = 'partial'
+    STATUS_FAILED = 'failed'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, '待研判'),
+        (STATUS_RUNNING, '研判中'),
+        (STATUS_COMPLETED, '已完成'),
+        (STATUS_PARTIAL, '部分完成'),
+        (STATUS_FAILED, '失败'),
+    ]
+
+    TRIGGER_FIRST_ACTIVE = 'first_active'
+    TRIGGER_SEVERITY_ESCALATION = 'severity_escalation'
+    TRIGGER_MANUAL = 'manual'
+    TRIGGER_CHOICES = [
+        (TRIGGER_FIRST_ACTIVE, '首次活跃'),
+        (TRIGGER_SEVERITY_ESCALATION, '级别升级'),
+        (TRIGGER_MANUAL, '人工触发'),
+    ]
+
+    alert = models.ForeignKey(Alert, on_delete=models.CASCADE, related_name='analyses', verbose_name='告警')
+    status = models.CharField('状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING, db_index=True)
+    trigger = models.CharField('触发原因', max_length=32, choices=TRIGGER_CHOICES, default=TRIGGER_FIRST_ACTIVE)
+    evidence = models.JSONField('证据', default=dict, blank=True)
+    candidates = models.JSONField('候选根因', default=list, blank=True)
+    confidence = models.FloatField('置信度', null=True, blank=True)
+    result = models.JSONField('结构化结果', default=dict, blank=True)
+    root_cause = models.TextField('根因', blank=True, default='')
+    suggestion = models.TextField('建议', blank=True, default='')
+    provider = models.CharField('模型提供商', max_length=128, blank=True, default='')
+    model = models.CharField('模型', max_length=128, blank=True, default='')
+    retry_count = models.PositiveSmallIntegerField('已重试次数', default=0)
+    max_retries = models.PositiveSmallIntegerField('最大重试次数', default=2)
+    last_error = models.TextField('最近错误', blank=True, default='')
+    requested_by = models.CharField('触发人', max_length=128, blank=True, default='')
+    started_at = models.DateTimeField('开始时间', null=True, blank=True)
+    completed_at = models.DateTimeField('完成时间', null=True, blank=True)
+    next_retry_at = models.DateTimeField('下次重试时间', null=True, blank=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '告警智能研判'
+        verbose_name_plural = '告警智能研判'
+        ordering = ['-created_at', '-id']
+        indexes = [
+            models.Index(fields=['status', 'next_retry_at', 'created_at'], name='ops_aa_due_idx'),
+            models.Index(fields=['alert', 'created_at'], name='ops_aa_alert_created_idx'),
+        ]
+
+    def __str__(self):
+        return f'{self.alert_id}:{self.trigger}:{self.status}'
+
+
 
 
 class AlertNotificationLog(models.Model):
@@ -1082,6 +1195,7 @@ class AlertNotificationLog(models.Model):
 
     alert = models.ForeignKey(Alert, on_delete=models.CASCADE, related_name='notification_logs', verbose_name='告警')
     rule_id = models.IntegerField('规则ID', null=True, blank=True)
+    policy_id = models.IntegerField('通知策略ID', null=True, blank=True)
     channel_id = models.IntegerField('渠道ID', null=True, blank=True)
     action = models.CharField('通知动作', max_length=32, default='fire')
     status = models.CharField('状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_SUCCESS)
@@ -1278,10 +1392,12 @@ class ObservabilityDashboard(models.Model):
 class ObservabilityDashboardPanel(models.Model):
     DATASOURCE_PROMETHEUS = 'prometheus'
     DATASOURCE_CLICKHOUSE = 'clickhouse'
+    DATASOURCE_LOG = 'log'
     DATASOURCE_SLA = 'sla'
     DATASOURCE_CHOICES = [
         (DATASOURCE_PROMETHEUS, 'Prometheus'),
         (DATASOURCE_CLICKHOUSE, 'ClickHouse'),
+        (DATASOURCE_LOG, 'Logs'),
         (DATASOURCE_SLA, 'SLA'),
     ]
 

@@ -96,12 +96,12 @@
             <span>告警、指标和日志统一作为分析证据。</span>
           </div>
           <el-form-item label="指标数据源">
-            <el-select v-model="form.metric_datasource_ids" multiple filterable clearable placeholder="选择一个或多个 Prometheus 兼容指标数据源">
+            <el-select v-model="form.metric_datasource" filterable clearable placeholder="选择当前环境唯一的 Prometheus 指标数据源">
               <el-option v-for="item in catalog.metric_datasources" :key="item.id" :label="datasourceLabel(item)" :value="item.id" />
             </el-select>
           </el-form-item>
           <el-form-item label="日志数据源">
-            <el-select v-model="form.log_datasource_ids" multiple filterable clearable placeholder="选择一个或多个日志中心数据源">
+            <el-select v-model="form.log_datasource" filterable clearable placeholder="选择当前环境唯一的日志数据源">
               <el-option v-for="item in catalog.log_datasources" :key="item.id" :label="datasourceLabel(item)" :value="item.id" />
             </el-select>
           </el-form-item>
@@ -226,8 +226,8 @@ const form = reactive({
   aliases: [],
   description: '',
   event_environments: [],
-  metric_datasource_ids: [],
-  log_datasource_ids: [],
+  metric_datasource: null,
+  log_datasource: null,
   alert_environments: [],
   k8s_cluster_ids: [],
   k8s_namespaces: {},
@@ -252,8 +252,8 @@ function resetForm(row = null) {
   form.aliases = [...(row?.aliases || [])]
   form.description = row?.description || ''
   form.event_environments = [...(row?.event_environments || [])]
-  form.metric_datasource_ids = [...(row?.metric_datasource_ids || [])]
-  form.log_datasource_ids = [...(row?.log_datasource_ids || [])]
+  form.metric_datasource = relationId(row?.metric_datasource ?? row?.metric_datasource_id ?? row?.metric_datasource_ids?.[0])
+  form.log_datasource = relationId(row?.log_datasource ?? row?.log_datasource_id ?? row?.log_datasource_ids?.[0])
   form.alert_environments = [...(row?.alert_environments || [])]
   form.k8s_cluster_ids = [...(row?.k8s_cluster_ids || [])]
   form.k8s_namespaces = { ...(row?.k8s_namespaces || {}) }
@@ -264,15 +264,18 @@ function resetForm(row = null) {
 }
 
 function hasAnyBinding() {
-  return [
+  return Boolean(form.metric_datasource || form.log_datasource || [
     form.event_environments,
-    form.metric_datasource_ids,
-    form.log_datasource_ids,
     form.alert_environments,
     form.k8s_cluster_ids,
     form.docker_host_ids,
     form.task_resource_environment_ids,
-  ].some(items => items.length)
+  ].some(items => items.length))
+}
+
+function relationId(value) {
+  if (value && typeof value === 'object') return value.id ?? null
+  return value ?? null
 }
 
 function datasourceLabel(item) {
@@ -305,10 +308,12 @@ function taskResourceEnvironmentLabel(item) {
 }
 
 function observabilityNames(row) {
+  const metricId = relationId(row.metric_datasource ?? row.metric_datasource_id ?? row.metric_datasource_ids?.[0])
+  const logId = relationId(row.log_datasource ?? row.log_datasource_id ?? row.log_datasource_ids?.[0])
   return [
     ...(row.alert_environments || []).map(name => `告警: ${name}`),
-    ...(row.metric_datasource_ids || []).map(name => `指标: ${datasourceNames([name], 'metric')[0]}`),
-    ...(row.log_datasource_ids || []).map(name => `日志: ${datasourceNames([name], 'log')[0]}`),
+    ...(metricId ? [`指标: ${datasourceNames([metricId], 'metric')[0]}`] : []),
+    ...(logId ? [`日志: ${datasourceNames([logId], 'log')[0]}`] : []),
   ]
 }
 
@@ -367,8 +372,8 @@ async function submitForm() {
       aliases: form.aliases,
       description: form.description,
       event_environments: form.event_environments,
-      metric_datasource_ids: form.metric_datasource_ids,
-      log_datasource_ids: form.log_datasource_ids,
+      metric_datasource: form.metric_datasource || null,
+      log_datasource: form.log_datasource || null,
       alert_environments: form.alert_environments,
       k8s_cluster_ids: form.k8s_cluster_ids,
       k8s_namespaces: form.k8s_namespaces,

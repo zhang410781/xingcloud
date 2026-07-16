@@ -10,7 +10,7 @@ from .evaluator import evaluate_rule
 
 def due_rules(limit=100):
     now = timezone.now()
-    candidates = AlertRule.objects.filter(is_enabled=True).order_by('last_evaluated_at', 'id')
+    candidates = AlertRule.objects.filter(is_enabled=True, is_template=False).order_by('last_evaluated_at', 'id')
     rules = []
     for rule in candidates[: max(limit * 3, limit)]:
         if not rule.last_evaluated_at:
@@ -38,11 +38,13 @@ def run_due_alert_rules(limit=100, request=None):
 
 
 def engine_status():
-    latest = AlertRule.objects.aggregate(value=Max('last_evaluated_at'))['value']
+    executable = AlertRule.objects.filter(is_template=False)
+    latest = executable.aggregate(value=Max('last_evaluated_at'))['value']
     error_states = AlertRuleState.objects.filter(status=AlertRuleState.STATUS_ERROR).select_related('rule').order_by('-last_seen_at', '-updated_at')
     return {
-        'enabled_rules': AlertRule.objects.filter(is_enabled=True).count(),
-        'total_rules': AlertRule.objects.count(),
+        'enabled_rules': executable.filter(is_enabled=True).count(),
+        'total_rules': executable.count(),
+        'template_count': AlertRule.objects.filter(is_template=True).count(),
         'latest_scan_at': latest.isoformat() if latest else None,
         'failed_rules': error_states.values('rule_id').distinct().count(),
         'recent_errors': [

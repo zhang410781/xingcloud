@@ -20,6 +20,7 @@ from .models import (
     AlertInteractionToken,
     AlertNotificationChannel,
     AlertNotificationLog,
+    AlertNotificationPolicy,
     AlertRecipient,
     AlertRecipientGroup,
     AlertRule,
@@ -268,7 +269,7 @@ def match_matchers(alert, matchers):
         if not isinstance(matcher, dict):
             continue
         key = _text(matcher.get('key') or matcher.get('label'))
-        op = _text(matcher.get('op') or matcher.get('func') or '==')
+        op = _text(matcher.get('operator') or matcher.get('op') or matcher.get('func') or '==')
         expected = matcher.get('value')
         actual = values.get(key, '')
         if op in {'==', '='} and actual != _text(expected):
@@ -389,36 +390,277 @@ def _render(value, alert, action='fire'):
 
 
 def _default_title(alert, action='fire'):
-    return alert.title
+    prefix = {
+        'resolved': '【恢复】',
+        'analysis': '【智能研判】',
+    }.get(action, '【告警】')
+    return f'{prefix}{alert.title}'
+
+
+def _notification_payload(alert):
+    raw = _dict(alert.raw_payload)
+    event = _dict(raw.get('event'))
+    rule = _dict(raw.get('rule'))
+    evidence = _dict(raw.get('evidence')) or _dict(event.get('evidence'))
+    return raw, event, rule, evidence
+
+
+def _first_number(*values):
+    for value in values:
+        if isinstance(value, bool) or value in (None, ''):
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _format_number(value):
+    if value is None:
+        return '-'
+    if abs(value) >= 1000:
+        return f'{value:,.2f}'.rstrip('0').rstrip('.')
+    return f'{value:.2f}'.rstrip('0').rstrip('.')
+
+
+def _metric_unit(alert, rule):
+    labels = _dict(alert.labels)
+    annotations = _dict(alert.annotations)
+    query_config = _dict(rule.get('query_config'))
+    explicit = _first(
+        annotations.get('unit'),
+        labels.get('unit'),
+        query_config.get('unit'),
+    )
+    if explicit:
+        return explicit
+    metric_text = f'{alert.metric_name} {alert.title}'.lower()
+    if any(token in metric_text for token in ('percent', 'ratio', 'usage', '利用率', '使用率')):
+        return '%'
+    if any(token in metric_text for token in ('restart', '重启', 'count', '数量', '次数')):
+        return '次'
+    if any(token in metric_text for token in ('bytes', 'byte', '字节')):
+        return 'B'
+    if any(token in metric_text for token in ('seconds', 'latency', 'duration', '时延', '耗时')):
+        return '秒'
+    return ''
+
+
+def _window_text(rule):
+    query_config = _dict(rule.get('query_config'))
+    condition = _dict(rule.get('condition'))
+    raw_window = _first(
+        query_config.get('window'),
+        query_config.get('window_minutes'),
+        condition.get('window'),
+        condition.get('window_minutes'),
+    )
+    if raw_window:
+        text = str(raw_window).strip()
+        if text.isdigit():
+            return f'{text}分钟'
+        return text.replace('m', '分钟').replace('h', '小时')
+    query = _first(query_config.get('promql'), query_config.get('query'))
+    match = re.search(r'\[(\d+(?:\.\d+)?)([smhd])\]', query)
+    if not match:
+        return ''
+    suffix = {'s': '秒', 'm': '分钟', 'h': '小时', 'd': '天'}[match.group(2)]
+    return f'{match.group(1)}{suffix}'
+
+
+def _condition_text(alert, rule, unit):
+    condition = _dict(rule.get('condition'))
+    levels = condition.get('levels') if isinstance(condition.get('levels'), list) else []
+    level_condition = next(
+        (item for item in levels if isinstance(item, dict) and item.get('level') == alert.level),
+        next((item for item in levels if isinstance(item, dict)), condition),
+    )
+    operator = _first(level_condition.get('operator'), level_condition.get('op'), condition.get('operator'), '>')
+    threshold = _first_number(
+        level_condition.get('threshold'),
+        level_condition.get('value'),
+        condition.get('threshold'),
+        condition.get('value'),
+        condition.get(alert.level),
+    )
+    if threshold is None:
+        return '-'
+    operator = {
+        'gt': '>',
+        'gte': '>=',
+        'lt': '<',
+        'lte': '<=',
+        'eq': '=',
+        'ne': '!=',
+    }.get(str(operator).strip().lower(), operator)
+    return f'{operator} {_format_number(threshold)}{unit}'
+
+
+def _human_description(alert, event):
+    annotations = _dict(alert.annotations)
+    event_annotations = _dict(event.get('annotations'))
+    description = _first(
+        annotations.get('description'),
+        event_annotations.get('description'),
+        annotations.get('summary'),
+        event_annotations.get('summary'),
+    )
+    if description:
+        return description
+    message = _text(alert.message)
+    technical = (
+        re.search(r'\b(?:sum|avg|min|max|rate|increase|count)\s*(?:by\s*)?\(', message, re.I)
+        or re.search(r'\{[^}]*\}|\[[0-9.]+[smhd]\]', message)
+        or re.search(r'\b(?:select|from|where)\b', message, re.I)
+        or re.search(r'\svalue\s[-+0-9.]', message, re.I)
+    )
+    return alert.title if technical or not message else message
+
+
+def _format_datetime(value):
+    if not value:
+        return '-'
+    try:
+        return timezone.localtime(value).strftime('%Y-%m-%d %H:%M:%S')
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _format_duration(start, end):
+    if not start or not end:
+        return '-'
+    seconds = max(int((end - start).total_seconds()), 0)
+    days, seconds = divmod(seconds, 86400)
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
+    parts = []
+    if days:
+        parts.append(f'{days}天')
+    if hours:
+        parts.append(f'{hours}小时')
+    if minutes:
+        parts.append(f'{minutes}分钟')
+    if seconds or not parts:
+        parts.append(f'{seconds}秒')
+    return ''.join(parts[:2])
+
+
+def _analysis_content(alert, raw):
+    analysis = _dict(raw.get('ai_analysis'))
+    analysis_manager = getattr(alert, 'analyses', None)
+    latest = analysis_manager.order_by('-created_at').first() if analysis_manager is not None else None
+    if latest is not None:
+        result = _dict(latest.result)
+        analysis = {
+            **analysis,
+            'status': latest.status,
+            'confidence': latest.confidence,
+            'summary': result.get('summary') or analysis.get('summary'),
+            'root_cause': latest.root_cause or analysis.get('root_cause'),
+            'evidence': latest.evidence or analysis.get('evidence'),
+            'evidence_notes': result.get('evidence_notes') or analysis.get('evidence_notes'),
+            'suggestions': result.get('suggestions') or latest.suggestion or analysis.get('suggestions'),
+        }
+    confidence = analysis.get('confidence')
+    if isinstance(confidence, (int, float)):
+        confidence_text = f'{confidence * 100:.0f}%' if confidence <= 1 else f'{confidence:.0f}%'
+    else:
+        confidence_text = _text(confidence, '未评估') or '未评估'
+    root_cause = _first(analysis.get('root_cause'), analysis.get('summary'), alert.root_cause, '尚未形成明确结论')
+    evidence = analysis.get('evidence_notes') or analysis.get('evidence')
+    if isinstance(evidence, dict):
+        diagnostics = evidence.get('diagnostics') if isinstance(evidence.get('diagnostics'), list) else []
+        diagnostic_lines = [
+            _first(item.get('message'), item.get('summary'))
+            for item in diagnostics if isinstance(item, dict)
+        ]
+        logs = _dict(evidence.get('logs'))
+        log_summary = ''
+        if logs:
+            sample_count = logs.get('sample_count') or logs.get('count') or 0
+            status = logs.get('status') or 'unknown'
+            log_summary = f'关联日志状态 {status}，命中 {sample_count} 条样本'
+        metrics = _dict(evidence.get('metrics'))
+        metric_summary = _first(metrics.get('summary'), metrics.get('message'))
+        summarized = [item for item in [metric_summary, log_summary, *diagnostic_lines] if item]
+        evidence = evidence.get('summary') or evidence.get('items') or evidence.get('key_evidence') or summarized or evidence
+    if isinstance(evidence, list):
+        evidence_lines = []
+        for item in evidence[:3]:
+            if isinstance(item, dict):
+                evidence_lines.append(_first(item.get('summary'), item.get('message'), item.get('content'), item.get('fact')))
+            else:
+                evidence_lines.append(_text(item))
+        evidence_text = '；'.join(item for item in evidence_lines if item) or '暂无关键证据摘要'
+    elif isinstance(evidence, dict):
+        evidence_text = '；'.join(f'{key}: {_text(value)}' for key, value in list(evidence.items())[:3])
+    else:
+        evidence_text = _text(evidence, '暂无关键证据摘要') or '暂无关键证据摘要'
+    suggestions = analysis.get('suggestions') or analysis.get('suggested_actions') or alert.suggestion
+    if isinstance(suggestions, list):
+        suggestion_text = '；'.join(_text(item.get('content') if isinstance(item, dict) else item) for item in suggestions[:3])
+    else:
+        suggestion_text = _text(suggestions, '请结合证据进一步确认') or '请结合证据进一步确认'
+    return confidence_text, root_cause, evidence_text, suggestion_text
 
 
 def _default_body(alert, action='fire'):
+    raw, event, rule, evidence = _notification_payload(alert)
+    if action == 'analysis':
+        confidence, root_cause, evidence_text, suggestion = _analysis_content(alert, raw)
+        return '\n'.join([
+            f'**告警对象：** {alert.resource or (alert.host.hostname if alert.host else "-")}',
+            f'**研判置信度：** {confidence}',
+            f'**根因结论：** {root_cause}',
+            f'**关键证据：** {evidence_text}',
+            f'**处理建议：** {suggestion}',
+            f'**完成时间：** {_format_datetime(timezone.now())}',
+        ])
+
+    value = _first_number(evidence.get('value'), event.get('value'), _dict(event.get('evidence')).get('value'))
+    unit = _metric_unit(alert, rule)
+    window = _window_text(rule)
+    value_text = f'{_format_number(value)}{unit}' if value is not None else '-'
+    if window and value is not None:
+        value_text = f'{value_text} / {window}'
+    object_name = alert.resource or (alert.host.hostname if alert.host else '') or '-'
     lines = [
-        f'级别: {alert.get_level_display()}',
-        f'状态: {alert.get_status_display()}',
-        f'来源: {alert.source_type} / {alert.source}',
-        f'对象: {alert.resource or alert.host.hostname if alert.host else alert.resource or "-"}',
-        f'服务: {alert.service or "-"}',
-        f'环境: {alert.environment or "-"}',
-        f'时间: {alert.starts_at.strftime("%Y-%m-%d %H:%M:%S") if alert.starts_at else "-"}',
-        '',
-        alert.message or alert.title,
+        f'**告警级别：** {alert.get_level_display()}',
+        f'**集群：** {alert.cluster or "-"}',
+        f'**命名空间：** {alert.namespace or "-"}',
+        f'**告警对象：** {object_name}',
+        f'**当前值：** {value_text}',
+        f'**触发条件：** {_condition_text(alert, rule, unit)}',
+        f'**告警详情：** {_human_description(alert, event)}',
     ]
+    if action == 'resolved':
+        resolved_at = alert.ends_at or alert.last_received_at or timezone.now()
+        lines.extend([
+            f'**恢复时间：** {_format_datetime(resolved_at)}',
+            f'**持续时间：** {_format_duration(alert.starts_at, resolved_at)}',
+        ])
+    else:
+        lines.append(f'**发生时间：** {_format_datetime(alert.starts_at)}')
+        ai_status = _dict(raw.get('ai_analysis')).get('status')
+        if ai_status in {'pending', 'running'}:
+            lines.append('**智能研判：** 正在分析，完成后另行通知')
     if alert.runbook_url:
-        lines.append(f'Runbook: {alert.runbook_url}')
+        lines.append(f'**处理手册：** {alert.runbook_url}')
     return '\n'.join(lines)
 
 
-def _recipient_contacts(rule):
-    config = rule.notify_config or {}
+def _recipient_contacts(rule=None, policy=None):
+    config = (rule.notify_config or {}) if rule else {}
     result = defaultdict(set)
     names = set()
-    group_ids = _list(config.get('recipient_group_ids'))
+    if policy is not None:
+        groups = policy.recipient_groups.filter(is_enabled=True).prefetch_related('recipients', 'users')
+    else:
+        group_ids = _list(config.get('recipient_group_ids'))
+        groups = AlertRecipientGroup.objects.filter(id__in=group_ids, is_enabled=True).prefetch_related('recipients', 'users')
     recipients = set()
-    for group in AlertRecipientGroup.objects.filter(
-        id__in=group_ids,
-        is_enabled=True,
-    ).prefetch_related('recipients', 'users'):
+    for group in groups:
         recipients.update(group.recipients.filter(is_enabled=True))
         for user in group.users.filter(is_active=True):
             names.add(user.get_full_name() or user.username)
@@ -498,7 +740,7 @@ def _card_buttons(alert, provider, request=None):
     return buttons
 
 
-def send_alert_notification(channel, alert, recipients, action='fire', rule=None, request=None):
+def send_alert_notification(channel, alert, recipients, action='fire', rule=None, policy=None, request=None):
     config = channel.config or {}
     title = _render(channel.template_title, alert, action) or _default_title(alert, action)
     body = _render(channel.template_body, alert, action) or _default_body(alert, action)
@@ -558,7 +800,10 @@ def send_alert_notification(channel, alert, recipients, action='fire', rule=None
                     'msg_type': 'interactive',
                     'card': {
                         'config': {'wide_screen_mode': True, 'enable_forward': True},
-                        'header': {'template': 'red' if alert.level == 'critical' else 'orange', 'title': {'tag': 'plain_text', 'content': title}},
+                        'header': {
+                            'template': 'green' if action == 'resolved' else ('blue' if action == 'analysis' else ('red' if alert.level == 'critical' else 'orange')),
+                            'title': {'tag': 'plain_text', 'content': title},
+                        },
                         'elements': [
                             {'tag': 'markdown', 'content': body},
                             {'tag': 'action', 'actions': [
@@ -582,7 +827,9 @@ def send_alert_notification(channel, alert, recipients, action='fire', rule=None
                 response_body = '未配置企微 webhook_url 或 key'
             else:
                 button_text = '\n'.join([f'[{item["title"]}]({item["url"]})' for item in _card_buttons(alert, 'wecom', request=request)])
-                payload = {'msgtype': 'markdown', 'markdown': {'content': f'**{title}**\n\n{body}\n\n{button_text}'}}
+                title_color = 'info' if action == 'resolved' else ('comment' if action == 'analysis' else 'warning')
+                colored_title = f'<font color="{title_color}">**{title}**</font>'
+                payload = {'msgtype': 'markdown', 'markdown': {'content': f'{colored_title}\n\n{body}\n\n{button_text}'.rstrip()}}
                 response_body = _post_json(url, payload, timeout=channel.timeout_seconds)
         else:
             status = AlertNotificationLog.STATUS_SKIPPED
@@ -598,6 +845,7 @@ def send_alert_notification(channel, alert, recipients, action='fire', rule=None
     log = AlertNotificationLog.objects.create(
         alert=alert,
         rule_id=getattr(rule, 'id', None),
+        policy_id=getattr(policy, 'id', None),
         channel_id=channel.id,
         action=action,
         status=status,
@@ -617,7 +865,7 @@ def _alert_rule(alert):
     if not rule_id:
         return None
     try:
-        return AlertRule.objects.get(pk=rule_id, is_enabled=True, notify_enabled=True)
+        return AlertRule.objects.select_related('metric_datasource').get(pk=rule_id, is_enabled=True, is_template=False, notify_enabled=True)
     except (AlertRule.DoesNotExist, TypeError, ValueError):
         return None
 
@@ -631,7 +879,62 @@ def _rule_can_send(rule, action):
     return action != 'escalation' or rule.escalation_minutes > 0
 
 
+def _policy_action_enabled(policy, action):
+    if action == 'fire':
+        return policy.notify_on_fire
+    if action == 'resolved':
+        return policy.notify_on_resolved
+    if action == 'analysis':
+        return getattr(policy, 'notify_on_analysis', False)
+    return True
+
+
+def _policy_is_muted(policy, now=None):
+    schedule = policy.mute_schedule if isinstance(policy.mute_schedule, dict) else {}
+    if not schedule:
+        return False
+    now = now or timezone.localtime()
+    weekdays = schedule.get('weekdays')
+    if weekdays and now.weekday() not in [int(value) for value in weekdays]:
+        return False
+    start_text = str(schedule.get('start_time') or '').strip()
+    end_text = str(schedule.get('end_time') or '').strip()
+    if not start_text or not end_text:
+        return bool(schedule.get('enabled', False))
+    try:
+        start_parts = [int(value) for value in start_text.split(':')[:2]]
+        end_parts = [int(value) for value in end_text.split(':')[:2]]
+        current = now.hour * 60 + now.minute
+        start = start_parts[0] * 60 + start_parts[1]
+        end = end_parts[0] * 60 + end_parts[1]
+    except (TypeError, ValueError, IndexError):
+        return False
+    return start <= current < end if start <= end else current >= start or current < end
+
+
+def resolve_notification_policies(alert, rule=None, metric_datasource_id=None):
+    labels = alert.labels if isinstance(alert.labels, dict) else {}
+    datasource_id = metric_datasource_id or getattr(rule, 'metric_datasource_id', None) or labels.get('metric_datasource_id')
+    queryset = AlertNotificationPolicy.objects.filter(is_enabled=True).select_related('metric_datasource').prefetch_related('channels', 'recipient_groups')
+    if datasource_id not in (None, ''):
+        queryset = queryset.filter(Q(metric_datasource__isnull=True) | Q(metric_datasource_id=datasource_id))
+    else:
+        queryset = queryset.filter(metric_datasource__isnull=True)
+    matched = []
+    for policy in queryset.order_by('priority', 'id'):
+        if policy.min_level and LEVEL_RANK.get(alert.level, 0) < LEVEL_RANK.get(policy.min_level, 0):
+            continue
+        if not match_matchers(alert, policy.matchers):
+            continue
+        matched.append(policy)
+        if not policy.continue_matching:
+            break
+    return matched
+
+
 def dispatch_alert_notifications(alert, action='fire', request=None, force=False):
+    if action == 'analysis' and alert.status != Alert.STATUS_ACTIVE:
+        return []
     if not force and (alert.is_suppressed or alert.status == Alert.STATUS_MUTED):
         return []
     if action == 'resolved' and alert.status != Alert.STATUS_RESOLVED:
@@ -639,6 +942,55 @@ def dispatch_alert_notifications(alert, action='fire', request=None, force=False
 
     rule = _alert_rule(alert)
     if not rule or not _rule_can_send(rule, action):
+        return []
+
+    policies = resolve_notification_policies(alert, rule=rule)
+    if policies:
+        logs = []
+        now = timezone.now()
+        for policy in policies:
+            if not _policy_action_enabled(policy, action) or _policy_is_muted(policy, timezone.localtime(now)):
+                continue
+            if policy.inhibition_matchers and match_matchers(alert, policy.inhibition_matchers):
+                continue
+            channels = list(policy.channels.filter(is_enabled=True))
+            if action == 'resolved':
+                channels = [channel for channel in channels if channel.send_resolved]
+            if not channels:
+                continue
+            group_by = list(policy.group_by or DEFAULT_GROUP_BY)
+            datasource_dimension = 'label.metric_datasource_id'
+            if datasource_dimension not in group_by:
+                group_by.insert(0, datasource_dimension)
+            alert.group_key = compute_group_key(alert, group_by)
+            alert.save(update_fields=['group_key', 'updated_at'])
+            started_at = alert.starts_at or alert.created_at or now
+            if not force and action == 'fire' and (now - started_at).total_seconds() < policy.group_wait_seconds:
+                continue
+            if not force and AlertNotificationLog.objects.filter(
+                policy_id=policy.id,
+                action=action,
+                status=AlertNotificationLog.STATUS_SUCCESS,
+                alert__group_key=alert.group_key,
+                created_at__gte=now - timedelta(seconds=policy.group_interval_seconds),
+            ).exists():
+                continue
+            if not force and AlertNotificationLog.objects.filter(
+                alert=alert,
+                policy_id=policy.id,
+                action=action,
+                status=AlertNotificationLog.STATUS_SUCCESS,
+                created_at__gte=now - timedelta(minutes=policy.repeat_interval_minutes),
+            ).exists():
+                continue
+            recipients = _recipient_contacts(policy=policy)
+            logs.extend([
+                send_alert_notification(channel, alert, recipients, action=action, rule=rule, policy=policy, request=request)
+                for channel in channels
+            ])
+        return logs
+
+    if action == 'analysis':
         return []
 
     config = rule.notify_config or {}
@@ -739,11 +1091,41 @@ def apply_escalation_policy(alert, request=None):
     if alert.status not in {Alert.STATUS_ACTIVE, Alert.STATUS_MUTED}:
         return False
     rule = _alert_rule(alert)
-    if not rule or rule.escalation_minutes <= 0:
+    if not rule:
         return False
     now = timezone.now()
     started_at = alert.starts_at or alert.created_at or now
     duration_minutes = max(int((now - started_at).total_seconds() // 60), 0)
+
+    for policy in resolve_notification_policies(alert, rule=rule):
+        steps = [item for item in (policy.escalation_steps or []) if isinstance(item, dict)]
+        steps.sort(key=lambda item: int(item.get('after_minutes') or 0))
+        next_index = int(alert.escalation_level or 0)
+        if next_index >= len(steps):
+            continue
+        step = steps[next_index]
+        after_minutes = max(int(step.get('after_minutes') or 0), 0)
+        if duration_minutes < after_minutes:
+            continue
+        channel_ids = _list(step.get('channel_ids'))
+        channels = list(policy.channels.filter(is_enabled=True)) if not channel_ids else list(AlertNotificationChannel.objects.filter(id__in=channel_ids, is_enabled=True))
+        recipients = _recipient_contacts(policy=policy)
+        alert.escalation_level = next_index + 1
+        alert.escalated_at = now
+        alert.save(update_fields=['escalation_level', 'escalated_at', 'updated_at'])
+        _save_action(
+            alert,
+            AlertAction.ACTION_ESCALATE,
+            actor='system',
+            note=f'通知策略 {policy.name} 执行第 {next_index + 1} 级升级',
+            metadata={'rule_id': rule.id, 'policy_id': policy.id, 'duration_minutes': duration_minutes},
+        )
+        for channel in channels:
+            send_alert_notification(channel, alert, recipients, action='escalation', rule=rule, policy=policy, request=request)
+        return True
+
+    if rule.escalation_minutes <= 0:
+        return False
     if duration_minutes < rule.escalation_minutes or alert.escalation_level >= 1:
         return False
     alert.escalation_level = 1

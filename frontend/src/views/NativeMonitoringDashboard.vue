@@ -1,679 +1,229 @@
 <template>
-  <div class="native-monitor-page workbench-page-shell">
-    <section class="hero panel native-monitor-hero">
-      <div class="hero-copy">
-        <div class="hero-title-row">
-          <span class="hero-icon"><el-icon><Histogram /></el-icon></span>
-          <h2>监控看板</h2>
-          <p class="page-inline-desc">Xing-Cloud JSON 看板引擎统一渲染基础设施、K8S、日志和中间件监控。</p>
-        </div>
+  <div class="monitor-dashboard" :class="{ 'is-log-dashboard': scope === 'logs' }">
+    <header class="dashboard-header">
+      <div>
+        <div class="eyebrow">可观测 / 监控看板</div>
+        <h1>{{ scopeLabel }}</h1>
+        <p>{{ activeDefinition?.description || '统一查看基础设施与应用运行状态' }}</p>
       </div>
-      <div class="hero-actions">
-        <el-button size="small" :icon="RefreshRight" :loading="loadingSources" @click="loadDataSources">刷新数据源</el-button>
-        <el-button size="small" :icon="Upload" @click="importVisible = true">导入 JSON</el-button>
-        <el-button size="small" :icon="Download" :disabled="!activeDefinitionId" @click="exportActiveDashboard">导出 JSON</el-button>
-        <el-button size="small" type="primary" :icon="DataAnalysis" :loading="loadingDashboard" @click="loadDashboard">刷新看板</el-button>
+      <div class="header-actions">
+        <span class="live-state"><i />{{ loadingDashboard ? '查询中' : '实时数据' }}</span>
+        <el-button size="small" :loading="loadingDashboard" @click="loadDashboard">
+          <el-icon><RefreshRight /></el-icon>刷新
+        </el-button>
       </div>
-    </section>
+    </header>
 
     <ObservabilityRouteTabs group="observability" />
 
-    <DashboardCatalog v-model="activeDefinitionId" :dashboards="dashboardDefinitions" />
+    <nav class="scope-switch" role="tablist" aria-label="监控对象">
+      <button v-for="item in scopeItems" :key="item.key" type="button" :class="{ active: scope === item.key }" @click="changeScope(item.key)">
+        <el-icon><component :is="item.icon" /></el-icon>{{ item.label }}
+      </button>
+    </nav>
 
-    <section class="panel native-monitor-control">
-      <div class="native-filter-grid">
-        <div class="native-filter-item">
-          <span>时间范围</span>
-          <el-date-picker
-            v-model="filters.timeRange"
-            type="datetimerange"
-            size="small"
-            format="YYYY-MM-DD HH:mm:ss"
-            range-separator="至"
-            start-placeholder="开始时间"
-            end-placeholder="结束时间"
-            :shortcuts="timeShortcuts"
-          />
-        </div>
-        <div class="native-filter-item">
-          <span>指标数据源</span>
-          <el-select v-model="filters.metricDatasourceId" size="small" filterable clearable placeholder="默认 Prometheus">
-            <el-option v-for="item in metricDataSources" :key="item.id" :label="sourceLabel(item)" :value="item.id" />
-          </el-select>
-        </div>
-        <div class="native-filter-item">
-          <span>日志数据源</span>
-          <el-select v-model="filters.logDatasourceId" size="small" filterable clearable placeholder="ClickHouse 日志源">
-            <el-option v-for="item in clickHouseSources" :key="item.id" :label="sourceLabel(item)" :value="item.id" />
-          </el-select>
-        </div>
+    <section class="monitor-toolbar">
+      <div v-if="scope !== 'logs'" class="toolbar-field">
+        <span>指标数据源</span>
+        <el-select v-model="selectedMetricId" size="small" filterable clearable placeholder="选择 Prometheus" @change="handleMetricSourceChange">
+          <el-option v-for="item in metricDataSources" :key="item.id" :label="item.name" :value="item.id" />
+        </el-select>
       </div>
-
-      <div class="native-filter-grid native-filter-grid--secondary">
-        <el-input v-model.trim="filters.namespace" size="small" placeholder="命名空间，多个用逗号分隔" clearable />
-        <el-input v-model.trim="filters.node" size="small" placeholder="节点，多个用逗号分隔" clearable />
-        <el-input v-model.trim="filters.podName" size="small" placeholder="Pod，多个用逗号分隔" clearable />
-        <el-input v-model.trim="filters.logLevel" size="small" placeholder="日志级别，例如 ERROR,INFO" clearable />
-        <el-input v-model.trim="filters.domain" size="small" placeholder="域名，多个用逗号分隔" clearable />
-        <el-input v-model.trim="filters.serverIp" size="small" placeholder="服务 IP，多个用逗号分隔" clearable />
-        <el-input v-model.trim="filters.status" size="small" placeholder="状态码，例如 200,500" clearable />
-        <el-input v-model.trim="filters.clientIp" size="small" placeholder="客户端 IP，多个用逗号分隔" clearable />
+      <div v-else class="toolbar-field">
+        <span>日志数据源</span>
+        <el-select v-model="selectedLogId" size="small" filterable clearable placeholder="选择 Elasticsearch 或 ClickHouse" @change="handleLogSourceChange">
+          <el-option v-for="item in logDataSources" :key="item.id" :label="`${item.name} · ${providerLabel(item.provider)}`" :value="item.id" />
+        </el-select>
       </div>
+      <div v-if="scope === 'logs'" class="toolbar-field">
+        <span>日志集合 / 索引</span>
+        <el-input v-model="logSourceName" size="small" placeholder="使用默认集合或索引模式" clearable />
+      </div>
+      <div v-if="scope === 'k8s'" class="toolbar-field">
+        <span>命名空间</span>
+        <el-select v-model="namespaceFilter" size="small" clearable filterable placeholder="全部命名空间">
+          <el-option v-for="item in namespaceOptions" :key="item" :label="item" :value="item" />
+        </el-select>
+      </div>
+      <div v-if="scope === 'k8s' || scope === 'server'" class="toolbar-field">
+        <span>{{ scope === 'k8s' ? '节点' : '服务器节点' }}</span>
+        <el-select v-model="nodeFilter" size="small" clearable filterable placeholder="全部节点">
+          <el-option v-for="item in nodeOptions" :key="item.value" :label="item.label" :value="item.value" />
+        </el-select>
+      </div>
+      <div v-if="scope === 'database' || scope === 'middleware'" class="toolbar-field">
+        <span>{{ scope === 'database' ? '数据库类型' : '中间件类型' }}</span>
+        <el-select v-model="subtype" size="small" @change="selectSubtype">
+          <el-option v-for="item in subtypeItems" :key="item.key" :label="item.label" :value="item.key" />
+        </el-select>
+      </div>
+      <div class="toolbar-field toolbar-field--time">
+        <span>时间范围</span>
+        <el-segmented v-model="timeRangeKey" size="small" :options="timeRangeOptions" />
+      </div>
+      <el-button type="primary" size="small" :loading="loadingDashboard" @click="loadDashboard">查询</el-button>
     </section>
 
-    <el-alert
-      v-if="dashboardError"
-      class="native-monitor-alert"
-      type="error"
-      show-icon
-      :closable="false"
-      :title="dashboardError"
-    />
-
-    <section v-loading="loadingDashboard || loadingDefinitions" class="native-dashboard-stage">
-      <div class="native-dashboard-head">
-        <div>
-          <h3>{{ dashboardMeta.title || activeDefinition?.title || '请选择看板定义' }}</h3>
-          <p>{{ dashboardMeta.description || activeDefinition?.description || '没有看板定义时，请导入 JSON 看板或启用内置看板。' }}</p>
-        </div>
-        <div class="dashboard-meta-pills">
-          <span>{{ formatTimeRange(filters.timeRange) }}</span>
-          <span>{{ sourceSummary }}</span>
-          <span>{{ okPanelCount }}/{{ panels.length }} 正常</span>
-        </div>
-      </div>
-
-      <div class="native-source-strip">
-        <div v-for="item in sourceStatusItems" :key="item.label" class="native-source-item">
-          <span>{{ item.label }}</span>
-          <strong>{{ item.value }}</strong>
-          <small>{{ item.detail }}</small>
-        </div>
-      </div>
-
-      <div v-if="!activeDefinitionId && !loadingDefinitions" class="panel native-empty-panel">
-        <el-empty description="暂无看板定义，请导入 JSON 看板或启用内置看板" :image-size="96">
-          <el-button @click="importVisible = true">导入 JSON</el-button>
-        </el-empty>
-      </div>
-
-      <div v-else-if="!panels.length && !loadingDashboard" class="panel native-empty-panel">
-        <el-empty description="当前看板暂无数据，请检查数据源后刷新" :image-size="90" />
-      </div>
-
-      <div v-if="statPanels.length" class="native-stat-grid">
-        <article v-for="panel in statPanels" :key="panel.key" class="panel native-stat-card" :class="panelTone(panel)">
-          <span>{{ panel.title }}</span>
-          <strong>{{ formatPanelValue(panel) }}</strong>
-          <small v-if="panel.status === 'warning'">{{ panel.error || '查询失败' }}</small>
-          <small v-else>{{ panel.unit || '实时值' }}</small>
-        </article>
-      </div>
-
-      <div v-if="chartPanels.length" class="native-panel-grid">
-        <article v-for="panel in chartPanels" :key="panel.key" class="panel native-data-panel">
-          <div class="native-panel-head">
-            <div>
-              <h4>{{ panel.title }}</h4>
-              <span>{{ panel.unit || 'value' }}</span>
-            </div>
-            <el-tag v-if="panel.status === 'warning'" type="warning" effect="plain" size="small">查询失败</el-tag>
-          </div>
-          <NativeDashboardChart v-if="panel.status !== 'warning'" :panel="panel" />
-          <div v-else class="native-panel-warning">{{ panel.error }}</div>
-        </article>
-      </div>
-
-      <div v-if="tablePanels.length" class="native-panel-grid native-panel-grid--wide">
-        <article v-for="panel in tablePanels" :key="panel.key" class="panel native-data-panel native-table-panel">
-          <div class="native-panel-head">
-            <div>
-              <h4>{{ panel.title }}</h4>
-              <span>{{ tableRows(panel).length }} 行</span>
-            </div>
-            <el-tag v-if="panel.status === 'warning'" type="warning" effect="plain" size="small">查询失败</el-tag>
-          </div>
-          <div v-if="panel.status === 'warning'" class="native-panel-warning">{{ panel.error }}</div>
-          <div v-else class="native-table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th v-for="column in tableColumns(panel)" :key="`${panel.key}-${column}`">{{ column }}</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="(row, index) in tableRows(panel).slice(0, 100)" :key="`${panel.key}-${index}`">
-                  <td v-for="column in tableColumns(panel)" :key="`${panel.key}-${index}-${column}`">{{ formatCell(row[column]) }}</td>
-                </tr>
-              </tbody>
-            </table>
-            <div v-if="!tableRows(panel).length" class="native-table-empty">暂无数据</div>
-          </div>
-        </article>
-      </div>
+    <section v-if="!loadingDashboard && !panels.length" class="empty-dashboard">
+      <el-icon><DataAnalysis /></el-icon>
+      <strong>暂无可展示的面板数据</strong>
+      <span>请检查数据源、时间范围或筛选条件</span>
     </section>
 
-    <JsonAssetImportDialog v-model="importVisible" @submit="importDashboardJson" />
+    <main v-else class="dashboard-canvas">
+      <article
+        v-for="panel in panels"
+        :key="panel.key"
+        class="dashboard-panel"
+        :class="[`panel-type-${panel.type}`, panel.status !== 'ok' ? 'panel-has-error' : '']"
+        :style="panelStyle(panel)"
+      >
+        <div class="panel-heading">
+          <div><h2>{{ panelTitle(panel) }}</h2><p>{{ panelSubtitle(panel) }}</p></div>
+          <div class="panel-tools"><span v-if="panel.status !== 'ok'" class="panel-status">{{ panel.error || '数据异常' }}</span><el-button text size="small" title="刷新面板" @click="loadDashboard"><el-icon><RefreshRight /></el-icon></el-button></div>
+        </div>
+        <div v-if="panel.type === 'stat'" class="stat-value" :class="panelTone(panel)">{{ formatPanelValue(panel) }}<small>{{ unitLabel(panel) }}</small></div>
+        <NativeDashboardChart v-else-if="!['table', 'logs'].includes(panel.type)" :panel="panel" :dark="false" />
+        <div v-if="['table', 'logs'].includes(panel.type)" class="panel-table-wrap">
+          <table v-if="tableRows(panel).length">
+            <thead><tr><th v-for="column in tableColumns(panel)" :key="column">{{ column }}</th></tr></thead>
+            <tbody><tr v-for="(row, index) in tableRows(panel).slice(0, 50)" :key="index" @dblclick="openLogRow(row)"><td v-for="column in tableColumns(panel)" :key="column" :class="cellTone(row[column], column)">{{ formatCell(row[column], column, panel) }}</td></tr></tbody>
+          </table>
+          <div v-else class="panel-empty">暂无明细数据</div>
+        </div>
+      </article>
+    </main>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { DataAnalysis, Download, Histogram, RefreshRight, Upload } from '@element-plus/icons-vue'
+import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { Connection, DataAnalysis, DataBoard, Monitor, RefreshRight, Search, SetUp } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
-import DashboardCatalog from '@/components/observability/DashboardCatalog.vue'
-import JsonAssetImportDialog from '@/components/observability/JsonAssetImportDialog.vue'
 import NativeDashboardChart from '@/components/observability/NativeDashboardChart.vue'
-import {
-  exportDashboardDefinition,
-  getDashboardDefinitions,
-  getLogDataSources,
-  getMetricDataSources,
-  importDashboardDefinition,
-  queryDashboardDefinition,
-} from '@/api/modules/ops'
+import { getDashboardDefinitions, getLogDataSources, getMetricDataSources, queryDashboardDefinition, queryMetrics } from '@/api/modules/ops'
 
-const timeShortcuts = [
-  { text: '最近 15 分钟', value: () => [new Date(Date.now() - 15 * 60 * 1000), new Date()] },
-  { text: '最近 30 分钟', value: () => [new Date(Date.now() - 30 * 60 * 1000), new Date()] },
-  { text: '最近 1 小时', value: () => [new Date(Date.now() - 60 * 60 * 1000), new Date()] },
-  { text: '最近 3 小时', value: () => [new Date(Date.now() - 3 * 60 * 60 * 1000), new Date()] },
-  { text: '最近 6 小时', value: () => [new Date(Date.now() - 6 * 60 * 60 * 1000), new Date()] },
-  { text: '最近 24 小时', value: () => [new Date(Date.now() - 24 * 60 * 60 * 1000), new Date()] },
-]
-
-const loadingSources = ref(false)
-const loadingDefinitions = ref(false)
-const loadingDashboard = ref(false)
-const importVisible = ref(false)
-const dashboardError = ref('')
+const router = useRouter()
+const scope = ref('k8s')
+const subtype = ref('mysql')
+const definitions = ref([])
+const payload = ref({})
 const metricDataSources = ref([])
 const logDataSources = ref([])
-const dashboardDefinitions = ref([])
+const selectedMetricId = ref('')
+const selectedLogId = ref('')
+const logSourceName = ref('')
+const namespaceFilter = ref('')
+const namespaceOptions = ref([])
+const nodeFilter = ref('')
+const nodeOptions = ref([])
 const activeDefinitionId = ref('')
-const dashboardPayload = ref({})
-const initialized = ref(false)
+const loadingDashboard = ref(false)
+let dashboardRequestVersion = 0
+const timeRangeKey = ref('5m')
+const timeRangeOptions = [{ label: '5m', value: '5m' }, { label: '15m', value: '15m' }, { label: '1h', value: '1h' }, { label: '6h', value: '6h' }]
+const scopeItems = [
+  { key: 'k8s', label: 'K8S 集群', icon: Connection },
+  { key: 'server', label: '服务器', icon: Monitor },
+  { key: 'database', label: '数据库', icon: DataBoard },
+  { key: 'middleware', label: '中间件', icon: SetUp },
+  { key: 'logs', label: '日志', icon: Search },
+]
+const subtypeItems = computed(() => scope.value === 'database' ? [{ key: 'mysql', label: 'MySQL' }, { key: 'postgresql', label: 'PostgreSQL' }] : [{ key: 'redis', label: 'Redis' }, { key: 'kafka', label: 'Kafka' }])
+const activeDefinition = computed(() => definitions.value.find((item) => String(item.id) === String(activeDefinitionId.value)))
+const panels = computed(() => Array.isArray(payload.value.panels) ? payload.value.panels : [])
+const scopeLabel = computed(() => ({ k8s: 'Kubernetes 集群监控', server: 'Linux 服务器监控', database: `${subtype.value === 'postgresql' ? 'PostgreSQL' : 'MySQL'} 数据库监控`, middleware: `${subtype.value === 'kafka' ? 'Kafka' : 'Redis'} 中间件监控`, logs: '日志分析看板' }[scope.value]))
 
-const filters = reactive({
-  metricDatasourceId: '',
-  logDatasourceId: '',
-  timeRange: [new Date(Date.now() - 60 * 60 * 1000), new Date()],
-  namespace: '',
-  node: '',
-  podName: '',
-  logLevel: '',
-  domain: '',
-  serverIp: '',
-  status: '',
-  clientIp: '',
-})
-
-const clickHouseSources = computed(() => logDataSources.value.filter((item) => item.provider === 'clickhouse'))
-const activeDefinition = computed(() => dashboardDefinitions.value.find((item) => String(item.id) === String(activeDefinitionId.value)))
-const dashboardMeta = computed(() => dashboardPayload.value.dashboard || {})
-const panels = computed(() => Array.isArray(dashboardPayload.value.panels) ? dashboardPayload.value.panels : [])
-const statPanels = computed(() => panels.value.filter((panel) => panel.type === 'stat'))
-const chartPanels = computed(() => panels.value.filter((panel) => ['timeseries', 'bar'].includes(panel.type)))
-const tablePanels = computed(() => panels.value.filter((panel) => ['table', 'logs'].includes(panel.type)))
-const okPanelCount = computed(() => panels.value.filter((panel) => panel.status !== 'warning').length)
-const currentMetricDatasource = computed(() => mergeDatasource(dashboardPayload.value.metric_datasource, metricDataSources.value, filters.metricDatasourceId))
-const currentLogDatasource = computed(() => mergeDatasource(dashboardPayload.value.log_datasource, clickHouseSources.value, filters.logDatasourceId))
-const sourceSummary = computed(() => {
-  const metric = currentMetricDatasource.value?.name || '指标源未选择'
-  const log = currentLogDatasource.value?.name || '日志源未选择'
-  return `${metric} / ${log}`
-})
-const sourceStatusItems = computed(() => [
-  { label: '看板定义', value: activeDefinition.value?.title || '未选择', detail: activeDefinition.value?.is_builtin ? '内置 JSON 看板' : '自定义 JSON 看板' },
-  { label: '指标数据源', value: currentMetricDatasource.value?.name || '未选择', detail: sourceScope(currentMetricDatasource.value) },
-  { label: '日志数据源', value: currentLogDatasource.value?.name || '未选择', detail: sourceScope(currentLogDatasource.value) },
-])
-
-function sourceLabel(item) {
-  const extras = [item.environment, item.cluster_name].filter(Boolean).join(' / ')
-  return extras ? `${item.name}（${extras}）` : item.name
+function listOf(response) { return Array.isArray(response) ? response : (response?.results || []) }
+function providerLabel(provider) { return { elk: 'Elasticsearch', clickhouse: 'ClickHouse' }[provider] || provider || '日志' }
+function hasExplicitGrid(panel) {
+  const grid = panel.grid || panel.options?.grid || {}
+  return Number(grid.w) > 0
 }
-
-function sourceScope(source) {
-  if (!source) return '等待选择'
-  return [source.environment, source.cluster_name].filter(Boolean).join(' / ') || '全局'
-}
-
-function mergeDatasource(primary, list, selectedId) {
-  const sourceId = primary?.id || selectedId
-  const fromList = list.find((item) => String(item.id) === String(sourceId))
-  if (primary && fromList) return { ...fromList, ...primary }
-  return primary || fromList || null
-}
-
-function commaList(value) {
-  return String(value || '').split(',').map((item) => item.trim()).filter(Boolean)
-}
-
-function toTimestampMs(value) {
-  if (!value) return Date.now()
-  return value instanceof Date ? value.getTime() : new Date(value).getTime()
-}
-
-function buildDashboardPayload() {
-  return {
-    start_ms: toTimestampMs(filters.timeRange?.[0]),
-    end_ms: toTimestampMs(filters.timeRange?.[1]),
-    step: 60,
-    metric_datasource_id: filters.metricDatasourceId || undefined,
-    log_datasource_id: filters.logDatasourceId || undefined,
-    namespace: commaList(filters.namespace),
-    node: commaList(filters.node),
-    pod_name: commaList(filters.podName),
-    log_level: commaList(filters.logLevel),
-    domain: commaList(filters.domain),
-    server_ip: commaList(filters.serverIp),
-    status: commaList(filters.status),
-    client_ip: commaList(filters.clientIp),
+function panelStyle(panel) {
+  const grid = panel.grid || panel.options?.grid || {}
+  if (grid.w) return { '--grid-x': grid.x || 0, '--grid-y': grid.y || 0, '--grid-w': grid.w, '--grid-h': grid.h || 6 }
+  const fallbackPanels = panels.value.filter((item) => !hasExplicitGrid(item))
+  const stats = fallbackPanels.filter((item) => item.type === 'stat')
+  const content = fallbackPanels.filter((item) => item.type !== 'stat')
+  const statColumns = Math.max(1, Math.min(stats.length, 6))
+  const statWidth = 24 / statColumns
+  const statRows = Math.ceil(stats.length / statColumns)
+  if (panel.type === 'stat') {
+    const statIndex = Math.max(0, stats.indexOf(panel))
+    return { '--grid-x': (statIndex % statColumns) * statWidth, '--grid-y': Math.floor(statIndex / statColumns) * 4, '--grid-w': statWidth, '--grid-h': 4 }
   }
+  const contentIndex = Math.max(0, content.indexOf(panel))
+  return { '--grid-x': (contentIndex % 2) * 12, '--grid-y': statRows * 4 + Math.floor(contentIndex / 2) * 8, '--grid-w': 12, '--grid-h': 8 }
 }
+function panelTitle(panel) { return panel.title || panel.key || '监控面板' }
+function panelSubtitle(panel) { if (panel.error) return panel.error; if (panel.type === 'stat') return '当前值'; if (panel.type === 'table' || panel.type === 'logs') return '按当前筛选条件展示'; return unitLabel(panel) || '趋势与分布' }
+function panelTone(panel) { const value = Number(panel.data?.value); const isPercent = ['percent', '%'].includes(panel.unit); if (panel.status !== 'ok') return 'muted'; if (isPercent && value >= 90) return 'danger'; if (isPercent && value >= 75) return 'warning'; return 'normal' }
+function unitLabel(panel) { return { short: '', percent: '%', '%': '%', cores: '核', bytes: '字节', Bps: '', 'B/s': '', pps: '包/秒', reqps: '次/秒', 'req/s': '次/秒', qps: '次/秒', tps: '次/秒', logs: '条', services: '个', pods: '个', nodes: '台' }[panel.unit] ?? panel.unit ?? '' }
+function formatByteRate(value) { if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)} MiB/s`; if (value >= 1024) return `${(value / 1024).toFixed(1)} KiB/s`; return `${value.toFixed(1)} B/s` }
+function formatPanelValue(panel) { const value = Number(panel.data?.value); if (!Number.isFinite(value) || panel.status !== 'ok') return '--'; if (/-up$/.test(panel.key || '')) return value >= 1 ? '正常' : '异常'; if (['Bps', 'B/s'].includes(panel.unit)) return formatByteRate(value); return value.toLocaleString('zh-CN', { maximumFractionDigits: panel.decimals ?? 1 }) }
+function tableRows(panel) { return Array.isArray(panel.data?.rows) ? panel.data.rows : [] }
+function tableColumns(panel) { const row = tableRows(panel).find((item) => item && typeof item === 'object'); return row ? Object.keys(row).filter((key) => !key.startsWith('__')).slice(0, 8) : ['name', 'value'] }
+function formatBytes(value) { const number = Number(value); if (!Number.isFinite(number)) return '--'; if (number >= 1024 ** 3) return `${(number / 1024 ** 3).toFixed(1)} GiB`; if (number >= 1024 ** 2) return `${(number / 1024 ** 2).toFixed(1)} MiB`; if (number >= 1024) return `${(number / 1024).toFixed(1)} KiB`; return `${number.toFixed(0)} B` }
+function formatDuration(value) { const seconds = Number(value); if (!Number.isFinite(seconds)) return '--'; const days = Math.floor(seconds / 86400); const hours = Math.floor((seconds % 86400) / 3600); return days ? `${days}天 ${hours}小时` : `${hours}小时` }
+function formatCell(value, column, panel) { if (value === null || value === undefined || value === '') return '--'; if (column === 'Ready' || column === '状态') return Number(value) >= 1 ? '正常' : '异常'; if (/内存|磁盘|根盘/.test(column) && !/使用率/.test(column) && typeof value === 'number') return formatBytes(value); if (/运行秒数/.test(column)) return formatDuration(value); if (/使用率|错误率/.test(column) && Number.isFinite(Number(value))) return `${Number(value).toFixed(1)}%`; if (typeof value === 'number') return value.toLocaleString('zh-CN', { maximumFractionDigits: 2 }); return String(value) }
+function cellTone(value, column) { const n = Number(value); if ((column === 'Ready' || column === '状态') && Number.isFinite(n)) return n >= 1 ? 'cell-success' : 'cell-danger'; if (/使用率|错误率/.test(column) && Number.isFinite(n)) return n >= 90 ? 'cell-danger' : n >= 75 ? 'cell-warning' : ''; return '' }
+function timeRange() { const minutes = { '5m': 5, '15m': 15, '1h': 60, '6h': 360 }[timeRangeKey.value] || 5; const end = Date.now(); return [end - minutes * 60 * 1000, end] }
+function selectedDefinition() { const names = { k8s: 'K8S Cluster Health', server: 'Linux Server Resources', database: subtype.value === 'postgresql' ? 'PostgreSQL Overview' : 'MySQL Overview', middleware: subtype.value === 'kafka' ? 'Kafka Overview' : 'Redis Overview', logs: 'Observability Logs Overview' }; return definitions.value.find((item) => item.title === names[scope.value]) || definitions.value.find((item) => (item.tags || []).includes(scope.value)) || definitions.value[0] }
+function refreshDefinition() { activeDefinitionId.value = selectedDefinition()?.id || '' }
+async function changeScope(value) { dashboardRequestVersion += 1; payload.value = {}; scope.value = value; if (value === 'database') subtype.value = 'mysql'; if (value === 'middleware') subtype.value = 'redis'; namespaceFilter.value = ''; nodeFilter.value = ''; refreshDefinition(); if (value === 'k8s' || value === 'server') await loadFilterOptions(); await loadDashboard() }
+async function selectSubtype() { refreshDefinition(); await loadDashboard() }
+async function handleMetricSourceChange() { dashboardRequestVersion += 1; payload.value = {}; namespaceFilter.value = ''; nodeFilter.value = ''; namespaceOptions.value = []; nodeOptions.value = []; await loadFilterOptions(); await loadDashboard() }
+async function handleLogSourceChange() { dashboardRequestVersion += 1; payload.value = {}; logSourceName.value = ''; await loadDashboard() }
 
-async function loadDataSources() {
-  loadingSources.value = true
-  try {
-    const [metrics, logs] = await Promise.allSettled([
-      getMetricDataSources({ is_enabled: true }, { skipErrorMessage: true }),
-      getLogDataSources({ is_enabled: true }, { skipErrorMessage: true }),
-    ])
-    metricDataSources.value = listOf(metrics.value)
-    logDataSources.value = listOf(logs.value)
-    if (!filters.metricDatasourceId && metricDataSources.value.length) {
-      filters.metricDatasourceId = metricDataSources.value.find((item) => item.is_default)?.id || metricDataSources.value[0].id
-    }
-    if (!filters.logDatasourceId && clickHouseSources.value.length) {
-      filters.logDatasourceId = clickHouseSources.value.find((item) => item.is_default)?.id || clickHouseSources.value[0].id
-    }
-  } finally {
-    loadingSources.value = false
-  }
+async function loadFilterOptions() {
+  if (!selectedMetricId.value) return
+  const [nodes, namespaces] = await Promise.allSettled([
+    queryMetrics({ query: scope.value === 'k8s' ? 'kube_node_info' : 'node_uname_info', metric_datasource_id: selectedMetricId.value }),
+    queryMetrics({ query: 'kube_namespace_labels', metric_datasource_id: selectedMetricId.value }),
+  ])
+  if (nodes.status === 'fulfilled') { const unique = new Map(); for (const item of nodes.value?.result || []) { const metric = item.metric || {}; const value = String(scope.value === 'k8s' ? metric.node : (metric.instance || metric.nodename) || '').trim(); if (value) unique.set(value, metric.nodename || metric.node || value) } nodeOptions.value = Array.from(unique, ([value, label]) => ({ value, label })) }
+  if (namespaces.status === 'fulfilled') namespaceOptions.value = [...new Set((namespaces.value?.result || []).map((item) => String(item.metric?.namespace || '').trim()).filter(Boolean))].sort()
 }
-
-async function loadDashboardDefinitions() {
-  loadingDefinitions.value = true
-  try {
-    const response = await getDashboardDefinitions({ is_enabled: true })
-    dashboardDefinitions.value = listOf(response)
-    if (!activeDefinitionId.value && dashboardDefinitions.value.length) {
-      activeDefinitionId.value = dashboardDefinitions.value[0].id
-    }
-  } finally {
-    loadingDefinitions.value = false
-  }
+async function loadSources() {
+  const [metrics, logs] = await Promise.allSettled([getMetricDataSources({ is_enabled: true }, { skipErrorMessage: true }), getLogDataSources({ is_enabled: true }, { skipErrorMessage: true })])
+  metricDataSources.value = metrics.status === 'fulfilled' ? listOf(metrics.value) : []
+  logDataSources.value = logs.status === 'fulfilled' ? listOf(logs.value).filter((item) => ['elk', 'clickhouse'].includes(item.provider)) : []
+  selectedMetricId.value ||= metricDataSources.value.find((item) => item.is_default)?.id || metricDataSources.value[0]?.id || ''
+  selectedLogId.value ||= logDataSources.value.find((item) => item.is_default)?.id || logDataSources.value[0]?.id || ''
+  await loadFilterOptions()
 }
-
-async function importDashboardJson(definition) {
-  const created = await importDashboardDefinition(definition)
-  ElMessage.success('看板定义已导入')
-  await loadDashboardDefinitions()
-  activeDefinitionId.value = created.id
-  await loadDashboard()
-}
-
-async function exportActiveDashboard() {
-  if (!activeDefinitionId.value) return
-  const definition = await exportDashboardDefinition(activeDefinitionId.value)
-  const blob = new Blob([JSON.stringify(definition, null, 2)], { type: 'application/json;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = `${definition.title || 'observability-dashboard'}.json`
-  link.click()
-  URL.revokeObjectURL(url)
-}
-
 async function loadDashboard() {
-  dashboardError.value = ''
-  if (!activeDefinitionId.value) {
-    dashboardPayload.value = {}
-    return
-  }
+  if (!activeDefinitionId.value) return
+  const requestVersion = ++dashboardRequestVersion
   loadingDashboard.value = true
   try {
-    dashboardPayload.value = await queryDashboardDefinition(activeDefinitionId.value, buildDashboardPayload(), { timeout: 60000 })
-  } catch (error) {
-    dashboardPayload.value = {}
-    dashboardError.value = error.response?.data?.detail || error.message || '看板数据加载失败'
-  } finally {
-    loadingDashboard.value = false
-  }
+    const [start_ms, end_ms] = timeRange()
+    const response = await queryDashboardDefinition(activeDefinitionId.value, { start_ms, end_ms, step: 30, metric_datasource_id: selectedMetricId.value || undefined, log_datasource_id: selectedLogId.value || undefined, source: logSourceName.value || undefined, namespace: namespaceFilter.value ? [namespaceFilter.value] : [], node: nodeFilter.value ? [nodeFilter.value] : [] }, { timeout: 60000 })
+    if (requestVersion === dashboardRequestVersion) payload.value = response
+  } catch (error) { if (requestVersion === dashboardRequestVersion) { payload.value = {}; ElMessage.warning(error.response?.data?.detail || '暂时无法读取看板数据') } } finally { if (requestVersion === dashboardRequestVersion) loadingDashboard.value = false }
 }
+function openLogRow(row) { if (scope.value !== 'logs') return; router.push({ path: '/observability/logs', query: { datasource: selectedLogId.value || '', q: row.message || '', from: timeRange()[0], to: timeRange()[1] } }) }
 
-function reloadDashboardIfReady() {
-  if (initialized.value) loadDashboard()
-}
-
-function listOf(response) {
-  return Array.isArray(response) ? response : (response?.results || [])
-}
-
-function tableRows(panel) {
-  return Array.isArray(panel?.data?.rows) ? panel.data.rows : []
-}
-
-function tableColumns(panel) {
-  const first = tableRows(panel).find((row) => row && typeof row === 'object')
-  if (!first) return ['time', 'body', 'level', 'namespace', 'pod_name']
-  return Object.keys(first).slice(0, 8)
-}
-
-function formatCell(value) {
-  if (value === null || value === undefined || value === '') return '--'
-  if (typeof value === 'number') return Number(value.toFixed(2)).toLocaleString('zh-CN')
-  return String(value)
-}
-
-function formatPanelValue(panel) {
-  if (panel.status === 'warning') return '--'
-  const value = Number(panel.data?.value)
-  if (!Number.isFinite(value)) return '--'
-  const decimals = Number(panel.decimals || 0)
-  if (panel.unit === 'bytes') return formatBytes(value)
-  const formatted = value.toLocaleString('zh-CN', {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  })
-  return panel.unit === '%' ? `${formatted}%` : `${formatted}${panel.unit && panel.unit.length <= 2 ? panel.unit : ''}`
-}
-
-function formatBytes(value) {
-  if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(1)}GiB`
-  if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)}MiB`
-  if (value >= 1024) return `${(value / 1024).toFixed(1)}KiB`
-  return `${Math.round(value)}B`
-}
-
-function formatTimeRange(range) {
-  if (!Array.isArray(range) || range.length < 2) return '最近 1 小时'
-  const minutes = Math.max(1, Math.round((toTimestampMs(range[1]) - toTimestampMs(range[0])) / 60000))
-  if (minutes >= 1440) return `最近 ${Math.round(minutes / 1440)} 天`
-  if (minutes >= 60) return `最近 ${Number((minutes / 60).toFixed(1))} 小时`
-  return `最近 ${minutes} 分钟`
-}
-
-function panelTone(panel) {
-  if (panel.status === 'warning') return 'is-warning'
-  const value = Number(panel.data?.value)
-  if (panel.unit === '%' && value >= 90) return 'is-danger'
-  if (panel.unit === '%' && value >= 75) return 'is-caution'
-  return 'is-ok'
-}
-
-watch(activeDefinitionId, () => reloadDashboardIfReady())
-
-watch(
-  () => [
-    filters.metricDatasourceId,
-    filters.logDatasourceId,
-    filters.namespace,
-    filters.node,
-    filters.podName,
-    filters.logLevel,
-    filters.domain,
-    filters.serverIp,
-    filters.status,
-    filters.clientIp,
-  ],
-  () => reloadDashboardIfReady(),
-)
-
-watch(
-  () => filters.timeRange,
-  () => reloadDashboardIfReady(),
-  { deep: true },
-)
-
-onMounted(async () => {
-  await loadDataSources()
-  await loadDashboardDefinitions()
-  await loadDashboard()
-  initialized.value = true
-  if (!metricDataSources.value.length && !clickHouseSources.value.length) {
-    ElMessage.warning('未发现可用指标或 ClickHouse 日志数据源')
-  }
-})
+onMounted(async () => { await Promise.all([loadSources(), getDashboardDefinitions({ is_enabled: true }).then((response) => { definitions.value = listOf(response); refreshDefinition() })]); await loadDashboard() })
 </script>
 
 <style scoped>
-.native-monitor-page {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.native-monitor-hero {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.native-monitor-control {
-  display: grid;
-  gap: 12px;
-}
-
-.native-filter-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(220px, 1fr));
-  gap: 12px;
-}
-
-.native-filter-grid--secondary {
-  grid-template-columns: repeat(4, minmax(180px, 1fr));
-}
-
-.native-filter-item {
-  display: grid;
-  gap: 6px;
-}
-
-.native-filter-item span {
-  color: #64748b;
-  font-size: 12px;
-}
-
-.native-dashboard-stage {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  min-height: 320px;
-}
-
-.native-dashboard-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 4px 2px;
-}
-
-.native-dashboard-head h3 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 20px;
-}
-
-.native-dashboard-head p {
-  margin: 6px 0 0;
-  color: #64748b;
-}
-
-.dashboard-meta-pills {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.dashboard-meta-pills span {
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: #eff6ff;
-  color: #1d4ed8;
-  font-size: 12px;
-}
-
-.native-source-strip {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.native-source-item {
-  display: grid;
-  gap: 4px;
-  padding: 12px;
-  border: 1px solid rgba(226, 232, 240, 0.86);
-  border-radius: 8px;
-  background: #fff;
-}
-
-.native-source-item span,
-.native-source-item small {
-  color: #64748b;
-  font-size: 12px;
-}
-
-.native-source-item strong {
-  color: #0f172a;
-}
-
-.native-empty-panel {
-  display: grid;
-  place-items: center;
-  min-height: 280px;
-}
-
-.native-stat-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 12px;
-}
-
-.native-stat-card {
-  display: grid;
-  gap: 8px;
-  padding: 14px;
-  border-radius: 8px;
-}
-
-.native-stat-card span,
-.native-stat-card small {
-  color: #64748b;
-}
-
-.native-stat-card strong {
-  color: #0f172a;
-  font-size: 28px;
-}
-
-.native-stat-card.is-danger {
-  border-color: rgba(239, 68, 68, 0.2);
-}
-
-.native-stat-card.is-caution,
-.native-stat-card.is-warning {
-  border-color: rgba(245, 158, 11, 0.24);
-}
-
-.native-panel-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
-  gap: 14px;
-}
-
-.native-panel-grid--wide {
-  grid-template-columns: 1fr;
-}
-
-.native-data-panel {
-  min-width: 0;
-  padding: 14px;
-  border-radius: 8px;
-}
-
-.native-panel-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 10px;
-}
-
-.native-panel-head h4 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 15px;
-}
-
-.native-panel-head span {
-  display: block;
-  margin-top: 4px;
-  color: #64748b;
-  font-size: 12px;
-}
-
-.native-panel-warning {
-  min-height: 260px;
-  display: grid;
-  place-items: center;
-  color: #b45309;
-  background: #fffbeb;
-  border-radius: 8px;
-  padding: 18px;
-}
-
-.native-table-wrap {
-  overflow: auto;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-}
-
-.native-table-wrap table {
-  width: 100%;
-  border-collapse: collapse;
-  min-width: 720px;
-}
-
-.native-table-wrap th,
-.native-table-wrap td {
-  padding: 9px 10px;
-  border-bottom: 1px solid #e2e8f0;
-  text-align: left;
-  color: #475569;
-  font-size: 12px;
-  vertical-align: top;
-}
-
-.native-table-wrap th {
-  background: #f8fafc;
-  color: #334155;
-  font-weight: 700;
-}
-
-.native-table-empty {
-  padding: 28px;
-  text-align: center;
-  color: #94a3b8;
-}
-
-@media (max-width: 920px) {
-  .native-monitor-hero,
-  .native-dashboard-head {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .native-filter-grid,
-  .native-filter-grid--secondary,
-  .native-source-strip {
-    grid-template-columns: 1fr;
-  }
-}
+:global(body) { background: #f3f6fa; }
+.monitor-dashboard { min-height: 100%; padding: 18px 22px 36px; color: #25364a; background: #f3f6fa; }
+.dashboard-header, .monitor-toolbar, .scope-switch { max-width: 1800px; margin: 0 auto 12px; }
+.dashboard-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 8px 0 12px; }
+.eyebrow { color: #7890aa; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+h1 { margin: 5px 0 0; color: #1b3047; font-size: 24px; font-weight: 700; } .dashboard-header p { margin: 5px 0 0; color: #7489a0; font-size: 12px; }
+.header-actions { display: flex; align-items: center; gap: 10px; } .live-state { display: inline-flex; align-items: center; gap: 6px; color: #647b94; font-size: 12px; } .live-state i { width: 7px; height: 7px; border-radius: 50%; background: #20b486; box-shadow: 0 0 0 3px rgba(32,180,134,.13); }
+.scope-switch { display: flex; gap: 4px; overflow-x: auto; padding: 4px; border: 1px solid #d8e2ed; background: #fff; box-shadow: 0 4px 14px rgba(42,68,98,.05); } .scope-switch button { display: inline-flex; align-items: center; gap: 7px; min-width: 126px; justify-content: center; padding: 9px 14px; border: 0; color: #667d96; background: transparent; cursor: pointer; white-space: nowrap; } .scope-switch button.active { color: #fff; background: #3478d4; box-shadow: 0 4px 12px rgba(52,120,212,.22); }
+.monitor-toolbar { display: grid; grid-template-columns: minmax(170px,1.2fr) minmax(150px,1fr) minmax(150px,1fr) minmax(180px,1.2fr) auto; align-items: end; gap: 10px; padding: 11px; border: 1px solid #d8e2ed; background: #fff; box-shadow: 0 4px 14px rgba(42,68,98,.05); } .toolbar-field { display: grid; gap: 5px; min-width: 0; } .toolbar-field > span { color: #617891; font-size: 11px; } .monitor-toolbar :deep(.el-input__wrapper), .monitor-toolbar :deep(.el-select__wrapper) { background: #f8fafc; box-shadow: 0 0 0 1px #d5e0eb inset; } .monitor-toolbar :deep(.el-input__inner), .monitor-toolbar :deep(.el-select__selected-item) { color: #30465d; }
+.dashboard-canvas { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); grid-auto-rows: 26px; gap: 8px; max-width: 1800px; margin: 0 auto; } .dashboard-panel { grid-column: calc(var(--grid-x,0) + 1) / span var(--grid-w, 24); grid-row: calc(var(--grid-y,0) + 1) / span var(--grid-h, 8); min-width: 0; min-height: 0; overflow: hidden; padding: 11px 13px 9px; border: 1px solid #d7e2ed; border-top: 2px solid #6fa6e8; background: #fff; box-shadow: 0 5px 16px rgba(42,68,98,.07); } .dashboard-panel.panel-type-stat { padding-bottom: 9px; }
+.panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; min-height: 27px; } .panel-heading h2 { margin: 0; color: #253c54; font-size: 13px; font-weight: 600; } .panel-heading p { margin: 3px 0 0; color: #8497aa; font-size: 10px; } .panel-tools { display: flex; align-items: center; color: #7890aa; } .panel-tools :deep(.el-button) { color: #7890aa; } .panel-status { max-width: 180px; overflow: hidden; color: #d85260; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.stat-value { display: flex; align-items: baseline; gap: 6px; margin-top: 7px; color: #253c54; font-size: 28px; font-weight: 700; } .stat-value small { color: #8194a8; font-size: 11px; font-weight: 400; } .stat-value.normal { color: #2878cf; } .stat-value.warning { color: #c98719; } .stat-value.danger { color: #d84f5d; } .stat-value.muted { color: #8999aa; }
+.dashboard-panel :deep(.native-chart-canvas) { height: calc(var(--grid-h,8) * 26px - 50px); min-height: 130px; } .dashboard-panel :deep(.native-chart-shell) { min-height: 130px; } .panel-table-wrap { max-height: calc(var(--grid-h,8) * 26px - 48px); overflow: auto; } table { width: 100%; border-collapse: collapse; } th, td { padding: 6px 8px; border-bottom: 1px solid #e6edf4; color: #526a82; font-size: 11px; text-align: left; white-space: nowrap; } th { position: sticky; top: 0; color: #304962; background: #f1f5f9; } .cell-success { color: #158765; font-weight: 600; } .cell-warning { color: #c98719; } .cell-danger { color: #d84f5d; font-weight: 600; } .panel-empty, .empty-dashboard { display: grid; place-items: center; gap: 8px; color: #8295a9; font-size: 12px; } .panel-empty { min-height: 70px; } .empty-dashboard { min-height: 300px; } .empty-dashboard strong { color: #526a82; font-size: 15px; }
+@media (max-width: 1100px) { .monitor-toolbar { grid-template-columns: repeat(3,minmax(0,1fr)); } .dashboard-canvas { grid-template-columns: repeat(12,minmax(0,1fr)); } .dashboard-panel { grid-column: 1 / span 12; grid-row: auto; min-height: 260px; } }
+@media (max-width: 700px) { .monitor-dashboard { padding: 12px; } .dashboard-header { flex-direction: column; } .monitor-toolbar { grid-template-columns: 1fr; } .scope-switch button { min-width: 108px; } .dashboard-canvas { display: grid; grid-template-columns: 1fr; grid-auto-rows: auto; padding: 0; } .dashboard-panel { grid-column: 1; grid-row: auto; min-height: 230px; } .dashboard-panel :deep(.native-chart-canvas) { height: 220px; } }
 </style>

@@ -48,6 +48,8 @@ def _alert_payload_from_result(rule, result, status=Alert.STATUS_ACTIVE):
 
 def _emit_alert(rule, result, request=None, status=Alert.STATUS_ACTIVE):
     normalized = _alert_payload_from_result(rule, result, status=status)
+    previous = Alert.objects.filter(fingerprint=normalized.get('fingerprint')).only('level').first()
+    previous_level = previous.level if previous else ''
     # 参考 database-monitor-main 的根因分析设计
     try:
         from ops.alert_engine.evaluator import build_alert_with_root_cause
@@ -65,6 +67,8 @@ def _emit_alert(rule, result, request=None, status=Alert.STATUS_ACTIVE):
     )
     apply_alert_suppression(alert)
     apply_escalation_policy(alert, request=request)
+    from ops.alert_analysis import enqueue_for_rule_alert
+    enqueue_for_rule_alert(alert, rule, created=created, previous_level=previous_level)
     return alert, created
 
 

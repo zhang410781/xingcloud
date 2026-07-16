@@ -54,6 +54,14 @@ def build_platform_alert_payload(rule, payload=None, status=None):
         'alert_rule_code': rule.code,
         'alert_rule_source_type': rule.source_type,
     })
+    if rule.metric_datasource_id:
+        labels['metric_datasource_id'] = str(rule.metric_datasource_id)
+        if rule.metric_datasource:
+            labels['metric_datasource_name'] = rule.metric_datasource.name
+            if rule.metric_datasource.environment:
+                labels.setdefault('environment', rule.metric_datasource.environment)
+            if rule.metric_datasource.cluster_name:
+                labels.setdefault('cluster', rule.metric_datasource.cluster_name)
     annotations = {
         **_dict(rule.annotations),
         **_dict(payload.get('annotations')),
@@ -104,6 +112,7 @@ def build_platform_alert_payload(rule, payload=None, status=None):
                 'name': rule.name,
                 'category': rule.category,
                 'source_type': rule.source_type,
+                'metric_datasource_id': rule.metric_datasource_id,
                 'query_config': rule.query_config,
                 'condition': rule.condition,
             },
@@ -124,6 +133,8 @@ def trigger_alert_rule(rule, payload=None, status=None, request=None):
     if not rule.is_enabled:
         raise ValueError('告警规则未启用')
     normalized = build_platform_alert_payload(rule, payload=payload, status=status)
+    previous = Alert.objects.filter(fingerprint=normalized.get('fingerprint')).only('level').first()
+    previous_level = previous.level if previous else ''
     notification_action = None
     with transaction.atomic():
         now = timezone.now()
@@ -140,6 +151,9 @@ def trigger_alert_rule(rule, payload=None, status=None, request=None):
         )
         apply_alert_suppression(alert)
         apply_escalation_policy(alert, request=request)
+        if rule.auto_analyze and alert.status == Alert.STATUS_ACTIVE:
+            from .alert_analysis import enqueue_for_rule_alert
+            enqueue_for_rule_alert(alert, rule, created=created, previous_level=previous_level)
         notification_action = 'resolved' if alert.status == Alert.STATUS_RESOLVED else 'fire'
 
     logs = []

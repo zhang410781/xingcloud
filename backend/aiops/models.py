@@ -199,6 +199,23 @@ class AIOpsKnowledgeEnvironment(models.Model):
     aliases = models.JSONField('环境别名', default=list, blank=True)
     description = models.CharField('描述', max_length=255, blank=True, default='')
     event_environments = models.JSONField('事件中心环境', default=list, blank=True)
+    metric_datasource = models.ForeignKey(
+        'ops.MetricDataSource',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='aiops_knowledge_environments',
+        verbose_name='指标数据源',
+    )
+    log_datasource = models.ForeignKey(
+        'ops.LogDataSource',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='aiops_knowledge_environments',
+        verbose_name='日志数据源',
+    )
+    # 兼容旧客户端一个发布周期；新代码以单值外键为准。
     metric_datasource_ids = models.JSONField('指标数据源', default=list, blank=True)
     log_datasource_ids = models.JSONField('日志中心数据源', default=list, blank=True)
     alert_environments = models.JSONField('告警中心环境', default=list, blank=True)
@@ -422,12 +439,14 @@ class AIOpsModelInvocation(models.Model):
     PURPOSE_PARAMETER_EXTRACTION = 'parameter_extraction'
     PURPOSE_MODEL_PROBE = 'model_probe'
     PURPOSE_CONNECTION_TEST = 'connection_test'
+    PURPOSE_ALERT_ANALYSIS = 'alert_analysis'
     PURPOSE_CHOICES = [
         (PURPOSE_CHAT_PLANNING, '聊天规划'),
         (PURPOSE_ANSWER_FORMATTING, '回答整形'),
         (PURPOSE_PARAMETER_EXTRACTION, '参数抽取'),
         (PURPOSE_MODEL_PROBE, '模型探测'),
         (PURPOSE_CONNECTION_TEST, '连接测试'),
+        (PURPOSE_ALERT_ANALYSIS, '告警研判'),
     ]
 
     STATUS_SUCCESS = 'success'

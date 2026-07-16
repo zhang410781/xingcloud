@@ -232,10 +232,11 @@ const menuItems = [
     children: [
       { path: '/observability/overview', title: '平台总览', icon: 'DataLine', anyPermissions: observabilityOverviewPermissions },
       { path: '/observability/alerts', title: '告警中心', icon: 'Bell', anyPermissions: ['ops.alert.view', 'ops.alert.config.view'] },
+      { path: '/observability/rules', title: '告警规则', icon: 'Operation', permission: 'ops.alert.config.view' },
       { path: '/observability/dashboards', title: '监控看板', icon: 'Histogram', anyPermissions: observabilityBoardPermissions },
       { path: '/observability/metrics', title: '指标查询', icon: 'DataAnalysis', anyPermissions: ['ops.metric.query', 'ops.metric.datasource.view'] },
-      { path: '/logs/query', title: '日志查询', icon: 'Search', anyPermissions: ['ops.log.query', 'ops.log.datasource.view'] },
-      { path: '/observability/datasources', title: '数据源', icon: 'DataBoard', anyPermissions: ['ops.metric.datasource.view', 'ops.log.datasource.view'] },
+      { path: '/observability/logs', title: '日志查询', icon: 'Search', anyPermissions: ['ops.log.query', 'ops.log.datasource.view'] },
+      { path: '/observability/data-sources', title: '数据源', icon: 'DataBoard', anyPermissions: ['ops.metric.datasource.view', 'ops.log.datasource.view'] },
     ],
   },
   {
@@ -287,21 +288,6 @@ const menuItems = [
   },
 ]
 
-const observabilityBoardPaths = new Set([
-  '/observability/boards',
-  '/observability/dashboards',
-])
-const observabilityLogPaths = new Set([
-  '/logs',
-  '/logs/query',
-])
-const observabilityDatasourcePaths = new Set([
-  '/observability/datasources',
-  '/observability/metrics/datasources',
-  '/logs/datasources',
-])
-
-
 function canAccess(item) {
   if (item.permission) return authStore.hasPermission(item.permission)
   if (item.anyPermissions) return authStore.hasAnyPermission(item.anyPermissions)
@@ -338,21 +324,6 @@ const visibleMenuItems = computed(() => menuItems
 const normalizedMenuPath = computed(() => {
   if (route.path.startsWith('/sql')) {
     return '/sql'
-  }
-  if (observabilityBoardPaths.has(route.path)) {
-    return '/observability/dashboards'
-  }
-  if (route.path === '/alerts' || route.path === '/observability/alerts') {
-    return '/observability/alerts'
-  }
-  if (observabilityLogPaths.has(route.path)) {
-    return '/logs/query'
-  }
-  if (observabilityDatasourcePaths.has(route.path) || (route.path === '/observability/metrics' && route.query.tab === 'datasources')) {
-    return '/observability/datasources'
-  }
-  if (route.path === '/observability/query' || route.path === '/observability/metrics') {
-    return '/observability/metrics'
   }
   return route.path
 })

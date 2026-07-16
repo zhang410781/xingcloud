@@ -18,7 +18,7 @@ from .eventwall_stub import EventRecord
 from .eventwall_stub import record_event
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from rbac.services import user_has_permissions
-from .alert_rule_presets import ensure_builtin_alert_rule_templates, install_rules_from_templates
+from .alert_rule_presets import ensure_builtin_alert_rule_templates, ensure_datasource_rule_instances, install_rules_from_templates
 from .dashboard_presets import ensure_builtin_dashboards
 from .datasource_health import datasource_health_payload
 from .models import Alert, AlertRule, Deployment, LogDataSource, LogEntry, MetricDataSource, ObservabilityDashboard
@@ -537,8 +537,14 @@ def _native_promql_latest(result):
 def _native_metric_label(metric, preferred=''):
     metric = metric or {}
     preferred = str(preferred or '').strip()
+    if preferred and '{{' in preferred:
+        rendered = re.sub(r'\{\{\s*([^{}\s]+)\s*\}\}', lambda match: str(metric.get(match.group(1)) or ''), preferred).strip()
+        if rendered:
+            return rendered
     if preferred and metric.get(preferred) not in (None, ''):
         return str(metric.get(preferred))
+    if preferred:
+        return preferred
     for key in ['pod', 'namespace', 'node', 'instance', 'phase', 'status', 'name', 'job']:
         if metric.get(key) not in (None, ''):
             return str(metric.get(key))
@@ -582,9 +588,58 @@ def _native_bar_from_promql(payload, label=''):
     return sorted(rows, key=lambda item: item.get('value') or 0, reverse=True)
 
 
+def _native_apply_node_filter(query, nodes):
+    """Restrict node-exporter expressions to selected instance labels."""
+    if not isinstance(nodes, (list, tuple, set)):
+        nodes = [nodes] if nodes else []
+    values = [str(item).strip() for item in nodes if str(item or '').strip()]
+    if not values:
+        return query
+    # Hyphens are ordinary outside a regex character class, while Prometheus
+    # rejects Python's escaped ``\-`` form in a label regex.
+    pattern = '|'.join(re.escape(item).replace(r'\-', '-') for item in values)
+    def replace(match):
+        metric = match.group('metric')
+        selectors = match.group('selectors')
+        label = 'node' if metric.startswith('kube_node_') else 'instance'
+        matcher = f'{label}=~"{pattern}"'
+        if selectors is None:
+            return f'{metric}{{{matcher}}}'
+        content = selectors[1:-1].strip()
+        if re.search(rf'\b{label}\s*(?:=|!=|=~|!~)', content):
+            return match.group(0)
+        return f'{metric}{{{content},{matcher}}}' if content else f'{metric}{{{matcher}}}'
+
+    return re.sub(r'\b(?P<metric>(?:(?:node|machine)_[a-zA-Z0-9_:]+|kube_node_[a-zA-Z0-9_:]+))(?P<selectors>\{[^{}]*\})?', replace, query)
+
+
+def _native_apply_namespace_filter(query, namespaces):
+    if not isinstance(namespaces, (list, tuple, set)):
+        namespaces = [namespaces] if namespaces else []
+    values = [str(item).strip() for item in namespaces if str(item or '').strip()]
+    if not values:
+        return query
+    pattern = '|'.join(re.escape(item).replace(r'\-', '-') for item in values)
+    matcher = f'namespace=~"{pattern}"'
+
+    def replace(match):
+        metric = match.group('metric')
+        selectors = match.group('selectors')
+        if selectors is None:
+            return f'{metric}{{{matcher}}}'
+        content = selectors[1:-1].strip()
+        if re.search(r'\bnamespace\s*(?:=|!=|=~|!~)', content):
+            return match.group(0)
+        return f'{metric}{{{content},{matcher}}}' if content else f'{metric}{{{matcher}}}'
+
+    return re.sub(r'\b(?P<metric>(?:kube_(?:pod|namespace|deployment|statefulset|daemonset|replicaset)_[a-zA-Z0-9_:]+|container_[a-zA-Z0-9_:]+))(?P<selectors>\{[^{}]*\})?', replace, query)
+
+
 def _native_prometheus_panel(panel, request_data, start_ms, end_ms):
+    query = _native_apply_node_filter(panel['query'], request_data.get('node') or [])
+    query = _native_apply_namespace_filter(query, request_data.get('namespace') or [])
     payload = execute_promql_query(
-        panel['query'],
+        query,
         range_query=panel.get('type') == 'timeseries',
         start_time=_native_iso_from_ms(start_ms),
         end_time=_native_iso_from_ms(end_ms),
@@ -600,8 +655,10 @@ def _native_prometheus_panel(panel, request_data, start_ms, end_ms):
         return {'value': value, 'series': series}
     if panel_type == 'timeseries':
         return {'series': _native_series_from_promql(payload, panel.get('label'))}
-    if panel_type == 'bar':
+    if panel_type in {'bar', 'bargauge', 'pie'}:
         return {'rows': _native_bar_from_promql(payload, panel.get('label'))}
+    if panel_type in {'table', 'logs'}:
+        return {'rows': [dict(item.get('metric') or {}, value=_native_promql_latest(item)) for item in payload.get('result') or []]}
     return {'series': _native_series_from_promql(payload, panel.get('label'))}
 
 
@@ -612,6 +669,9 @@ def _native_panel_response(panel, data=None, status_text='ok', error=''):
         'type': panel.get('type'),
         'unit': panel.get('unit') or '',
         'decimals': panel.get('decimals', 0),
+        'grid': panel.get('grid') or {},
+        'options': panel.get('options') or {},
+        'targets': panel.get('targets') or [],
         'status': status_text,
         'error': error,
         'data': data or {},
@@ -664,24 +724,135 @@ def _dashboard_panel_options(panel):
     return panel.options if isinstance(panel.options, dict) else {}
 
 
-def _dashboard_panel_target(panel):
+def _dashboard_panel_targets(panel):
     targets = panel.targets if isinstance(panel.targets, list) else []
-    return targets[0] if targets and isinstance(targets[0], dict) else {}
+    return [item for item in targets if isinstance(item, dict)]
+
+
+def _dashboard_panel_target(panel):
+    return (_dashboard_panel_targets(panel) or [{}])[0]
 
 
 def _dashboard_prometheus_panel(panel, request_data, start_ms, end_ms):
     options = _dashboard_panel_options(panel)
-    target = _dashboard_panel_target(panel)
+    targets = _dashboard_panel_targets(panel)
+    target_results = []
+    for index, target in enumerate(targets):
+        native_panel = {
+            'key': panel.key,
+            'title': panel.title,
+            'type': panel.chart_type,
+            'unit': options.get('unit') or '',
+            'decimals': options.get('decimals', 0),
+            'query': target.get('query') or target.get('promql') or '',
+            'label': target.get('label') or target.get('legend') or options.get('label') or '',
+        }
+        result = _native_prometheus_panel(native_panel, request_data, start_ms, end_ms)
+        target_results.append({'ref_id': target.get('ref_id') or target.get('refId') or chr(65 + index), **result})
+    if len(target_results) == 1:
+        data = target_results[0]
+        data.pop('ref_id', None)
+    else:
+        data = {'targets': target_results}
+        if panel.chart_type == 'timeseries':
+            data['series'] = [series for target in target_results for series in target.get('series', [])]
+        elif panel.chart_type in {'bar', 'pie', 'bargauge'}:
+            data['rows'] = [row for target in target_results for row in target.get('rows', [])]
+        elif panel.chart_type in {'table', 'logs'}:
+            table_options = options.get('table') or {}
+            join_by = table_options.get('join_by') or ['name']
+            if isinstance(join_by, str):
+                join_by = [join_by]
+            columns = table_options.get('columns') or {}
+            label_columns = table_options.get('label_columns') or join_by
+            merged = {}
+            for index, target_result in enumerate(target_results):
+                ref_id = target_result.get('ref_id') or chr(65 + index)
+                for row in target_result.get('rows') or []:
+                    identity = tuple(str(row.get(key) or '') for key in join_by)
+                    if not any(identity):
+                        identity = (str(row.get('name') or index),)
+                    record = merged.setdefault(identity, {key: row.get(key) for key in label_columns})
+                    record[columns.get(ref_id) or ref_id] = row.get('value')
+            data['rows'] = list(merged.values())
+        elif panel.chart_type == 'stat':
+            data['value'] = next((target.get('value') for target in target_results if target.get('value') is not None), None)
     native_panel = {
-        'key': panel.key,
-        'title': panel.title,
-        'type': panel.chart_type,
-        'unit': options.get('unit') or '',
-        'decimals': options.get('decimals', 0),
-        'query': target.get('query') or target.get('promql') or '',
-        'label': target.get('label') or options.get('label') or '',
+        'key': panel.key, 'title': panel.title, 'type': panel.chart_type,
+        'unit': options.get('unit') or '', 'decimals': options.get('decimals', 0),
+        'grid': options.get('grid') or {}, 'options': options, 'targets': targets,
     }
-    return _native_panel_response(native_panel, _native_prometheus_panel(native_panel, request_data, start_ms, end_ms))
+    return _native_panel_response(native_panel, data)
+
+
+def _dashboard_log_panel(panel, request_data, start_ms, end_ms):
+    """Run provider-neutral fixed log panels through the existing log adapters."""
+    from .log_views import ProviderError, _merge_config, _run_query
+
+    datasource_id = request_data.get('log_datasource_id') or request_data.get('datasource_id')
+    datasource = LogDataSource.objects.filter(pk=datasource_id, is_enabled=True).first() if datasource_id else None
+    if not datasource:
+        datasource = LogDataSource.objects.filter(provider__in=['elk', 'clickhouse'], is_enabled=True).order_by('-is_default', 'name').first()
+    if not datasource or datasource.provider not in {'elk', 'clickhouse'}:
+        raise ProviderError('请选择 Elasticsearch 或 ClickHouse 日志数据源')
+    target = _dashboard_panel_target(panel)
+    options = _dashboard_panel_options(panel)
+    query = target.get('query') or ''
+    payload = {
+        'query': query,
+        'source': request_data.get('source') or target.get('source') or target.get('index_pattern') or '',
+        'collection': target.get('collection') or 'container-logs',
+        'limit': max(int(target.get('limit') or 200), 1000),
+        'start_ms': start_ms,
+        'end_ms': end_ms,
+    }
+    config = _merge_config(datasource.provider, datasource.config)
+    cache = request_data.setdefault('_log_dashboard_cache', {})
+    cache_key = (datasource.id, payload['source'], payload['collection'], payload['query'], start_ms, end_ms)
+    if cache_key not in cache:
+        cache[cache_key] = _run_query(datasource.provider, config, payload)
+    result = cache[cache_key]
+    panel_type = panel.chart_type
+    logs = result.get('logs') or []
+    if panel_type == 'stat':
+        metric = target.get('metric') or 'total'
+        if metric == 'errors':
+            value = sum(1 for item in logs if str(item.get('level', '')).lower() in {'error', 'fatal', 'critical'})
+        elif metric == 'error_rate':
+            errors = sum(1 for item in logs if str(item.get('level', '')).lower() in {'error', 'fatal', 'critical'})
+            value = errors / len(logs) * 100 if logs else 0
+        elif metric == 'services':
+            value = len({item.get('service') for item in logs if item.get('service')})
+        else:
+            value = result.get('total', len(logs))
+        data = {'value': value, 'logs': logs[:50]}
+    elif panel_type in {'table', 'logs'}:
+        if target.get('metric') == 'errors':
+            logs = [item for item in logs if str(item.get('level', '')).lower() in {'error', 'fatal', 'critical'}]
+        data = {'rows': logs[:target.get('limit') or 100]}
+    elif panel_type == 'pie' or panel_type in {'bar', 'bargauge'}:
+        field = target.get('field') or 'level'
+        counts = {}
+        for item in logs:
+            value = item.get(field) or item.get('source') or 'unknown'
+            counts[str(value)] = counts.get(str(value), 0) + 1
+        data = {'rows': [{'name': key, 'value': value} for key, value in sorted(counts.items(), key=lambda pair: pair[1], reverse=True)]}
+    else:
+        buckets = {}
+        field = target.get('field') or 'level'
+        for item in logs:
+            timestamp = item.get('timestamp') or ''
+            bucket = timestamp[:16] if timestamp else 'unknown'
+            name = str(item.get(field) or item.get('source') or 'logs')
+            buckets.setdefault(name, {}).setdefault(bucket, 0)
+            buckets[name][bucket] += 1
+        data = {'series': [{'name': name, 'points': [[bucket, count] for bucket, count in values.items()], 'value': list(values.values())[-1] if values else None} for name, values in buckets.items()]}
+    native_panel = {
+        'key': panel.key, 'title': panel.title, 'type': panel.chart_type,
+        'unit': options.get('unit') or '', 'decimals': options.get('decimals', 0),
+        'grid': options.get('grid') or {}, 'options': options, 'targets': [target],
+    }
+    return _native_panel_response(native_panel, data)
 
 
 def _dashboard_clickhouse_context(config, request_data, collection_key, start_ms, end_ms):
@@ -726,6 +897,9 @@ def _dashboard_clickhouse_panel(panel, request_data, start_ms, end_ms):
         'unit': options.get('unit') or '',
         'decimals': options.get('decimals', 0),
         'sql': target.get('sql') or 'SELECT count() AS value FROM {table} WHERE {time_filter}',
+        'grid': options.get('grid') or {},
+        'options': options,
+        'targets': [target],
     }
     return _native_panel_response(native_panel, _native_clickhouse_panel(native_panel, config, context))
 
@@ -756,6 +930,8 @@ def _query_dashboard_definition(dashboard, request_data):
                 panels.append(_dashboard_prometheus_panel(panel, request_data, start_ms, end_ms))
             elif panel.datasource_type == 'clickhouse':
                 panels.append(_dashboard_clickhouse_panel(panel, request_data, start_ms, end_ms))
+            elif panel.datasource_type == 'log':
+                panels.append(_dashboard_log_panel(panel, request_data, start_ms, end_ms))
             elif panel.datasource_type == 'sla':
                 panels.append(_dashboard_sla_panel(panel))
             else:
@@ -826,8 +1002,9 @@ class ObservabilityDashboardViewSet(EventWallModelViewSetMixin, RBACPermissionMi
 
 
 def _integration_status(integration):
-    template_count = AlertRule.objects.filter(source__in=integration.template_codes, is_enabled=True).count()
-    rule_count = template_count
+    ensure_builtin_alert_rule_templates()
+    template_count = AlertRule.objects.filter(code__in=integration.template_codes, is_template=True).count()
+    rule_count = AlertRule.objects.filter(source__in=integration.template_codes, is_template=False, is_enabled=True).count()
     dashboard_count = ObservabilityDashboard.objects.filter(title__in=integration.dashboard_titles, is_enabled=True).count()
     metric_ready = MetricDataSource.objects.filter(is_enabled=True, last_check_status='ok').exists()
     log_ready = LogDataSource.objects.filter(provider='clickhouse', is_enabled=True, last_check_status='ok').exists()
@@ -884,7 +1061,14 @@ def install_integration_rules(request, key):
         return Response({'detail': 'integration not found'}, status=status.HTTP_404_NOT_FOUND)
     requested = request.data.get('template_codes') or integration.template_codes
     requested = [code for code in requested if code in integration.template_codes]
-    created, skipped = install_rules_from_templates(requested)
+    try:
+        created, skipped = install_rules_from_templates(
+            requested,
+            metric_datasource_id=request.data.get('metric_datasource_id'),
+            overrides=request.data.get('overrides') if isinstance(request.data.get('overrides'), dict) else None,
+        )
+    except ValueError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     return Response({
         'integration': key,
         'created_count': len(created),
@@ -941,6 +1125,11 @@ class MetricDataSourceViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, v
         if is_enabled in ('true', 'false'):
             queryset = queryset.filter(is_enabled=is_enabled == 'true')
         return queryset.order_by('environment', '-is_default', 'name')
+
+    def perform_create(self, serializer):
+        datasource = serializer.save()
+        if datasource.provider == MetricDataSource.PROVIDER_PROMETHEUS and datasource.is_enabled:
+            ensure_datasource_rule_instances(datasource)
 
     @action(detail=True, methods=['post'])
     def test_connection(self, request, pk=None):

@@ -224,69 +224,6 @@ const routes = [
         meta: { title: '容器环境', icon: 'Platform', permission: 'ops.docker.view' },
       },
       {
-        path: 'logs',
-        redirect: () => {
-          const authStore = useAuthStore(pinia)
-          return authStore.hasPermission('ops.log.query') ? '/logs/query' : '/logs/datasources'
-        },
-        meta: { hidden: true },
-      },
-      {
-        path: 'logs/query',
-        name: 'LogsQuery',
-        component: () => import('@/views/LogsQuery.vue'),
-        meta: { title: '日志中心', icon: 'Search', permission: 'ops.log.query' },
-      },
-      {
-        path: 'logs/datasources',
-        name: 'LogDataSources',
-        component: () => import('@/views/LogDataSources.vue'),
-        meta: { title: '日志数据源', icon: 'DataBoard', permission: 'ops.log.datasource.view' },
-      },
-      {
-        path: 'alerts',
-        redirect: '/observability/alerts',
-        meta: { hidden: true, anyPermissions: ['ops.alert.view', 'ops.alert.config.view'] },
-      },
-      {
-        path: 'observability',
-        redirect: () => {
-          const authStore = useAuthStore(pinia)
-          if (authStore.hasAnyPermission(observabilityOverviewPermissions)) return '/observability/overview'
-          if (authStore.hasAnyPermission(observabilityBoardPermissions)) return '/observability/dashboards'
-          if (authStore.hasPermission('ops.metric.query')) return '/observability/metrics'
-          if (authStore.hasPermission('ops.log.query')) return '/logs/query'
-          if (authStore.hasAnyPermission(['ops.metric.datasource.view', 'ops.log.datasource.view'])) return '/observability/datasources'
-          return '/403'
-        },
-        meta: { hidden: true },
-      },
-      {
-        path: 'observability/boards',
-        redirect: '/observability/dashboards',
-        meta: { hidden: true, anyPermissions: observabilityBoardPermissions },
-      },
-      {
-        path: 'observability/query',
-        redirect: () => {
-          const authStore = useAuthStore(pinia)
-          if (authStore.hasPermission('ops.metric.query')) return '/observability/metrics'
-          if (authStore.hasPermission('ops.log.query')) return '/logs/query'
-          return '/403'
-        },
-        meta: { hidden: true, anyPermissions: ['ops.metric.query', 'ops.log.query'] },
-      },
-      {
-        path: 'observability/datasources',
-        redirect: () => {
-          const authStore = useAuthStore(pinia)
-          if (authStore.hasPermission('ops.metric.datasource.view')) return { path: '/observability/metrics', query: { tab: 'datasources' } }
-          if (authStore.hasPermission('ops.log.datasource.view')) return '/logs/datasources'
-          return '/403'
-        },
-        meta: { hidden: true, anyPermissions: ['ops.metric.datasource.view', 'ops.log.datasource.view'] },
-      },
-      {
         path: 'observability/overview',
         name: 'ObservabilityOverview',
         component: () => import('@/views/ObservabilityOverview.vue'),
@@ -303,15 +240,28 @@ const routes = [
         meta: { title: '告警中心', icon: 'Bell', anyPermissions: ['ops.alert.view', 'ops.alert.config.view'] },
       },
       {
+        path: 'observability/rules',
+        name: 'ObservabilityAlertRules',
+        component: () => import('@/views/AlertRules.vue'),
+        meta: { title: '告警规则', icon: 'Operation', permission: 'ops.alert.config.view' },
+      },
+      {
         path: 'observability/metrics',
         name: 'MetricsQuery',
         component: () => import('@/views/MetricsQuery.vue'),
         meta: { title: '指标查询', icon: 'DataAnalysis', anyPermissions: ['ops.metric.query', 'ops.metric.datasource.view'] },
       },
       {
-        path: 'observability/metrics/datasources',
-        redirect: { path: '/observability/metrics', query: { tab: 'datasources' } },
-        meta: { hidden: true, permission: 'ops.metric.datasource.view' },
+        path: 'observability/logs',
+        name: 'ObservabilityLogsQuery',
+        component: () => import('@/views/LogsQuery.vue'),
+        meta: { title: '日志查询', icon: 'Search', permission: 'ops.log.query' },
+      },
+      {
+        path: 'observability/data-sources',
+        name: 'ObservabilityDataSources',
+        component: () => import('@/views/ObservabilityDataSources.vue'),
+        meta: { title: '数据源', icon: 'DataBoard', anyPermissions: ['ops.metric.datasource.view', 'ops.log.datasource.view'] },
       },
       {
         path: 'observability/dashboards',

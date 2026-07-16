@@ -14,6 +14,7 @@ from .models import (
     AlertInteractionToken,
     AlertNotificationChannel,
     AlertNotificationLog,
+    AlertNotificationPolicy,
     AlertRecipient,
     AlertRecipientGroup,
     AlertRule,
@@ -1493,9 +1494,49 @@ class AlertRuleSerializer(serializers.ModelSerializer):
     category_display = serializers.CharField(source='get_category_display', read_only=True)
     source_type_display = serializers.CharField(source='get_source_type_display', read_only=True)
     level_display = serializers.CharField(source='get_level_display', read_only=True)
+    metric_datasource_detail = serializers.SerializerMethodField()
+    template_detail = serializers.SerializerMethodField()
+    needs_binding = serializers.SerializerMethodField()
+
     class Meta:
         model = AlertRule
         fields = '__all__'
+
+    def get_metric_datasource_detail(self, obj):
+        datasource = obj.metric_datasource
+        if not datasource:
+            return None
+        return {
+            'id': datasource.id,
+            'name': datasource.name,
+            'environment': datasource.environment,
+            'cluster_name': datasource.cluster_name,
+            'is_enabled': datasource.is_enabled,
+        }
+
+    def get_template_detail(self, obj):
+        template = obj.template
+        return {'id': template.id, 'code': template.code, 'name': template.name} if template else None
+
+    def get_needs_binding(self, obj):
+        return obj.source_type == 'prometheus' and not obj.is_template and not obj.metric_datasource_id
+
+    def validate(self, attrs):
+        source_type = attrs.get('source_type', getattr(self.instance, 'source_type', ''))
+        is_template = attrs.get('is_template', getattr(self.instance, 'is_template', False))
+        datasource = attrs.get('metric_datasource', getattr(self.instance, 'metric_datasource', None))
+        template = attrs.get('template', getattr(self.instance, 'template', None))
+        if template and not template.is_template:
+            raise serializers.ValidationError({'template': '来源规则不是模板'})
+        if source_type == 'prometheus' and not is_template and not datasource:
+            raise serializers.ValidationError({'metric_datasource': 'Prometheus 规则必须绑定指标数据源'})
+        if datasource and not datasource.is_enabled:
+            raise serializers.ValidationError({'metric_datasource': '指标数据源已停用'})
+        query_config = dict(attrs.get('query_config', getattr(self.instance, 'query_config', {}) or {}))
+        if datasource:
+            query_config['metric_datasource_id'] = datasource.id
+            attrs['query_config'] = query_config
+        return attrs
 
 
 class AlertSilenceSerializer(serializers.ModelSerializer):
@@ -1593,6 +1634,73 @@ class AlertNotificationChannelSerializer(serializers.ModelSerializer):
         return super().update(instance, validated_data)
 
 
+class AlertNotificationPolicySerializer(serializers.ModelSerializer):
+    channel_ids = serializers.PrimaryKeyRelatedField(queryset=AlertNotificationChannel.objects.all(), many=True, write_only=True, required=False)
+    recipient_group_ids = serializers.PrimaryKeyRelatedField(queryset=AlertRecipientGroup.objects.all(), many=True, write_only=True, required=False)
+    channels = serializers.SerializerMethodField()
+    recipient_groups = serializers.SerializerMethodField()
+    metric_datasource_detail = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AlertNotificationPolicy
+        fields = [
+            'id', 'name', 'metric_datasource', 'metric_datasource_detail', 'matchers', 'min_level',
+            'priority', 'continue_matching', 'channel_ids', 'channels', 'recipient_group_ids',
+            'recipient_groups', 'group_by', 'group_wait_seconds', 'group_interval_seconds',
+            'repeat_interval_minutes', 'mute_schedule', 'inhibition_matchers', 'escalation_steps',
+            'notify_on_fire', 'notify_on_resolved', 'notify_on_analysis', 'is_enabled', 'description', 'created_at', 'updated_at',
+        ]
+
+    def get_channels(self, obj):
+        return [
+            {'id': item.id, 'name': item.name, 'channel_type': item.channel_type, 'channel_type_display': item.get_channel_type_display()}
+            for item in obj.channels.all()
+        ]
+
+    def get_recipient_groups(self, obj):
+        return [{'id': item.id, 'name': item.name} for item in obj.recipient_groups.all()]
+
+    def get_metric_datasource_detail(self, obj):
+        datasource = obj.metric_datasource
+        if not datasource:
+            return None
+        return {'id': datasource.id, 'name': datasource.name, 'environment': datasource.environment, 'cluster_name': datasource.cluster_name}
+
+    def validate_matchers(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError('匹配条件必须是列表')
+        valid_operators = {'=', '==', '!=', '=~', '!~'}
+        for item in value:
+            if not isinstance(item, dict) or not str(item.get('key') or '').strip():
+                raise serializers.ValidationError('每个匹配条件都必须包含标签名')
+            if str(item.get('operator') or '=') not in valid_operators:
+                raise serializers.ValidationError('匹配操作符仅支持 =、!=、=~、!~')
+        return value
+
+    def validate_min_level(self, value):
+        if value and value not in {'info', 'warning', 'critical'}:
+            raise serializers.ValidationError('最低级别无效')
+        return value
+
+    def create(self, validated_data):
+        channels = validated_data.pop('channel_ids', [])
+        groups = validated_data.pop('recipient_group_ids', [])
+        instance = super().create(validated_data)
+        instance.channels.set(channels)
+        instance.recipient_groups.set(groups)
+        return instance
+
+    def update(self, instance, validated_data):
+        channels = validated_data.pop('channel_ids', None)
+        groups = validated_data.pop('recipient_group_ids', None)
+        instance = super().update(instance, validated_data)
+        if channels is not None:
+            instance.channels.set(channels)
+        if groups is not None:
+            instance.recipient_groups.set(groups)
+        return instance
+
+
 
 
 class AlertNotificationLogSerializer(serializers.ModelSerializer):
@@ -1670,7 +1778,7 @@ class AlertSerializer(serializers.ModelSerializer):
         return any(item.claimant == username for item in self._claim_records(obj))
 
     def get_recent_notifications(self, obj):
-        logs = obj.notification_logs.select_related('channel', 'rule').all()[:5]
+        logs = obj.notification_logs.all()[:5]
         return AlertNotificationLogSerializer(logs, many=True).data
 
 

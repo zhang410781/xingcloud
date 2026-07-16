@@ -451,12 +451,22 @@ def resolve_knowledge_environment(name):
                 break
     if not config:
         return None
+    metric_datasource_id = getattr(config, 'metric_datasource_id', None)
+    if not metric_datasource_id:
+        metric_datasource_ids = _int_list(getattr(config, 'metric_datasource_ids', []) or [])[:1]
+        metric_datasource_id = metric_datasource_ids[0] if metric_datasource_ids else None
+    log_datasource_id = getattr(config, 'log_datasource_id', None)
+    if not log_datasource_id:
+        log_datasource_ids = _int_list(getattr(config, 'log_datasource_ids', []) or [])[:1]
+        log_datasource_id = log_datasource_ids[0] if log_datasource_ids else None
     return {
         'name': config.name,
         'aliases': _clean_list(getattr(config, 'aliases', []) or []),
         'event_environments': _clean_list(config.event_environments),
-        'metric_datasource_ids': _int_list(getattr(config, 'metric_datasource_ids', []) or []),
-        'log_datasource_ids': _int_list(config.log_datasource_ids),
+        'metric_datasource_id': metric_datasource_id,
+        'log_datasource_id': log_datasource_id,
+        'metric_datasource_ids': [metric_datasource_id] if metric_datasource_id else [],
+        'log_datasource_ids': [log_datasource_id] if log_datasource_id else [],
         'alert_environments': _clean_list(config.alert_environments),
         'k8s_cluster_ids': _int_list(config.k8s_cluster_ids),
         'k8s_namespaces': config.k8s_namespaces if isinstance(config.k8s_namespaces, dict) else {},
@@ -1444,8 +1454,16 @@ def build_knowledge_graph(params=None):
                 selected_alert_environments.add(environment)
                 alert_env_to_graph[environment] = config.name
                 source_env_to_graph.setdefault(environment, config.name)
-            selected_metric_datasource_ids.update(_int_list(getattr(config, 'metric_datasource_ids', []) or []))
-            selected_log_datasource_ids.update(_int_list(config.log_datasource_ids))
+            metric_datasource_id = getattr(config, 'metric_datasource_id', None)
+            if metric_datasource_id:
+                selected_metric_datasource_ids.add(metric_datasource_id)
+            else:
+                selected_metric_datasource_ids.update(_int_list(getattr(config, 'metric_datasource_ids', []) or [])[:1])
+            log_datasource_id = getattr(config, 'log_datasource_id', None)
+            if log_datasource_id:
+                selected_log_datasource_ids.add(log_datasource_id)
+            else:
+                selected_log_datasource_ids.update(_int_list(getattr(config, 'log_datasource_ids', []) or [])[:1])
             config_k8s_cluster_ids = _int_list(config.k8s_cluster_ids)
             selected_k8s_cluster_ids.update(config_k8s_cluster_ids)
             for cluster_id in config_k8s_cluster_ids:
@@ -1715,10 +1733,18 @@ def build_knowledge_graph(params=None):
     def associated_config_names(field_name, item_id):
         if not use_knowledge_env:
             return []
+        relation_field = {
+            'metric_datasource_ids': 'metric_datasource_id',
+            'log_datasource_ids': 'log_datasource_id',
+        }.get(field_name)
         matched = [
             config.name
             for config in selected_knowledge_configs
-            if item_id in _int_list(getattr(config, field_name, []))
+            if (
+                getattr(config, relation_field, None) == item_id
+                if relation_field and getattr(config, relation_field, None)
+                else item_id in _int_list(getattr(config, field_name, []))[:1]
+            )
         ]
         return matched or sorted(selected_env)
 
