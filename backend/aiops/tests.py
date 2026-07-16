@@ -4,7 +4,7 @@ from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import TestCase
 
-from ops.models import LogDataSource, MetricDataSource
+from ops.models import K8sCluster, LogDataSource, MetricDataSource
 
 from .knowledge_graph import resolve_knowledge_environment
 from .models import AIOpsAgentConfig, AIOpsKnowledgeEnvironment, AIOpsModelInvocation, AIOpsModelProvider
@@ -43,6 +43,23 @@ class AIOpsConfigurationTests(TestCase):
         }
         self.assertNotIn('capability:internal_events', capability_ids)
         self.assertNotIn('capability:external_events', capability_ids)
+
+    def test_knowledge_graph_environment_works_after_marketplace_retirement(self):
+        cache.clear()
+        user = User.objects.create_superuser(username='environment-graph-admin', password='Admin@123456')
+        self.client.force_login(user)
+        cluster = K8sCluster.objects.create(name='production-k8s', kubeconfig='')
+        AIOpsKnowledgeEnvironment.objects.create(
+            name='production',
+            k8s_cluster_ids=[cluster.id],
+            is_enabled=True,
+            is_default=True,
+        )
+
+        response = self.client.get('/api/aiops/knowledge-graph/', {'environment': 'production'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('nodes', response.json())
 
     def test_alert_analysis_invocation_purpose_has_chinese_label(self):
         invocation = AIOpsModelInvocation(purpose=AIOpsModelInvocation.PURPOSE_ALERT_ANALYSIS)

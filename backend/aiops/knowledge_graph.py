@@ -21,7 +21,6 @@ from ops.models import (
     TaskResource,
     TaskResourceGroup,
 )
-from ops.marketplace_stub import ServiceDeployment
 
 from .models import AIOpsKnowledgeEnvironment
 
@@ -2127,67 +2126,6 @@ def build_knowledge_graph(params=None):
             if service_id:
                 add_edge(service_id, component_id, '服务依赖', 'service_runtime', 2)
         return component_id
-
-    def add_runtime_component_node(deployment, infra_node_id, cluster=None):
-        template = deployment.template
-        category = _clean(template.category)
-        component_type = 'DB' if category == 'database' else '中间件'
-        release_name = _clean(deployment.release_name) or _clean(template.name)
-        namespace = _clean(deployment.namespace)
-        label = release_name if release_name == template.name else f'{template.name} / {release_name}'
-        pass
-        details = [
-            {'label': '识别来源', 'value': '平台部署'},
-            {'label': '技术', 'value': template.name},
-            {'label': '类型', 'value': component_type},
-            {'label': '版本', 'value': deployment.version},
-            {'label': '状态', 'value': deployment.get_status_display() if hasattr(deployment, 'get_status_display') else deployment.status},
-        ]
-        if namespace:
-            details.append({'label': '命名空间', 'value': namespace})
-        add_node(
-            component_id,
-            label,
-            'runtime_component',
-            component_type,
-            status=deployment.status,
-            metric=deployment.replicas or 1,
-            description=deployment.target_display,
-            environment=next(iter(selected_env), ''),
-            runtime_type=component_type,
-            technology=template.name,
-            details=details,
-        )
-        host_node_ids = []
-        if cluster:
-            host_node_ids = _match_k8s_host_node_ids(
-                cluster,
-                k8s_member_node_ids.get(cluster.id, {}),
-                _clean(deployment.release_name),
-                _clean(template.name),
-                namespace=namespace,
-                allow_fallback=True,
-                pods=k8s_pod_cache.get(cluster.id),
-            )
-        if host_node_ids:
-            for host_node_id in host_node_ids:
-                add_edge(component_id, host_node_id, '部署在', 'service_deployment', 2)
-        elif str(infra_node_id).startswith('infrastructure:docker'):
-            add_edge(component_id, infra_node_id, '部署在', 'service_deployment', 2)
-
-    if use_knowledge_env and infrastructure_node_ids:
-        infra_by_k8s = {_node_key('infrastructure', 'k8s', cluster.id): cluster for cluster in k8s_clusters}
-        for node_id, cluster in infra_by_k8s.items():
-            deployments = ServiceDeployment.objects.select_related('template', 'cluster', 'host').filter(
-                deploy_mode='k8s',
-                cluster_id=cluster.id,
-            ).exclude(status__in=['pending', 'removing']).order_by('template__category', 'template__name', 'id')[:80]
-            for deployment in deployments:
-                allowed_namespaces = selected_k8s_namespaces.get(cluster.id) or set()
-                deployment_namespace = _clean(deployment.namespace)
-                if allowed_namespaces and deployment_namespace and deployment_namespace not in allowed_namespaces:
-                    continue
-                add_runtime_component_node(deployment, node_id, cluster=cluster)
 
     log_datasource_queryset = LogDataSource.objects.filter(is_enabled=True).order_by('provider', 'name')
     if use_knowledge_env:
