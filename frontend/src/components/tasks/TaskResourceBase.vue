@@ -31,14 +31,6 @@
               <el-icon v-if="data.group_type === 'environment'" style="color:#10b981;margin-right:4px;"><Monitor /></el-icon>
               <el-icon v-else style="color:#8b5cf6;margin-right:4px;"><Files /></el-icon>
               {{ node.label }}
-              <el-tag
-                v-if="data.group_type === 'environment' && data.event_environment_code"
-                size="small"
-                effect="plain"
-                class="tree-env-tag"
-              >
-                {{ data.event_environment_code }}
-              </el-tag>
             </span>
             <span class="tree-actions" @click.stop>
               <el-button
@@ -86,7 +78,7 @@
         <div class="toolbar-left resource-toolbar-left">
           <el-select v-model="filters.resource_type" placeholder="资源类型" clearable style="width:120px" size="small" @change="refreshResourceView">
             <el-option label="主机" value="host" />
-            <el-option label="K8S" value="k8s" />
+            <el-option label="K8S 集群" value="k8s" />
           </el-select>
           <el-select v-model="filters.environment" placeholder="一级业务" clearable filterable style="width:128px" size="small" @change="onEnvironmentFilterChange">
             <el-option v-for="env in environments" :key="env.id" :label="env.name" :value="env.id" />
@@ -117,7 +109,8 @@
         <div class="toolbar-right resource-toolbar-right">
           <el-button size="small" @click="resetFilters">重置</el-button>
           <el-button size="small" :loading="loading.resources" @click="reloadAll">刷新</el-button>
-          <el-button v-if="canManage" type="primary" size="small" @click="openResourceDialog()">登记资产</el-button>
+          <el-button v-if="canManage" size="small" @click="openResourceDialog(null, 'host')">登记服务器</el-button>
+          <el-button v-if="canManage" type="primary" size="small" @click="openResourceDialog(null, 'k8s')">登记 K8S 集群</el-button>
         </div>
       </div>
 
@@ -221,23 +214,6 @@
         <el-form-item label="编码">
           <el-input v-model="nodeForm.code" placeholder="可选，例如 prod / quality" />
         </el-form-item>
-        <el-form-item v-if="nodeForm.group_type === 'environment'" label="图谱环境">
-          <el-select
-            v-model="nodeForm.event_environment"
-            clearable
-            filterable
-            style="width:100%"
-            placeholder="可选，关联后任务事件按该环境归集"
-          >
-            <el-option
-              v-for="env in eventEnvironmentSelectOptions"
-              :key="env.id"
-              :label="env.label"
-              :value="env.id"
-            />
-          </el-select>
-          <div class="field-hint">可选，用于与事件环境/图谱环境归集联动。</div>
-        </el-form-item>
         <el-form-item label="排序">
           <el-input-number v-model="nodeForm.sort_order" :min="1" :max="9999" style="width:100%" />
         </el-form-item>
@@ -265,7 +241,7 @@
           <el-form-item label="资源类型" required class="form-col">
             <el-radio-group v-model="resourceForm.resource_type" :disabled="editingResourceId !== null">
               <el-radio label="host">主机</el-radio>
-              <el-radio label="k8s">K8S</el-radio>
+              <el-radio label="k8s">K8S 集群</el-radio>
             </el-radio-group>
           </el-form-item>
           <el-form-item label="状态" required class="form-col">
@@ -330,7 +306,7 @@
               <el-select v-model="resourceForm.cluster" filterable style="width:100%" @change="syncK8sResourceName">
                 <el-option v-for="cluster in k8sClusters" :key="cluster.id" :label="cluster.name" :value="cluster.id" />
               </el-select>
-              <div class="field-hint">请先在平台管理的 K8S 集群中接入集群</div>
+              <div class="field-hint">一个 K8S 集群登记为一项资产；Node、Namespace 和工作负载由集群接口自动发现，无需逐个登记。</div>
             </el-form-item>
             <el-form-item label="资产名称" class="form-col">
               <el-input :model-value="selectedK8sClusterName || '选择集群后自动生成'" disabled />
@@ -393,7 +369,6 @@ const environments = computed(() => treeData.value)
 const systemsForFilter = computed(() => environments.value.find(item => item.id === filters.environment)?.children || [])
 const systemsForResource = computed(() => environments.value.find(item => item.id === resourceForm.environment)?.children || [])
 const selectedK8sClusterName = computed(() => k8sClusters.value.find(item => item.id === resourceForm.cluster)?.name || '')
-// eventEnvironmentSelectOptions was removed (eventwall module deleted)
 const assetEnvironmentOptions = [
   { label: '生产', value: 'prod' },
   { label: '测试', value: 'test' },
@@ -407,14 +382,14 @@ const emptyText = computed(() => (treeData.value.length ? '暂无匹配资产' :
 const statCards = computed(() => [
   { key: 'total', label: '资产总数', value: stats.value.total || 0, color: '#8b5cf6' },
   { key: 'host', label: '主机', value: stats.value.host || 0, color: '#10b981', resourceType: 'host', active: filters.resource_type === 'host' },
-  { key: 'k8s', label: 'K8S', value: stats.value.k8s || 0, color: '#38bdf8', resourceType: 'k8s', active: filters.resource_type === 'k8s' },
+  { key: 'k8s', label: 'K8S 集群', value: stats.value.k8s || 0, color: '#38bdf8', resourceType: 'k8s', active: filters.resource_type === 'k8s' },
   { key: 'active', label: '可用', value: stats.value.active || 0, color: '#22c55e', status: 'active', active: filters.status === 'active' },
   { key: 'warning', label: '异常', value: stats.value.warning || 0, color: '#f59e0b', status: 'warning', active: filters.status === 'warning' },
   { key: 'inactive', label: '停用', value: stats.value.inactive || 0, color: '#94a3b8', status: 'inactive', active: filters.status === 'inactive' },
 ])
 
 function defaultNodeForm() {
-  return { group_type: 'environment', parent: '', name: '', code: '', event_environment: '', sort_order: 100, description: '' }
+  return { group_type: 'environment', parent: '', name: '', code: '', sort_order: 100, description: '' }
 }
 
 function defaultResourceForm() {
@@ -452,7 +427,7 @@ function normalizeTree(list = []) {
 }
 
 function resourceTypeLabel(type) {
-  return type === 'k8s' ? 'K8S' : '主机'
+  return type === 'k8s' ? 'K8S 集群' : '主机'
 }
 
 function assetEnvironmentLabel(value) {
@@ -534,7 +509,6 @@ function openNodeDialog(row = null, parent = null) {
       parent: row.parent || '',
       name: row.name || '',
       code: row.code || '',
-      event_environment: row.event_environment || '',
       sort_order: row.sort_order || 100,
       description: row.description || '',
     })
@@ -547,7 +521,7 @@ function openNodeDialog(row = null, parent = null) {
   nodeDialogVisible.value = true
 }
 
-function openResourceDialog(row = null) {
+function openResourceDialog(row = null, preferredType = '') {
   if (!canManage.value) return
   editingResourceId.value = row?.id || null
   Object.assign(resourceForm, defaultResourceForm())
@@ -572,6 +546,7 @@ function openResourceDialog(row = null) {
     })
   } else {
     Object.assign(resourceForm, {
+      resource_type: preferredType || 'host',
       environment: filters.environment || '',
       system: filters.system || '',
     })
@@ -641,7 +616,7 @@ async function submitNode() {
       ...nodeForm,
       name: nodeForm.name.trim(),
       parent: nodeForm.group_type === 'system' ? nodeForm.parent : null,
-      event_environment: nodeForm.group_type === 'environment' ? (nodeForm.event_environment || null) : null,
+      event_environment: null,
     }
     if (editingNodeId.value) {
       await updateTaskResourceGroup(editingNodeId.value, payload)

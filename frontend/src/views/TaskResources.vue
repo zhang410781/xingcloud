@@ -5,8 +5,12 @@
         <div class="hero-title-row">
           <span class="hero-icon hero-icon-monitor"><el-icon><Monitor /></el-icon></span>
           <h2>资产登记</h2>
-          <p class="page-inline-desc">登记一级业务、项目系统、资产环境、访问入口与负责人，作为平台管理和任务执行的统一资产来源。</p>
+          <p class="page-inline-desc">服务器按单机登记；K8S 按集群登记，Node、Namespace 和工作负载由集群自动发现。</p>
         </div>
+      </div>
+      <div class="hero-actions">
+        <el-button type="primary" size="small">服务器与 K8S</el-button>
+        <el-button size="small" @click="router.push('/assets/middleware')">中间件资产</el-button>
       </div>
     </section>
 
@@ -16,7 +20,10 @@
 
 <script setup>
 import { Monitor } from '@element-plus/icons-vue'
+import { useRouter } from 'vue-router'
 import TaskResourceBase from '@/components/tasks/TaskResourceBase.vue'
+
+const router = useRouter()
 </script>
 
 <style scoped>
@@ -41,6 +48,12 @@ import TaskResourceBase from '@/components/tasks/TaskResourceBase.vue'
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+}
+
+.hero-actions {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
 }
 
 .hero-title-row {

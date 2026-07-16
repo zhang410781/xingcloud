@@ -9,6 +9,8 @@
         </div>
       </div>
       <div class="hero-actions">
+        <el-button size="small" @click="router.push('/assets/registration')">服务器与 K8S</el-button>
+        <el-button v-if="canManage" type="primary" size="small" :icon="Plus" @click="openRegistration">登记中间件</el-button>
         <el-button size="small" :icon="Refresh" :loading="loading" @click="loadOverview">刷新</el-button>
       </div>
     </section>
@@ -172,11 +174,45 @@
         </el-table>
       </template>
     </section>
+
+    <el-dialog v-model="registrationVisible" title="登记中间件资产" width="520px" destroy-on-close>
+      <el-form :model="registrationForm" label-width="96px">
+        <el-form-item label="资产类型" required>
+          <el-select v-model="registrationForm.module" style="width:100%">
+            <el-option label="Redis 集群" value="redis" />
+            <el-option label="RocketMQ 集群" value="rocketmq" />
+            <el-option label="Elasticsearch 集群" value="elasticsearch" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="集群名称" required>
+          <el-input v-model="registrationForm.name" placeholder="例如 production-redis" />
+        </el-form-item>
+        <el-form-item label="所属环境" required>
+          <el-select v-model="registrationForm.environment" style="width:100%">
+            <el-option label="生产" value="prod" />
+            <el-option label="预发" value="staging" />
+            <el-option label="测试" value="test" />
+            <el-option label="开发" value="dev" />
+          </el-select>
+        </el-form-item>
+        <el-alert
+          title="按集群登记资产，实例、Broker 或节点在集群详情中继续维护。"
+          type="info"
+          :closable="false"
+          show-icon
+        />
+      </el-form>
+      <template #footer>
+        <el-button @click="registrationVisible = false">取消</el-button>
+        <el-button type="primary" :loading="registrationSubmitting" @click="submitRegistration">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   Coin,
@@ -190,9 +226,13 @@ import { getMiddlewareOverview, runMiddlewareAction } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
 
 const authStore = useAuthStore()
+const router = useRouter()
 const loading = ref(false)
 const activeCategory = ref('database')
 const overview = ref({})
+const registrationVisible = ref(false)
+const registrationSubmitting = ref(false)
+const registrationForm = reactive({ module: 'redis', name: '', environment: 'prod' })
 
 const canManage = computed(() => authStore.hasPermission('ops.middleware.manage'))
 const redis = computed(() => overview.value.redis || {})
@@ -317,6 +357,32 @@ async function loadOverview() {
     overview.value = await getMiddlewareOverview()
   } finally {
     loading.value = false
+  }
+}
+
+function openRegistration() {
+  Object.assign(registrationForm, { module: 'redis', name: '', environment: 'prod' })
+  registrationVisible.value = true
+}
+
+async function submitRegistration() {
+  const name = registrationForm.name.trim()
+  if (!name) return ElMessage.warning('请填写集群名称')
+  registrationSubmitting.value = true
+  try {
+    const response = await runMiddlewareAction({
+      module: registrationForm.module,
+      action: 'create_cluster',
+      payload: { name, environment: registrationForm.environment },
+    })
+    overview.value = response.data || overview.value
+    activeCategory.value = registrationForm.module === 'redis'
+      ? 'redis'
+      : registrationForm.module === 'rocketmq' ? 'mq' : 'search'
+    registrationVisible.value = false
+    ElMessage.success('中间件资产已登记')
+  } finally {
+    registrationSubmitting.value = false
   }
 }
 

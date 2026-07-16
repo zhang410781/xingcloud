@@ -336,8 +336,14 @@ class K8sClusterSerializer(serializers.ModelSerializer):
 class TaskResourceGroupSerializer(serializers.ModelSerializer):
     group_type_display = serializers.CharField(source='get_group_type_display', read_only=True)
     parent_name = serializers.CharField(source='parent.name', read_only=True)
-    event_environment_code = serializers.CharField(source='event_environment.code', read_only=True)
-    event_environment_name = serializers.CharField(source='event_environment.name', read_only=True)
+    event_environment_code = serializers.SerializerMethodField()
+    event_environment_name = serializers.SerializerMethodField()
+
+    def get_event_environment_code(self, obj):
+        return str(obj.event_environment or '')
+
+    def get_event_environment_name(self, obj):
+        return ''
 
     class Meta:
         model = TaskResourceGroup
@@ -758,7 +764,7 @@ class HostTaskSubmitSerializer(serializers.Serializer):
             cluster_map = {item.id: item for item in K8sCluster.objects.filter(id__in=cluster_ids)}
             resource_map = {
                 item.id: item
-                for item in TaskResource.objects.select_related('environment__event_environment', 'system', 'cluster').filter(
+                for item in TaskResource.objects.select_related('environment', 'system', 'cluster').filter(
                     id__in=set(resource_ids + [cluster_id for _item, cluster_id, _resource_id, _namespace, _name, _kind in normalized_source_items]),
                     resource_type=TaskResource.RESOURCE_K8S,
                 )
@@ -791,9 +797,8 @@ class HostTaskSubmitSerializer(serializers.Serializer):
                 resource_environment = resource.environment.name if resource and resource.environment_id else (item.get('environment_name') or item.get('environment') or '')
                 event_environment = item.get('event_environment') or item.get('event_environment_code') or ''
                 event_environment_name = item.get('event_environment_name') or ''
-                if resource and resource.environment_id and resource.environment.event_environment_id:
-                    event_environment = resource.environment.event_environment.code or event_environment
-                    event_environment_name = resource.environment.event_environment.name or event_environment_name
+                if resource and resource.environment_id and resource.environment.event_environment:
+                    event_environment = str(resource.environment.event_environment)
                 resource_system = resource.system.name if resource and resource.system_id else (item.get('system_name') or item.get('system') or '')
                 normalized_targets.append({
                     'cluster_id': cluster.id,

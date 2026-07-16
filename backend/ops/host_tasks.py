@@ -24,12 +24,12 @@ _TASK_THREADS_LOCK = threading.Lock()
 
 
 def _task_group_event_environment(group):
-    if not group or not getattr(group, 'event_environment_id', None):
+    if not group:
         return '', ''
-    event_environment = getattr(group, 'event_environment', None)
-    if not event_environment:
+    event_environment_id = getattr(group, 'event_environment', None)
+    if not event_environment_id:
         return '', ''
-    return event_environment.code or '', event_environment.name or ''
+    return str(event_environment_id), ''
 
 
 def _resource_event_environment(resource):
@@ -155,7 +155,7 @@ def resolve_host_source_refs(refs):
     host_map = {host.id: host for host in Host.objects.filter(id__in=host_ids)}
     resource_map = {
         resource.id: TaskResourceHostTarget(resource)
-        for resource in TaskResource.objects.select_related('environment__event_environment', 'system').filter(
+        for resource in TaskResource.objects.select_related('environment', 'system').filter(
             id__in=resource_ids,
             resource_type=TaskResource.RESOURCE_HOST,
         )
@@ -814,12 +814,12 @@ def normalize_k8s_execution_target(target):
     cluster = K8sCluster.objects.filter(pk=raw_cluster_id).first() if raw_cluster_id else None
     resource = None
     if resource_id:
-        resource = TaskResource.objects.select_related('environment__event_environment', 'system', 'cluster').filter(
+        resource = TaskResource.objects.select_related('environment', 'system', 'cluster').filter(
             pk=resource_id,
             resource_type=TaskResource.RESOURCE_K8S,
         ).first()
     if not resource and raw_cluster_id and not cluster:
-        resource = TaskResource.objects.select_related('environment__event_environment', 'system', 'cluster').filter(
+        resource = TaskResource.objects.select_related('environment', 'system', 'cluster').filter(
             pk=raw_cluster_id,
             resource_type=TaskResource.RESOURCE_K8S,
         ).first()
