@@ -354,6 +354,7 @@ function levelText(value) { return { critical: '严重', warning: '警告', info
 function levelType(value) { return { critical: 'danger', warning: 'warning', info: 'info' }[value] || 'info' }
 function formatTime(value) { return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-' }
 function emptyMatcher() { return { key: '', operator: '=', value: '' } }
+function cloneMatchers(value) { return Array.isArray(value) ? value.map((item) => ({ ...item })) : [] }
 function emptyRuleForm() { return { id: null, metric_datasource: '', name: '', promql: '', operator: '>', threshold: 80, level: 'warning', duration_seconds: 300, interval_seconds: 60, auto_analyze: true, description: '' } }
 function emptyPolicyForm() { return { id: null, name: '', metric_datasource: '', min_level: '', priority: 100, continue_matching: false, matchers: [], channel_ids: [], recipient_group_ids: [], group_by: ['cluster', 'namespace', 'service'], group_wait_seconds: 30, group_interval_seconds: 300, repeat_interval_minutes: 30, mute_enabled: false, mute_range: [], escalation_after_minutes: 0, notify_on_fire: true, notify_on_resolved: true, notify_on_analysis: true, is_enabled: true, description: '' } }
 function emptyChannelForm() { return { id: null, name: '', channel_type: 'email', destination: '', secret: '', send_resolved: true, is_enabled: true, config: {} } }
@@ -414,7 +415,16 @@ async function removeRule(row) { await deleteAlertRule(row.id); await loadRules(
 
 function openPolicy(row = null) {
   const base = emptyPolicyForm()
-  if (row) Object.assign(base, row, { channel_ids: (row.channels || []).map((item) => item.id), recipient_group_ids: (row.recipient_groups || []).map((item) => item.id), matchers: structuredClone(row.matchers || []), mute_enabled: Boolean(row.mute_schedule?.enabled), mute_range: row.mute_schedule?.start_time && row.mute_schedule?.end_time ? [row.mute_schedule.start_time, row.mute_schedule.end_time] : [], escalation_after_minutes: row.escalation_steps?.[0]?.after_minutes || 0 })
+  if (row) Object.assign(base, row, {
+    channel_ids: (row.channels || []).map((item) => item.id),
+    recipient_group_ids: (row.recipient_groups || []).map((item) => item.id),
+    matchers: cloneMatchers(row.matchers),
+    mute_enabled: Boolean(row.mute_schedule?.enabled),
+    mute_range: row.mute_schedule?.start_time && row.mute_schedule?.end_time
+      ? [row.mute_schedule.start_time, row.mute_schedule.end_time]
+      : [],
+    escalation_after_minutes: row.escalation_steps?.[0]?.after_minutes || 0,
+  })
   Object.assign(policyForm, base)
   policyDialog.value = true
 }
