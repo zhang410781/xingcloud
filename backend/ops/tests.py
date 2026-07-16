@@ -2173,6 +2173,20 @@ class AlertPlatformRuleTests(TestCase):
         self.assertTrue(
             {'k8s-node-not-ready', 'k8s-abnormal-pods', 'k8s-pod-restarts', 'k8s-events-warning'}.issubset(k8s_codes)
         )
+        reference_templates = AlertRule.objects.filter(
+            is_template=True,
+            labels__template_source='xing-cloud-ops-agent',
+        )
+        self.assertTrue({
+            'apiserver', 'workload', 'network', 'storage', 'system',
+        }.issubset(set(reference_templates.values_list('labels__rule_group', flat=True))))
+        self.assertTrue({
+            'k8s-apiserver-latency',
+            'k8s-pod-unschedulable',
+            'k8s-node-network-flapping',
+            'k8s-pv-full-in-four-days',
+            'k8s-node-oom-kill',
+        }.issubset(set(reference_templates.values_list('code', flat=True))))
         self.assertTrue(
             {'linux-node-down', 'linux-high-cpu', 'linux-high-memory', 'linux-high-disk'}.issubset(linux_codes)
         )

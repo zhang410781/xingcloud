@@ -1478,7 +1478,17 @@ class AlertRuleSerializer(serializers.ModelSerializer):
 
     def get_template_detail(self, obj):
         template = obj.template
-        return {'id': template.id, 'code': template.code, 'name': template.name} if template else None
+        if not template:
+            return None
+        labels = template.labels if isinstance(template.labels, dict) else {}
+        return {
+            'id': template.id,
+            'code': template.code,
+            'name': template.name,
+            'rule_group': labels.get('rule_group') or '',
+            'rule_group_label': labels.get('rule_group_label') or '',
+            'template_source': labels.get('template_source') or '',
+        }
 
     def get_needs_binding(self, obj):
         return obj.source_type == 'prometheus' and not obj.is_template and not obj.metric_datasource_id

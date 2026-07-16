@@ -43,6 +43,12 @@
             <el-option label="存储" value="storage" />
           </el-select>
         </div>
+        <div v-if="!ruleCategory || ruleCategory === 'k8s'" class="toolbar-field">
+          <span>K8S 子类</span>
+          <el-select v-model="ruleGroup" clearable placeholder="全部子类">
+            <el-option v-for="item in templateGroupOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+        </div>
         <div class="toolbar-field search-field">
           <span>搜索</span>
           <el-input v-model="ruleSearch" clearable :prefix-icon="Search" placeholder="规则名称 / 编码 / 模板" />
@@ -76,7 +82,12 @@
             </template>
           </el-table-column>
           <el-table-column label="模板" min-width="180">
-            <template #default="{ row }">{{ row.template_detail?.name || row.source || '自定义' }}</template>
+            <template #default="{ row }">
+              <div class="primary-cell">
+                <strong>{{ row.template_detail?.name || row.source || '自定义' }}</strong>
+                <small>{{ row.template_detail?.rule_group_label || '基础监控' }}</small>
+              </div>
+            </template>
           </el-table-column>
           <el-table-column label="级别" width="90">
             <template #default="{ row }"><el-tag :type="levelType(row.level)">{{ levelText(row.level) }}</el-tag></template>
@@ -216,7 +227,14 @@
     <el-dialog v-model="instantiateDialog" title="从模板创建规则实例" width="640px">
       <el-form label-width="120px">
         <el-form-item label="K8S 数据源" required><el-select v-model="instanceForm.metric_datasource_id" filterable><el-option v-for="item in metricSources" :key="item.id" :label="sourceLabel(item)" :value="item.id" /></el-select></el-form-item>
-        <el-form-item label="内置模板" required><el-select v-model="instanceForm.template_code" filterable><el-option v-for="item in k8sTemplates" :key="item.code" :label="item.name" :value="item.code" /></el-select></el-form-item>
+        <el-form-item label="模板分类"><el-select v-model="templateGroup" clearable placeholder="全部分类" @change="handleTemplateGroupChange"><el-option v-for="item in templateGroupOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item>
+        <el-form-item label="内置模板" required>
+          <el-select v-model="instanceForm.template_code" filterable>
+            <el-option-group v-for="group in groupedK8sTemplates" :key="group.value" :label="group.label">
+              <el-option v-for="item in group.templates" :key="item.code" :label="item.name" :value="item.code" />
+            </el-option-group>
+          </el-select>
+        </el-form-item>
         <el-form-item label="规则名称"><el-input v-model="instanceForm.name" placeholder="留空使用模板名称和集群名称" /></el-form-item>
         <div class="form-grid">
           <el-form-item label="评估间隔"><el-input-number v-model="instanceForm.interval_seconds" :min="30" :step="30" /><span class="suffix">秒</span></el-form-item>
@@ -392,6 +410,7 @@ const previewing = ref(false)
 const viewMode = ref('all')
 const selectedSourceId = ref('')
 const ruleCategory = ref('')
+const ruleGroup = ref('')
 const ruleSearch = ref('')
 const policySourceFilter = ref('')
 const policySearch = ref('')
@@ -414,6 +433,7 @@ const recipientDialog = ref(false)
 const recipientGroupDialog = ref(false)
 const resultDialog = ref(false)
 const runResult = ref('')
+const templateGroup = ref('')
 
 const viewModeOptions = [{ label: '统一列表', value: 'all' }, { label: '按 K8S 源', value: 'source' }]
 const matcherOperators = ['=', '!=', '=~', '!~']
@@ -429,8 +449,27 @@ const addRecipientToOpenGroup = ref(false)
 const previewResult = ref(null)
 
 const k8sTemplates = computed(() => templates.value.filter((item) => item.category === 'k8s' && item.source_type === 'prometheus'))
+const templateGroupOptions = computed(() => {
+  const groups = new Map()
+  k8sTemplates.value.forEach((item) => {
+    const value = item.labels?.rule_group || 'basic'
+    const label = item.labels?.rule_group_label || '基础监控'
+    if (!groups.has(value)) groups.set(value, label)
+  })
+  const order = ['basic', 'apiserver', 'workload', 'network', 'storage', 'system']
+  return [...groups.entries()]
+    .map(([value, label]) => ({ value, label }))
+    .sort((a, b) => order.indexOf(a.value) - order.indexOf(b.value))
+})
+const groupedK8sTemplates = computed(() => templateGroupOptions.value
+  .filter((group) => !templateGroup.value || group.value === templateGroup.value)
+  .map((group) => ({
+    ...group,
+    templates: k8sTemplates.value.filter((item) => (item.labels?.rule_group || 'basic') === group.value),
+  })))
 const filteredRules = computed(() => rules.value.filter((item) => {
   if (ruleCategory.value && item.category !== ruleCategory.value) return false
+  if (ruleGroup.value && item.template_detail?.rule_group !== ruleGroup.value) return false
   const text = ruleSearch.value.trim().toLowerCase()
   return !text || [item.name, item.code, item.source, item.template_detail?.name].some((value) => String(value || '').toLowerCase().includes(text))
 }))
@@ -517,7 +556,11 @@ async function loadRules() { rules.value = listOf(await getAlertRules({ is_templ
 async function loadPolicies() { policies.value = listOf(await getAlertNotificationPolicies({ page_size: 200 })) }
 async function handleViewMode() { if (viewMode.value === 'source' && !selectedSourceId.value) selectedSourceId.value = metricSources.value[0]?.id || ''; if (viewMode.value === 'all') selectedSourceId.value = ''; await loadRules() }
 
-function openInstantiate() { Object.assign(instanceForm, { metric_datasource_id: selectedSourceId.value || metricSources.value[0]?.id || '', template_code: k8sTemplates.value[0]?.code || '', name: '', interval_seconds: 60, duration_seconds: 0, auto_analyze: true }); instantiateDialog.value = true }
+function handleTemplateGroupChange() {
+  const availableCodes = groupedK8sTemplates.value.flatMap((group) => group.templates.map((item) => item.code))
+  if (!availableCodes.includes(instanceForm.template_code)) instanceForm.template_code = availableCodes[0] || ''
+}
+function openInstantiate() { templateGroup.value = ''; Object.assign(instanceForm, { metric_datasource_id: selectedSourceId.value || metricSources.value[0]?.id || '', template_code: k8sTemplates.value[0]?.code || '', name: '', interval_seconds: 60, duration_seconds: 0, auto_analyze: true }); instantiateDialog.value = true }
 async function saveInstance() {
   if (!instanceForm.metric_datasource_id || !instanceForm.template_code) return ElMessage.warning('请选择 K8S 数据源和模板')
   saving.value = true
