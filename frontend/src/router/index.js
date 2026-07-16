@@ -197,16 +197,10 @@ const routes = [
         meta: { hidden: true, permission: 'ops.k8s.view' },
       },
       {
-        path: 'containers/docker',
-        redirect: '/platform/container-envs',
-        meta: { hidden: true, permission: 'ops.docker.view' },
-      },
-      {
         path: 'platform',
         redirect: () => {
           const authStore = useAuthStore(pinia)
           if (authStore.hasPermission('ops.k8s.view')) return '/platform/k8s'
-          if (authStore.hasPermission('ops.docker.view')) return '/platform/container-envs'
           return '/403'
         },
         meta: { hidden: true },
@@ -216,12 +210,6 @@ const routes = [
         name: 'PlatformK8sClusters',
         component: () => import('@/views/K8sManage.vue'),
         meta: { title: 'K8S 集群', icon: 'Connection', permission: 'ops.k8s.view' },
-      },
-      {
-        path: 'platform/container-envs',
-        name: 'PlatformContainerEnvs',
-        component: () => import('@/views/ContainerManage.vue'),
-        meta: { title: '容器环境', icon: 'Platform', permission: 'ops.docker.view' },
       },
       {
         path: 'observability/overview',

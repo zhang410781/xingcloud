@@ -47,8 +47,6 @@ CAPABILITY_DEFS = [
     ('logs', '日志', 'logs', '/logs'),
     ('dashboards', '原生看板', 'dashboard', '/observability/dashboards'),
     ('alerts', '告警', 'alert', '/alerts'),
-    ('internal_events', '内部事件', 'internal_event', '/events/wall'),
-    ('external_events', '外部事件', 'external_event', '/events/wall'),
 ]
 
 NATIVE_DASHBOARD_NODES = [
@@ -1645,17 +1643,13 @@ def build_knowledge_graph(params=None):
         return contexts.most_common(1)[0][0]
 
     alert_queryset = Alert.objects.order_by('-created_at')
-    event_queryset = (
-        EventRecord.objects
-        .filter(is_demo=False)
-        .exclude(source_type=EventRecord.SOURCE_SEED)
-        .order_by('-occurred_at')
-    )
     if use_knowledge_env:
         alert_queryset = alert_queryset.filter(environment__in=selected_alert_environments) if selected_alert_environments else Alert.objects.none()
-        event_queryset = event_queryset.filter(environment__in=selected_event_environments) if selected_event_environments else EventRecord.objects.none()
     alert_records = list(alert_queryset[:200])
-    event_records = list(event_queryset[:240])
+    # The event wall was retired. EventRecord/EventSource now only expose
+    # compatibility constants, so the knowledge graph must not query them as
+    # Django models.
+    event_records = []
 
     k8s_clusters = list(K8sCluster.objects.filter(id__in=selected_k8s_cluster_ids).order_by('name', 'id')) if use_knowledge_env and selected_k8s_cluster_ids else []
     docker_hosts = list(DockerHost.objects.filter(id__in=selected_docker_host_ids).order_by('name', 'id')) if use_knowledge_env and selected_docker_host_ids else []
@@ -2498,85 +2492,6 @@ def build_knowledge_graph(params=None):
             f'告警：{alert.title}',
         )
 
-
-    for event in event_records:
-        if _is_demoish_text(event.title, event.application, event.resource_name):
-            continue
-        event_service_name = _clean(event.application)
-        matched_service_name = matching_runtime_service_name(event_service_name or event.resource_name or event.resource_type or event.module)
-        if use_knowledge_env and matched_service_name not in runtime_services:
-            continue
-        capability = 'external_events' if event.source_type == EventRecord.SOURCE_EXTERNAL else 'internal_events'
-        event_system_name = event.business_line or (default_system_name if use_knowledge_env else '')
-        add_capability_context(
-            capability,
-            event_system_name,
-            graph_environment(event.environment, 'event'),
-            matched_service_name,
-            2 if event.severity == EventRecord.SEVERITY_DANGER else 1,
-            f'事件：{event.title}',
-        )
-        if use_knowledge_env:
-            continue
-        for related in event.related_resources or []:
-            related_name = related.get('name') or related.get('id')
-            if not related_name:
-                continue
-            add_capability_context(
-                capability,
-                event_system_name,
-                graph_environment(event.environment, 'event'),
-                related_name,
-                1,
-                f'关联资源：{related_name}',
-            )
-
-    event_source_queryset = EventSource.objects.filter(
-        Q(enabled=True) | Q(source_kind=EventSource.KIND_BUILTIN)
-    ).order_by('source_kind', 'source_type', 'name')
-    event_source_catalog = {source.code: source for source in event_source_queryset}
-    if use_knowledge_env:
-        event_source_scope_records = [event for event in event_records if _clean(event.environment) in selected_event_environments]
-        event_source_scope_records.extend(
-            list(
-                EventRecord.objects.filter(environment__in=selected_event_environments, source_type=EventRecord.SOURCE_SEED)
-                .order_by('-occurred_at')[:120]
-            )
-        )
-    else:
-        event_source_scope_records = [event for event in event_records if _matches_filters(_clean(event.environment), selected_env)]
-    active_event_source_codes = {
-        code
-        for code in (_event_source_code_for_event(event, event_source_catalog) for event in event_source_scope_records)
-        if code
-    }
-    active_event_source_codes.update(
-        _related_builtin_event_source_codes(
-            event_source_scope_records,
-            event_source_queryset,
-            has_k8s=bool(k8s_clusters),
-            has_hosts=bool(k8s_clusters or docker_hosts),
-            has_deployments=bool(inferred_service_names),
-        )
-    )
-    for source in event_source_queryset:
-        if source.code not in active_event_source_codes:
-            continue
-        capability = 'external_events' if source.source_kind == EventSource.KIND_EXTERNAL else 'internal_events'
-        node_id = _node_key('event_source', source.id)
-        add_node(
-            node_id,
-            _graph_event_source_label(source),
-            'event_source',
-            '事件源',
-            route='/events/sources',
-            status=source.status,
-            description=source.description,
-        )
-        add_edge(_node_key('capability', capability), node_id, '接入事件源', 'capability_event_source')
-        if use_knowledge_env:
-            for environment in selected_env:
-                add_edge(_node_key('environment', environment), node_id, '关联事件源', 'environment_event_source')
 
     for service_id, record in records_by_service.items():
         service_node = nodes.get(service_id)

@@ -162,6 +162,60 @@ class TaskResource(models.Model):
         return f'{self.get_resource_type_display()} / {self.name}'
 
 
+class MiddlewareAsset(models.Model):
+    TYPE_REDIS = 'redis'
+    TYPE_KAFKA = 'kafka'
+    TYPE_ROCKETMQ = 'rocketmq'
+    TYPE_ELASTICSEARCH = 'elasticsearch'
+    TYPE_CHOICES = [
+        (TYPE_REDIS, 'Redis'),
+        (TYPE_KAFKA, 'Kafka'),
+        (TYPE_ROCKETMQ, 'RocketMQ'),
+        (TYPE_ELASTICSEARCH, 'Elasticsearch'),
+    ]
+
+    STATUS_UNKNOWN = 'unknown'
+    STATUS_HEALTHY = 'healthy'
+    STATUS_WARNING = 'warning'
+    STATUS_OFFLINE = 'offline'
+    STATUS_CHOICES = [
+        (STATUS_UNKNOWN, '未检测'),
+        (STATUS_HEALTHY, '正常'),
+        (STATUS_WARNING, '异常'),
+        (STATUS_OFFLINE, '离线'),
+    ]
+
+    name = models.CharField('资产名称', max_length=128)
+    asset_type = models.CharField('资产类型', max_length=32, choices=TYPE_CHOICES)
+    environment = models.CharField('环境', max_length=32, blank=True, default='prod')
+    endpoint = models.CharField('访问地址', max_length=255)
+    version = models.CharField('版本', max_length=64, blank=True, default='')
+    status = models.CharField('状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_UNKNOWN)
+    description = models.CharField('说明', max_length=255, blank=True, default='')
+    metadata = models.JSONField('扩展信息', default=dict, blank=True)
+    created_by = models.CharField('创建人', max_length=64, blank=True, default='system')
+    updated_by = models.CharField('更新人', max_length=64, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '中间件资产'
+        verbose_name_plural = '中间件资产'
+        ordering = ['asset_type', 'environment', 'name', 'id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['asset_type', 'environment', 'name'],
+                name='uniq_ops_middleware_asset_scope',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['asset_type', 'environment', 'status']),
+        ]
+
+    def __str__(self):
+        return f'{self.get_asset_type_display()} / {self.name}'
+
+
 class HostTask(models.Model):
     TARGET_HOST = 'host'
     TARGET_K8S = 'k8s'

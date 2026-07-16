@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.test import TestCase
 
 from ops.models import LogDataSource, MetricDataSource
@@ -15,6 +16,23 @@ User = get_user_model()
 
 
 class AIOpsConfigurationTests(TestCase):
+    def test_knowledge_graph_works_after_event_wall_retirement(self):
+        cache.clear()
+        user = User.objects.create_superuser(username='graph-admin', password='Admin@123456')
+        self.client.force_login(user)
+
+        response = self.client.get('/api/aiops/knowledge-graph/')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn('nodes', payload)
+        self.assertIn('edges', payload)
+        capability_ids = {
+            item.get('id') for item in payload['nodes'] if item.get('kind') == 'capability'
+        }
+        self.assertNotIn('capability:internal_events', capability_ids)
+        self.assertNotIn('capability:external_events', capability_ids)
+
     def test_alert_analysis_invocation_purpose_has_chinese_label(self):
         invocation = AIOpsModelInvocation(purpose=AIOpsModelInvocation.PURPOSE_ALERT_ANALYSIS)
 

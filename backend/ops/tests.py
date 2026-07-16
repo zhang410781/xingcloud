@@ -29,6 +29,7 @@ from ops.models import (
     K8sConfigRevision,
     LogDataSource,
     MetricDataSource,
+    MiddlewareAsset,
     ObservabilityDashboard,
     ObservabilityDashboardPanel,
     TransactionTicket,
@@ -1947,186 +1948,101 @@ class ContainerManagementTests(TestCase):
 
 class MiddlewareViewsTests(TestCase):
     def setUp(self):
-        cache.clear()
         self.client = APIClient()
         self.user = get_user_model().objects.create_superuser('middleware-admin', 'middleware@example.com', 'Admin@123456')
         self.client.force_authenticate(user=self.user)
 
-    def test_middleware_overview_returns_all_sections(self):
+    def test_middleware_overview_is_empty_without_registered_assets(self):
         response = self.client.get('/api/middleware/overview/')
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertIn('overview', payload)
-        self.assertIn('database', payload)
-        self.assertIn('redis', payload)
-        self.assertIn('rocketmq', payload)
-        self.assertIn('elasticsearch', payload)
-        self.assertTrue(any(item['cluster'] == 'order-cache' for item in payload['redis']['instances']))
-        self.assertTrue(any(item['group'] == 'GID_AUDIT_ETL' for item in payload['rocketmq']['consumer_groups']))
-        self.assertTrue(any(item['health'] == 'yellow' for item in payload['elasticsearch']['clusters']))
+        self.assertEqual(payload['assets'], [])
+        self.assertEqual(payload['summary']['total'], 0)
+        self.assertEqual(payload['summary']['by_type']['redis'], 0)
+        self.assertNotIn('database', payload)
+        self.assertNotIn('monitoring', payload)
 
-    @patch('ops.middleware_views.execute_promql_query', create=True)
-    def test_middleware_overview_marks_mysql_and_redis_from_prometheus(self, mocked_promql):
-        mocked_promql.side_effect = [
-            {'results': [{'metric': {'pod': 'xing-cloud-mysql-exporter'}, 'value': [1783652960, '1']}]},
-            {'results': [{'metric': {}, 'value': [1783652960, '2']}]},
-            {'results': [{'metric': {}, 'value': [1783652960, '151']}]},
-            {'results': [{'metric': {'pod': 'xing-cloud-redis-exporter'}, 'value': [1783652960, '1']}]},
-        ]
-
-        response = self.client.get('/api/middleware/overview/')
-
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()
-        mysql = next(item for item in payload['database']['assets'] if item['engine'] == 'MySQL')
-        redis_monitoring = payload['redis']['monitoring']
-        self.assertEqual(mysql['monitoring']['status'], 'healthy')
-        self.assertEqual(mysql['monitoring']['up'], 1)
-        self.assertEqual(mysql['monitoring']['connections'], 2)
-        self.assertEqual(mysql['monitoring']['max_connections'], 151)
-        self.assertEqual(redis_monitoring['status'], 'healthy')
-        self.assertEqual(redis_monitoring['up'], 1)
-        self.assertEqual(mocked_promql.call_args_list[0].args[0], 'mysql_up')
-        self.assertEqual(mocked_promql.call_args_list[-1].args[0], 'redis_up')
-
-    def test_redis_promote_action_swaps_master_role(self):
-        initial = self.client.get('/api/middleware/overview/').json()
-        replica = next(item for item in initial['redis']['instances'] if item['id'] == 'redis-order-replica-01')
-
-        response = self.client.post(
-            '/api/middleware/action/',
-            {'module': 'redis', 'target_id': replica['id'], 'action': 'promote'},
-            format='json',
-        )
-
-        self.assertEqual(response.status_code, 200)
-        updated_instances = response.json()['data']['redis']['instances']
-        promoted = next(item for item in updated_instances if item['id'] == 'redis-order-replica-01')
-        previous_master = next(item for item in updated_instances if item['id'] == 'redis-order-master')
-        self.assertEqual(promoted['role'], 'master')
-        self.assertEqual(promoted['replication_delay_ms'], 0)
-        self.assertEqual(previous_master['role'], 'replica')
-        self.assertEqual(previous_master['status'], 'warning')
-
-    def test_elasticsearch_reroute_clears_yellow_cluster(self):
-        response = self.client.post(
-            '/api/middleware/action/',
-            {'module': 'elasticsearch', 'target_id': 'es-observe-logs', 'action': 'reroute'},
-            format='json',
-        )
-
-        self.assertEqual(response.status_code, 200)
-        updated_clusters = response.json()['data']['elasticsearch']['clusters']
-        updated_cluster = next(item for item in updated_clusters if item['id'] == 'es-observe-logs')
-        self.assertEqual(updated_cluster['health'], 'green')
-        self.assertEqual(updated_cluster['unassigned_shards'], 0)
-
-    def test_create_redis_cluster_and_instance_updates_demo_state(self):
-        create_cluster = self.client.post(
-            '/api/middleware/action/',
-            {
-                'module': 'redis',
-                'action': 'create_cluster',
-                'payload': {
-                    'name': 'promo-cache',
-                    'environment': 'test',
-                    'mode': 'Sentinel',
-                    'memory_total_gb': 24,
-                },
-            },
-            format='json',
-        )
-        self.assertEqual(create_cluster.status_code, 200)
-        self.assertTrue(any(item['name'] == 'promo-cache' for item in create_cluster.json()['data']['redis']['clusters']))
-
-        create_instance = self.client.post(
-            '/api/middleware/action/',
-            {
-                'module': 'redis',
-                'action': 'create_instance',
-                'payload': {
-                    'cluster': 'promo-cache',
-                    'name': 'redis-promo-master',
-                    'environment': 'test',
-                    'role': 'master',
-                    'endpoint': '10.99.0.10:6379',
-                },
-            },
-            format='json',
-        )
-        self.assertEqual(create_instance.status_code, 200)
-        self.assertTrue(any(item['name'] == 'redis-promo-master' for item in create_instance.json()['data']['redis']['instances']))
-
-    def test_create_elasticsearch_node_updates_cluster_size(self):
+    def test_create_asset_persists_only_submitted_real_fields(self):
         response = self.client.post(
             '/api/middleware/action/',
             {
-                'module': 'elasticsearch',
-                'action': 'create_instance',
+                'action': 'create_asset',
                 'payload': {
-                    'cluster': 'search-prod',
-                    'name': 'es-search-07',
-                    'endpoint': '10.23.0.17:9200',
-                    'role': 'data_hot,ingest',
-                },
-            },
-            format='json',
-        )
-        self.assertEqual(response.status_code, 200)
-        data = response.json()['data']['elasticsearch']
-        self.assertTrue(any(item['name'] == 'es-search-07' for item in data['nodes']))
-        updated_cluster = next(item for item in data['clusters'] if item['name'] == 'search-prod')
-        self.assertEqual(updated_cluster['nodes'], 3)
-
-    def test_update_rocketmq_cluster_renames_related_records(self):
-        response = self.client.post(
-            '/api/middleware/action/',
-            {
-                'module': 'rocketmq',
-                'target_id': 'rmq-cls-audit',
-                'action': 'update_cluster',
-                'payload': {
-                    'name': 'audit-mq-v2',
+                    'name': 'production-cache',
+                    'asset_type': 'redis',
                     'environment': 'prod',
-                    'status': 'healthy',
-                    'nameserver_count': 3,
+                    'endpoint': 'redis.example.internal:6379',
+                    'version': '7.2',
                 },
             },
             format='json',
         )
-        self.assertEqual(response.status_code, 200)
-        data = response.json()['data']['rocketmq']
-        self.assertTrue(any(item['name'] == 'audit-mq-v2' for item in data['clusters']))
-        self.assertTrue(any(item['cluster'] == 'audit-mq-v2' for item in data['brokers']))
+        self.assertEqual(response.status_code, 201)
+        asset = MiddlewareAsset.objects.get()
+        self.assertEqual(asset.name, 'production-cache')
+        self.assertEqual(asset.status, MiddlewareAsset.STATUS_UNKNOWN)
+        item = response.json()['asset']
+        self.assertEqual(item['endpoint'], 'redis.example.internal:6379')
+        self.assertNotIn('qps', item)
+        self.assertNotIn('memory_usage', item)
 
-    def test_delete_redis_cluster_removes_instances(self):
-        response = self.client.post(
-            '/api/middleware/action/',
-            {'module': 'redis', 'target_id': 'redis-cls-member', 'action': 'delete_cluster'},
-            format='json',
+    def test_update_asset(self):
+        asset = MiddlewareAsset.objects.create(
+            name='orders-kafka', asset_type='kafka', environment='prod', endpoint='kafka:9092'
         )
-        self.assertEqual(response.status_code, 200)
-        data = response.json()['data']['redis']
-        self.assertFalse(any(item['id'] == 'redis-cls-member' for item in data['clusters']))
-        self.assertFalse(any(item['cluster'] == 'member-session' for item in data['instances']))
-
-    def test_import_rocketmq_instance_template_creates_demo_broker(self):
         response = self.client.post(
             '/api/middleware/action/',
             {
-                'module': 'rocketmq',
-                'action': 'import_template',
-                'payload': {
-                    'scope': 'instance',
-                    'template_key': 'slave',
-                },
+                'target_id': asset.id,
+                'action': 'update_asset',
+                'payload': {'endpoint': 'kafka.internal:9092', 'description': '订单消息'},
             },
             format='json',
         )
         self.assertEqual(response.status_code, 200)
-        brokers = response.json()['data']['rocketmq']['brokers']
-        self.assertTrue(any(item['name'].startswith('broker-template-slave') for item in brokers))
+        asset.refresh_from_db()
+        self.assertEqual(asset.endpoint, 'kafka.internal:9092')
+        self.assertEqual(asset.description, '订单消息')
+
+    def test_delete_asset(self):
+        asset = MiddlewareAsset.objects.create(
+            name='search', asset_type='elasticsearch', environment='test', endpoint='http://es:9200'
+        )
+        response = self.client.post(
+            '/api/middleware/action/',
+            {'target_id': asset.id, 'action': 'delete_asset'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(MiddlewareAsset.objects.exists())
+        self.assertEqual(response.json()['data']['assets'], [])
+
+    def test_validation_rejects_missing_endpoint_and_unsupported_type(self):
+        missing_endpoint = self.client.post(
+            '/api/middleware/action/',
+            {
+                'action': 'create_asset',
+                'payload': {'name': 'cache', 'asset_type': 'redis', 'environment': 'prod'},
+            },
+            format='json',
+        )
+        unsupported = self.client.post(
+            '/api/middleware/action/',
+            {
+                'action': 'create_asset',
+                'payload': {
+                    'name': 'rabbit',
+                    'asset_type': 'rabbitmq',
+                    'environment': 'prod',
+                    'endpoint': 'rabbit:5672',
+                },
+            },
+            format='json',
+        )
+        self.assertEqual(missing_endpoint.status_code, 400)
+        self.assertEqual(unsupported.status_code, 400)
+        self.assertFalse(MiddlewareAsset.objects.exists())
 
 
 class AlertViewSetFilterTests(TestCase):

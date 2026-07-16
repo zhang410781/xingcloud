@@ -5,202 +5,114 @@
         <span class="hero-icon"><el-icon><Coin /></el-icon></span>
         <div>
           <h2>中间件资产</h2>
-          <p>统一纳管数据库、缓存、消息队列与搜索类运行组件，作为监控接入、告警规则和 AIOps 研判的资产底座。</p>
+          <p>只展示已登记的真实资产。运行指标与健康状态由后续监控接入产生，平台不会自动填充任何资产记录。</p>
         </div>
       </div>
       <div class="hero-actions">
-        <el-button size="small" @click="router.push('/assets/registration')">服务器与 K8S</el-button>
-        <el-button v-if="canManage" type="primary" size="small" :icon="Plus" @click="openRegistration">登记中间件</el-button>
-        <el-button size="small" :icon="Refresh" :loading="loading" @click="loadOverview">刷新</el-button>
+        <el-button v-if="canManage" type="primary" :icon="Plus" @click="openRegistration()">登记中间件</el-button>
+        <el-button :icon="Refresh" :loading="loading" @click="loadOverview">刷新</el-button>
       </div>
     </section>
 
     <section class="asset-summary-grid">
       <button
-        v-for="item in categoryCards"
+        v-for="item in typeCards"
         :key="item.key"
         type="button"
         class="asset-summary-card"
-        :class="[`is-${item.tone}`, { active: activeCategory === item.key }]"
-        @click="activeCategory = item.key"
+        :class="[{ active: activeType === item.key }, `is-${item.key}`]"
+        @click="toggleType(item.key)"
       >
         <span class="summary-icon"><el-icon><component :is="item.icon" /></el-icon></span>
         <span class="summary-body">
-          <strong>{{ item.value }}</strong>
+          <strong>{{ typeCount(item.key) }}</strong>
           <span>{{ item.label }}</span>
-          <small>{{ item.desc }}</small>
+          <small>{{ item.description }}</small>
         </span>
       </button>
     </section>
 
     <section class="asset-workspace">
       <div class="workspace-toolbar">
-        <div class="toolbar-tabs">
-          <button
-            v-for="tab in tabs"
-            :key="tab.key"
-            type="button"
-            :class="{ active: activeCategory === tab.key }"
-            @click="activeCategory = tab.key"
-          >
-            <el-icon><component :is="tab.icon" /></el-icon>
-            <span>{{ tab.label }}</span>
-          </button>
+        <div>
+          <strong>{{ activeType ? `${typeLabel(activeType)} 资产` : '全部中间件资产' }}</strong>
+          <span>共 {{ filteredAssets.length }} 条登记记录</span>
         </div>
-        <div class="toolbar-meta">
-          <el-tag size="small" effect="plain" :type="warningCount ? 'warning' : 'success'">
-            {{ warningCount ? `${warningCount} 项待关注` : '运行正常' }}
-          </el-tag>
-          <span>最近同步：{{ formatTime(overview.updated_at) }}</span>
+        <div class="toolbar-actions">
+          <el-button v-if="activeType" link type="primary" @click="activeType = ''">查看全部</el-button>
+          <el-tag effect="plain" type="info">仅登记信息</el-tag>
         </div>
       </div>
 
-      <div v-if="activeCategory === 'database'" class="definition-grid">
-        <article v-for="item in databaseAssets" :key="item.name" class="definition-card">
-          <div class="definition-head">
-            <div>
-              <strong>{{ item.name }}</strong>
-              <span>{{ item.engine }}</span>
+      <el-table v-if="filteredAssets.length" :data="filteredAssets" stripe border v-loading="loading">
+        <el-table-column prop="name" label="资产名称" min-width="170" show-overflow-tooltip>
+          <template #default="{ row }">
+            <div class="asset-name-cell">
+              <span class="asset-dot" :class="`is-${row.asset_type}`"></span>
+              <strong>{{ row.name }}</strong>
             </div>
-            <el-tag size="small" effect="plain" :type="statusType(item.monitoring?.status || item.status)">
-              {{ statusLabel(item.monitoring?.status || item.status) }}
-            </el-tag>
-          </div>
-          <div class="definition-meta">
-            <span>环境：{{ item.environment }}</span>
-            <span>监控：{{ item.metrics }}</span>
-            <span>日志：{{ item.logs }}</span>
-            <span v-if="item.monitoring?.connections !== undefined && item.monitoring?.connections !== null">
-              连接：{{ item.monitoring.connections }} / {{ item.monitoring.max_connections || '-' }}
-            </span>
-            <span>{{ item.monitoring?.message || '监控状态待同步' }}</span>
-          </div>
-        </article>
-      </div>
+          </template>
+        </el-table-column>
+        <el-table-column prop="asset_type_label" label="类型" width="130">
+          <template #default="{ row }"><el-tag effect="plain">{{ row.asset_type_label || typeLabel(row.asset_type) }}</el-tag></template>
+        </el-table-column>
+        <el-table-column prop="environment" label="环境" width="120" show-overflow-tooltip />
+        <el-table-column prop="endpoint" label="访问地址" min-width="230" show-overflow-tooltip>
+          <template #default="{ row }"><code>{{ row.endpoint }}</code></template>
+        </el-table-column>
+        <el-table-column prop="version" label="版本" width="110">
+          <template #default="{ row }">{{ row.version || '-' }}</template>
+        </el-table-column>
+        <el-table-column prop="status_label" label="状态" width="110">
+          <template #default="{ row }">
+            <el-tag size="small" effect="plain" :type="statusType(row.status)">{{ row.status_label || statusLabel(row.status) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="description" label="说明" min-width="180" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.description || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="130" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" :disabled="!canManage" @click="openRegistration(row)">编辑</el-button>
+            <el-popconfirm title="确定删除这条资产登记吗？" @confirm="deleteAsset(row)">
+              <template #reference><el-button link type="danger" :disabled="!canManage">删除</el-button></template>
+            </el-popconfirm>
+          </template>
+        </el-table-column>
+      </el-table>
 
-      <template v-else-if="activeCategory === 'redis'">
-        <div class="table-head">
-          <div>
-            <strong>Redis 实例</strong>
-            <span>
-              按集群、角色、复制延迟和内存水位识别风险。
-              Prometheus：{{ statusLabel(redisMonitoring.status) }}
-            </span>
-          </div>
-          <el-button v-if="canManage" size="small" :icon="Plus" @click="importRedisTemplate">导入模板</el-button>
-        </div>
-        <el-table :data="redisInstances" stripe border>
-          <el-table-column prop="name" label="实例" min-width="170" show-overflow-tooltip />
-          <el-table-column prop="cluster" label="集群" min-width="130" show-overflow-tooltip />
-          <el-table-column prop="role" label="角色" width="100" />
-          <el-table-column prop="endpoint" label="地址" min-width="150" show-overflow-tooltip />
-          <el-table-column label="状态" width="110">
-            <template #default="{ row }">
-              <el-tag size="small" effect="plain" :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="内存" width="130">
-            <template #default="{ row }">
-              <el-progress :percentage="Number(row.memory_usage) || 0" :stroke-width="8" :show-text="false" />
-              <span class="metric-mini">{{ row.memory_usage }}%</span>
-            </template>
-          </el-table-column>
-          <el-table-column prop="qps" label="QPS" width="110" />
-          <el-table-column prop="replication_delay_ms" label="复制延迟(ms)" width="135" />
-          <el-table-column label="操作" width="150" fixed="right">
-            <template #default="{ row }">
-              <el-button link type="primary" size="small" :disabled="!canManage" @click="runRedisAction(row, 'restart')">重启</el-button>
-              <el-button link type="warning" size="small" :disabled="!canManage || row.role !== 'replica'" @click="runRedisAction(row, 'promote')">提升</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-      </template>
-
-      <template v-else-if="activeCategory === 'mq'">
-        <div class="table-head">
-          <div>
-            <strong>Kafka / MQ 集群</strong>
-            <span>Kafka 接入位已预留，当前复用 RocketMQ 演示数据校验资产框架。</span>
-          </div>
-        </div>
-        <div class="definition-grid mq-ready-grid">
-          <article v-for="item in kafkaAssets" :key="item.name" class="definition-card">
-            <div class="definition-head">
-              <div>
-                <strong>{{ item.name }}</strong>
-                <span>{{ item.engine }}</span>
-              </div>
-              <el-tag size="small" effect="plain" type="info">{{ item.status }}</el-tag>
-            </div>
-            <div class="definition-meta">
-              <span>接入方式：{{ item.metrics }}</span>
-              <span>用途：{{ item.usage }}</span>
-            </div>
-          </article>
-        </div>
-        <el-table :data="rocketmqClusters" stripe border>
-          <el-table-column prop="name" label="集群" min-width="150" show-overflow-tooltip />
-          <el-table-column prop="environment" label="环境" width="100" />
-          <el-table-column label="状态" width="110">
-            <template #default="{ row }">
-              <el-tag size="small" effect="plain" :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column prop="broker_count" label="Broker" width="100" />
-          <el-table-column prop="topic_count" label="Topic" width="100" />
-          <el-table-column prop="tps" label="TPS" width="120" />
-        </el-table>
-      </template>
-
-      <template v-else>
-        <div class="table-head">
-          <div>
-            <strong>搜索与日志组件</strong>
-            <span>展示 Elasticsearch 集群、节点和索引资产，后续可承接 OpenSearch。</span>
-          </div>
-        </div>
-        <el-table :data="esClusters" stripe border>
-          <el-table-column prop="name" label="集群" min-width="150" show-overflow-tooltip />
-          <el-table-column prop="environment" label="环境" width="100" />
-          <el-table-column prop="health" label="健康" width="110">
-            <template #default="{ row }">
-              <el-tag size="small" effect="plain" :type="row.health === 'green' ? 'success' : 'warning'">{{ row.health }}</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column prop="nodes" label="节点" width="90" />
-          <el-table-column prop="indices" label="索引" width="100" />
-          <el-table-column prop="storage" label="容量" width="110" />
-          <el-table-column prop="unassigned_shards" label="未分配分片" width="130" />
-        </el-table>
-      </template>
+      <el-empty
+        v-else
+        :description="activeType ? `暂无已登记的 ${typeLabel(activeType)} 资产` : '暂无已登记的中间件资产'"
+        class="asset-empty"
+      >
+        <el-button v-if="canManage" type="primary" :icon="Plus" @click="openRegistration(null, activeType)">登记第一条资产</el-button>
+      </el-empty>
     </section>
 
-    <el-dialog v-model="registrationVisible" title="登记中间件资产" width="520px" destroy-on-close>
-      <el-form :model="registrationForm" label-width="96px">
+    <el-dialog v-model="registrationVisible" :title="editingId ? '编辑中间件资产' : '登记中间件资产'" width="560px" destroy-on-close>
+      <el-form :model="registrationForm" label-width="92px">
         <el-form-item label="资产类型" required>
-          <el-select v-model="registrationForm.module" style="width:100%">
-            <el-option label="Redis 集群" value="redis" />
-            <el-option label="RocketMQ 集群" value="rocketmq" />
-            <el-option label="Elasticsearch 集群" value="elasticsearch" />
+          <el-select v-model="registrationForm.asset_type" style="width:100%">
+            <el-option v-for="item in typeCards" :key="item.key" :label="item.label" :value="item.key" />
           </el-select>
         </el-form-item>
-        <el-form-item label="集群名称" required>
-          <el-input v-model="registrationForm.name" placeholder="例如 production-redis" />
+        <el-form-item label="资产名称" required>
+          <el-input v-model="registrationForm.name" placeholder="请输入实际资产或集群名称" maxlength="128" />
         </el-form-item>
         <el-form-item label="所属环境" required>
-          <el-select v-model="registrationForm.environment" style="width:100%">
-            <el-option label="生产" value="prod" />
-            <el-option label="预发" value="staging" />
-            <el-option label="测试" value="test" />
-            <el-option label="开发" value="dev" />
-          </el-select>
+          <el-input v-model="registrationForm.environment" placeholder="例如 prod、test 或业务环境名称" maxlength="32" />
         </el-form-item>
-        <el-alert
-          title="按集群登记资产，实例、Broker 或节点在集群详情中继续维护。"
-          type="info"
-          :closable="false"
-          show-icon
-        />
+        <el-form-item label="访问地址" required>
+          <el-input v-model="registrationForm.endpoint" placeholder="请输入实际连接地址或管理地址" maxlength="255" />
+        </el-form-item>
+        <el-form-item label="版本">
+          <el-input v-model="registrationForm.version" placeholder="可选" maxlength="64" />
+        </el-form-item>
+        <el-form-item label="说明">
+          <el-input v-model="registrationForm.description" type="textarea" :rows="3" placeholder="可选" maxlength="255" show-word-limit />
+        </el-form-item>
+        <el-alert title="登记不会自动生成节点、QPS、容量或健康数据；接入对应监控源后再展示真实指标。" type="info" :closable="false" show-icon />
       </el-form>
       <template #footer>
         <el-button @click="registrationVisible = false">取消</el-button>
@@ -212,143 +124,59 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import {
-  Coin,
-  Connection,
-  Grid,
-  Plus,
-  Refresh,
-  Search,
-} from '@element-plus/icons-vue'
+import { Coin, Connection, Grid, Plus, Refresh, Search } from '@element-plus/icons-vue'
+
 import { getMiddlewareOverview, runMiddlewareAction } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
 
 const authStore = useAuthStore()
-const router = useRouter()
 const loading = ref(false)
-const activeCategory = ref('database')
-const overview = ref({})
+const overview = ref({ assets: [], summary: { total: 0, by_type: {}, by_status: {} } })
+const activeType = ref('')
 const registrationVisible = ref(false)
 const registrationSubmitting = ref(false)
-const registrationForm = reactive({ module: 'redis', name: '', environment: 'prod' })
+const editingId = ref(null)
+const registrationForm = reactive(emptyForm())
+
+const typeCards = [
+  { key: 'redis', label: 'Redis', description: '缓存与会话存储', icon: Grid },
+  { key: 'kafka', label: 'Kafka', description: '消息流与消费队列', icon: Connection },
+  { key: 'rocketmq', label: 'RocketMQ', description: '消息队列与 Broker', icon: Connection },
+  { key: 'elasticsearch', label: 'Elasticsearch', description: '搜索与日志索引', icon: Search },
+]
 
 const canManage = computed(() => authStore.hasPermission('ops.middleware.manage'))
-const redis = computed(() => overview.value.redis || {})
-const rocketmq = computed(() => overview.value.rocketmq || {})
-const elasticsearch = computed(() => overview.value.elasticsearch || {})
-const redisMonitoring = computed(() => redis.value.monitoring || {})
-const redisInstances = computed(() => redis.value.instances || [])
-const rocketmqClusters = computed(() => rocketmq.value.clusters || [])
-const esClusters = computed(() => elasticsearch.value.clusters || [])
+const assets = computed(() => Array.isArray(overview.value.assets) ? overview.value.assets : [])
+const filteredAssets = computed(() => activeType.value
+  ? assets.value.filter((item) => item.asset_type === activeType.value)
+  : assets.value)
 
-const databaseAssets = computed(() => {
-  const assets = overview.value.database?.assets
-  if (Array.isArray(assets) && assets.length) return assets
-  return [
-    {
-      name: 'xing-cloud-mysql',
-      engine: 'MySQL',
-      environment: 'xing-cloud',
-      status: 'not_connected',
-      metrics: 'mysqld_exporter',
-      logs: 'ClickHouse 容器日志',
-      monitoring: { status: 'not_connected', message: '等待 Prometheus 同步' },
-    },
-    {
-      name: '业务 PostgreSQL',
-      engine: 'PostgreSQL',
-      environment: '预留',
-      status: 'framework_ready',
-      metrics: 'postgres_exporter',
-      logs: 'ClickHouse 容器日志',
-      monitoring: { status: 'framework_ready', message: '框架就绪，待接入 postgres_exporter' },
-    },
-  ]
-})
+function emptyForm(assetType = 'redis') {
+  return { asset_type: assetType, name: '', environment: 'prod', endpoint: '', version: '', description: '' }
+}
 
-const kafkaAssets = [
-  { name: 'Kafka 集群', engine: 'Kafka', status: '框架就绪', metrics: 'kafka_exporter / JMX exporter', usage: '消息队列资产、消费滞后与 Topic 风险' },
-  { name: 'RocketMQ 集群', engine: 'RocketMQ', status: '演示数据', metrics: '平台内置示例', usage: '验证 MQ 资产页结构与告警风险展示' },
-]
+function typeCount(type) {
+  return Number(overview.value.summary?.by_type?.[type]) || 0
+}
 
-const tabs = [
-  { key: 'database', label: '数据库', icon: Coin },
-  { key: 'redis', label: 'Redis', icon: Grid },
-  { key: 'mq', label: 'Kafka / MQ', icon: Connection },
-  { key: 'search', label: '搜索组件', icon: Search },
-]
-
-const warningCount = computed(() => {
-  const redisWarnings = redis.value.summary?.warning_count || 0
-  const mqWarnings = rocketmq.value.summary?.warning_count || 0
-  const esWarnings = elasticsearch.value.summary?.warning_count || 0
-  return redisWarnings + mqWarnings + esWarnings
-})
-
-const categoryCards = computed(() => [
-  {
-    key: 'database',
-    label: '数据库资产',
-    value: databaseAssets.value.length,
-    desc: `${overview.value.database?.summary?.monitored_count || 0} 个已监控`,
-    icon: Coin,
-    tone: 'database',
-  },
-  {
-    key: 'redis',
-    label: '缓存实例',
-    value: redis.value.summary?.instance_count || 0,
-    desc: `${redis.value.summary?.cluster_count || 0} 个 Redis 集群`,
-    icon: Grid,
-    tone: 'redis',
-  },
-  {
-    key: 'mq',
-    label: '消息队列',
-    value: (rocketmq.value.summary?.cluster_count || 0) + 1,
-    desc: 'Kafka 预留 + RocketMQ 演示',
-    icon: Connection,
-    tone: 'mq',
-  },
-  {
-    key: 'search',
-    label: '搜索组件',
-    value: elasticsearch.value.summary?.cluster_count || 0,
-    desc: `${elasticsearch.value.summary?.node_count || 0} 个节点`,
-    icon: Search,
-    tone: 'search',
-  },
-])
+function typeLabel(type) {
+  return typeCards.find((item) => item.key === type)?.label || type || '中间件'
+}
 
 function statusType(status) {
-  if (['healthy', 'online', 'green'].includes(status)) return 'success'
-  if (['warning', 'yellow'].includes(status)) return 'warning'
-  if (['critical', 'red', 'offline'].includes(status)) return 'danger'
+  if (status === 'healthy') return 'success'
+  if (status === 'warning') return 'warning'
+  if (status === 'offline') return 'danger'
   return 'info'
 }
 
 function statusLabel(status) {
-  return {
-    healthy: '健康',
-    warning: '告警',
-    online: '在线',
-    offline: '离线',
-    green: '健康',
-    yellow: '风险',
-    red: '异常',
-    critical: '异常',
-    not_connected: '未接入',
-    framework_ready: '框架就绪',
-  }[status] || status || '未知'
+  return { unknown: '未检测', healthy: '正常', warning: '异常', offline: '离线' }[status] || '未检测'
 }
 
-function formatTime(value) {
-  if (!value) return '未同步'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString('zh-CN', { hour12: false })
+function toggleType(type) {
+  activeType.value = activeType.value === type ? '' : type
 }
 
 async function loadOverview() {
@@ -360,339 +188,85 @@ async function loadOverview() {
   }
 }
 
-function openRegistration() {
-  Object.assign(registrationForm, { module: 'redis', name: '', environment: 'prod' })
+function openRegistration(row = null, preferredType = '') {
+  editingId.value = row?.id || null
+  Object.assign(registrationForm, row ? {
+    asset_type: row.asset_type,
+    name: row.name,
+    environment: row.environment,
+    endpoint: row.endpoint,
+    version: row.version || '',
+    description: row.description || '',
+  } : emptyForm(preferredType || activeType.value || 'redis'))
   registrationVisible.value = true
 }
 
 async function submitRegistration() {
-  const name = registrationForm.name.trim()
-  if (!name) return ElMessage.warning('请填写集群名称')
+  const payload = Object.fromEntries(
+    Object.entries(registrationForm).map(([key, value]) => [key, String(value || '').trim()]),
+  )
+  if (!payload.asset_type || !payload.name || !payload.environment || !payload.endpoint) {
+    return ElMessage.warning('请完整填写资产类型、名称、环境和访问地址')
+  }
   registrationSubmitting.value = true
   try {
     const response = await runMiddlewareAction({
-      module: registrationForm.module,
-      action: 'create_cluster',
-      payload: { name, environment: registrationForm.environment },
+      action: editingId.value ? 'update_asset' : 'create_asset',
+      target_id: editingId.value || undefined,
+      payload,
     })
     overview.value = response.data || overview.value
-    activeCategory.value = registrationForm.module === 'redis'
-      ? 'redis'
-      : registrationForm.module === 'rocketmq' ? 'mq' : 'search'
+    activeType.value = payload.asset_type
     registrationVisible.value = false
-    ElMessage.success('中间件资产已登记')
+    ElMessage.success(response.message || '中间件资产已保存')
   } finally {
     registrationSubmitting.value = false
   }
 }
 
-async function runRedisAction(row, action) {
-  try {
-    const response = await runMiddlewareAction({ module: 'redis', target_id: row.id, action })
-    overview.value = response.data || overview.value
-    ElMessage.success(action === 'promote' ? '已提升 Redis 副本' : 'Redis 操作已提交')
-  } catch (error) {}
-}
-
-async function importRedisTemplate() {
-  try {
-    const response = await runMiddlewareAction({
-      module: 'redis',
-      action: 'import_template',
-      payload: { scope: 'instance', template_key: 'replica' },
-    })
-    overview.value = response.data || overview.value
-    ElMessage.success('Redis 模板已导入')
-  } catch (error) {}
+async function deleteAsset(row) {
+  const response = await runMiddlewareAction({ action: 'delete_asset', target_id: row.id })
+  overview.value = response.data || overview.value
+  ElMessage.success(response.message || '中间件资产已删除')
 }
 
 onMounted(loadOverview)
 </script>
 
 <style scoped>
-.middleware-page {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.middleware-hero {
-  align-items: center;
-  background: linear-gradient(135deg, #ffffff 0%, #f5fbfb 52%, #f8fafc 100%);
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 16px;
-  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.05);
-  display: flex;
-  justify-content: space-between;
-  padding: 14px 18px;
-}
-
-.hero-copy {
-  align-items: center;
-  display: flex;
-  gap: 12px;
-  min-width: 0;
-}
-
-.hero-icon {
-  align-items: center;
-  background: linear-gradient(135deg, #2563eb, #0f766e);
-  border-radius: 14px;
-  color: #fff;
-  display: inline-flex;
-  flex: 0 0 auto;
-  font-size: 21px;
-  height: 42px;
-  justify-content: center;
-  width: 42px;
-}
-
-.hero-copy h2 {
-  color: #0f172a;
-  font-size: 23px;
-  line-height: 1.15;
-  margin: 0;
-}
-
-.hero-copy p {
-  color: #475569;
-  font-size: 13px;
-  line-height: 1.45;
-  margin: 4px 0 0;
-}
-
-.hero-actions {
-  display: flex;
-  flex: 0 0 auto;
-  gap: 8px;
-}
-
-.asset-summary-grid {
-  display: grid;
-  gap: 8px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.asset-summary-card {
-  align-items: center;
-  background: #fff;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 10px;
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
-  color: inherit;
-  cursor: pointer;
-  display: flex;
-  gap: 12px;
-  min-height: 92px;
-  padding: 14px;
-  text-align: left;
-  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
-}
-
-.asset-summary-card:hover,
-.asset-summary-card.active {
-  border-color: rgba(37, 99, 235, 0.28);
-  box-shadow: 0 16px 30px rgba(15, 23, 42, 0.08);
-  transform: translateY(-1px);
-}
-
-.summary-icon {
-  align-items: center;
-  border-radius: 12px;
-  color: #fff;
-  display: inline-flex;
-  flex: 0 0 auto;
-  font-size: 20px;
-  height: 40px;
-  justify-content: center;
-  width: 40px;
-}
-
-.is-database .summary-icon { background: linear-gradient(135deg, #2563eb, #60a5fa); }
-.is-redis .summary-icon { background: linear-gradient(135deg, #dc2626, #fb7185); }
-.is-mq .summary-icon { background: linear-gradient(135deg, #7c3aed, #22c55e); }
-.is-search .summary-icon { background: linear-gradient(135deg, #0f766e, #f59e0b); }
-
-.summary-body {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.summary-body strong {
-  color: #0f172a;
-  font-size: 24px;
-  line-height: 1.05;
-}
-
-.summary-body span {
-  color: #334155;
-  font-size: 13px;
-  font-weight: 700;
-  margin-top: 4px;
-}
-
-.summary-body small {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.35;
-  margin-top: 4px;
-}
-
-.asset-workspace {
-  background: #fff;
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  border-radius: 14px;
-  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.05);
-  padding: 12px;
-}
-
-.workspace-toolbar {
-  align-items: center;
-  display: flex;
-  gap: 12px;
-  justify-content: space-between;
-  margin-bottom: 12px;
-}
-
-.toolbar-tabs {
-  align-items: center;
-  background: #f8fafc;
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  border-radius: 10px;
-  display: inline-flex;
-  gap: 4px;
-  padding: 4px;
-}
-
-.toolbar-tabs button {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  border-radius: 8px;
-  color: #475569;
-  cursor: pointer;
-  display: inline-flex;
-  font-size: 13px;
-  font-weight: 700;
-  gap: 6px;
-  height: 32px;
-  padding: 0 12px;
-}
-
-.toolbar-tabs button.active {
-  background: #fff;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
-  color: #1d4ed8;
-}
-
-.toolbar-meta {
-  align-items: center;
-  color: #64748b;
-  display: flex;
-  flex-wrap: wrap;
-  font-size: 12px;
-  gap: 8px;
-  justify-content: flex-end;
-}
-
-.definition-grid {
-  display: grid;
-  gap: 10px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.mq-ready-grid {
-  margin-bottom: 12px;
-}
-
-.definition-card {
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  border-radius: 10px;
-  padding: 12px;
-}
-
-.definition-head {
-  align-items: flex-start;
-  display: flex;
-  gap: 10px;
-  justify-content: space-between;
-}
-
-.definition-head div,
-.definition-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.definition-head strong {
-  color: #0f172a;
-  font-size: 15px;
-}
-
-.definition-head span,
-.definition-meta span {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.definition-meta {
-  margin-top: 12px;
-}
-
-.table-head {
-  align-items: center;
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 10px;
-}
-
-.table-head div {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.table-head strong {
-  color: #0f172a;
-  font-size: 15px;
-}
-
-.table-head span,
-.metric-mini {
-  color: #64748b;
-  font-size: 12px;
-}
-
-.metric-mini {
-  display: inline-block;
-  margin-top: 4px;
-}
-
-@media (max-width: 1080px) {
-  .asset-summary-grid,
-  .definition-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 760px) {
-  .middleware-hero,
-  .workspace-toolbar,
-  .table-head {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .asset-summary-grid,
-  .definition-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .toolbar-tabs {
-    flex-wrap: wrap;
-  }
-}
+.middleware-page { display: flex; flex-direction: column; gap: 10px; }
+.middleware-hero { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 15px 18px; border: 1px solid rgba(148, 163, 184, .2); border-radius: 16px; background: linear-gradient(135deg, #fff, #f5f9ff); box-shadow: 0 12px 28px rgba(15, 23, 42, .05); }
+.hero-copy { display: flex; align-items: center; min-width: 0; gap: 12px; }
+.hero-icon { display: inline-flex; align-items: center; justify-content: center; width: 42px; height: 42px; flex: 0 0 auto; border-radius: 13px; color: #fff; font-size: 21px; background: linear-gradient(135deg, #2563eb, #0f766e); }
+.hero-copy h2 { margin: 0; color: #0f172a; font-size: 23px; }
+.hero-copy p { margin: 4px 0 0; color: #64748b; font-size: 13px; line-height: 1.5; }
+.hero-actions { display: flex; flex: 0 0 auto; gap: 8px; }
+.asset-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.asset-summary-card { display: flex; align-items: center; gap: 12px; min-height: 92px; padding: 14px; color: inherit; text-align: left; cursor: pointer; border: 1px solid rgba(148, 163, 184, .2); border-radius: 12px; background: #fff; box-shadow: 0 8px 20px rgba(15, 23, 42, .04); transition: .18s ease; }
+.asset-summary-card:hover, .asset-summary-card.active { transform: translateY(-1px); border-color: rgba(37, 99, 235, .34); box-shadow: 0 12px 26px rgba(37, 99, 235, .1); }
+.summary-icon { display: inline-flex; align-items: center; justify-content: center; width: 42px; height: 42px; flex: 0 0 auto; border-radius: 12px; color: #2563eb; background: #eff6ff; font-size: 20px; }
+.is-redis .summary-icon { color: #dc2626; background: #fef2f2; }
+.is-kafka .summary-icon { color: #7c3aed; background: #f5f3ff; }
+.is-rocketmq .summary-icon { color: #d97706; background: #fffbeb; }
+.is-elasticsearch .summary-icon { color: #0f766e; background: #f0fdfa; }
+.summary-body { display: flex; flex-direction: column; min-width: 0; }
+.summary-body strong { color: #0f172a; font-size: 24px; line-height: 1; }
+.summary-body span { margin-top: 5px; color: #334155; font-size: 13px; font-weight: 700; }
+.summary-body small { margin-top: 2px; color: #94a3b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asset-workspace { min-width: 0; padding: 14px; border: 1px solid rgba(148, 163, 184, .2); border-radius: 14px; background: #fff; box-shadow: 0 10px 24px rgba(15, 23, 42, .04); }
+.workspace-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 2px 12px; }
+.workspace-toolbar > div:first-child { display: flex; flex-direction: column; gap: 3px; }
+.workspace-toolbar strong { color: #0f172a; font-size: 15px; }
+.workspace-toolbar span { color: #64748b; font-size: 12px; }
+.toolbar-actions { display: flex; align-items: center; gap: 8px; }
+.asset-name-cell { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.asset-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: #94a3b8; }
+.asset-dot.is-redis { background: #ef4444; }
+.asset-dot.is-kafka { background: #8b5cf6; }
+.asset-dot.is-rocketmq { background: #f59e0b; }
+.asset-dot.is-elasticsearch { background: #14b8a6; }
+code { color: #334155; font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; }
+.asset-empty { min-height: 280px; }
+@media (max-width: 1100px) { .asset-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .middleware-hero, .workspace-toolbar { align-items: flex-start; flex-direction: column; } .hero-actions { width: 100%; flex-wrap: wrap; } .asset-summary-grid { grid-template-columns: 1fr; } }
 </style>

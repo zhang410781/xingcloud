@@ -273,7 +273,6 @@ const menuItems = [
     icon: 'Box',
     children: [
       { path: '/platform/k8s', title: 'K8S 集群', icon: 'Connection', permission: 'ops.k8s.view' },
-      { path: '/platform/container-envs', title: '容器环境', icon: 'Platform', permission: 'ops.docker.view' },
     ],
   },
   {

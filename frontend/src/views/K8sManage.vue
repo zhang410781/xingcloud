@@ -8,6 +8,38 @@
           <p class="subtitle inline-subtitle K8s-hero-desc">统一查看集群、工作负载、网络与存储。</p>
         </div>
       </div>
+      <div class="K8s-hero-cluster-switcher">
+        <span class="K8s-hero-switcher-label">当前集群</span>
+        <el-select
+          v-model="selectedClusterId"
+          :disabled="!clusters.length"
+          :placeholder="clusters.length ? '选择 K8S 集群' : '暂无已接入集群'"
+          @change="onClusterChange"
+          class="industrial-select K8s-hero-cluster-select"
+          popper-class="K8s-context-popper K8s-context-popper--cluster K8s-hero-cluster-popper"
+        >
+          <el-option v-for="c in clusters" :key="c.id" :label="c.name" :value="c.id">
+            <div class="context-option-row">
+              <div class="context-option-main">
+                <div class="context-option-head">
+                  <div class="context-option-main context-option-main--cluster">
+                    <span class="state-pulse" :class="c.status === 'connected' ? 'running' : 'exited'"></span>
+                    <span class="context-option-title">{{ c.name }}</span>
+                  </div>
+                  <span class="context-status-pill" :class="c.status === 'connected' ? 'context-status-pill--success' : 'context-status-pill--info'">
+                    {{ c.status === 'connected' ? '在线' : '离线' }}
+                  </span>
+                </div>
+                <span class="context-option-subtitle">{{ clusterOptionMeta(c) }}</span>
+              </div>
+            </div>
+          </el-option>
+        </el-select>
+        <span v-if="selectedCluster" class="K8s-hero-cluster-meta">
+          <span class="state-pulse" :class="selectedClusterConnected ? 'running' : 'exited'"></span>
+          {{ selectedClusterConnected ? '在线' : '离线' }} · {{ clusterOptionMeta(selectedCluster) }}
+        </span>
+      </div>
     </section>
 
     <div class="audit-grid K8s-top-stats">
@@ -125,33 +157,6 @@
           </div>
           <div class="workbench-toolbar-right K8s-context-toolbar-right">
             <div class="filter-inline-group filter-inline-group--nowrap">
-              <div class="filter-inline-context">
-                <span class="filter-inline-label">当前集群</span>
-                <el-select
-                  v-model="selectedClusterId"
-                  placeholder="选择集群"
-                  @change="onClusterChange"
-                  class="industrial-select toolbar-filter-select filter-inline-select"
-                  popper-class="K8s-context-popper K8s-context-popper--cluster"
-                >
-                  <el-option v-for="c in clusters" :key="c.id" :label="c.name" :value="c.id">
-                    <div class="context-option-row">
-                      <div class="context-option-main">
-                        <div class="context-option-head">
-                          <div class="context-option-main context-option-main--cluster">
-                            <span class="state-pulse" :class="c.status==='connected'?'running':'exited'"></span>
-                            <span class="context-option-title">{{ c.name }}</span>
-                          </div>
-                          <span class="context-status-pill" :class="c.status === 'connected' ? 'context-status-pill--success' : 'context-status-pill--info'">
-                            {{ c.status === 'connected' ? '在线' : '离线' }}
-                          </span>
-                        </div>
-                        <span class="context-option-subtitle">{{ clusterOptionMeta(c) }}</span>
-                      </div>
-                    </div>
-                  </el-option>
-                </el-select>
-              </div>
               <div v-if="needsNamespace" class="filter-inline-context">
                 <span class="filter-inline-label">当前命名空间</span>
                 <el-select
@@ -2464,6 +2469,40 @@ onBeforeUnmount(() => { disposeExecTerminal() })
   line-height: 1.45;
 }
 
+.K8s-hero-cluster-switcher {
+  display: grid;
+  grid-template-columns: auto minmax(240px, 320px);
+  align-items: center;
+  justify-content: end;
+  column-gap: 10px;
+  row-gap: 4px;
+  min-width: 0;
+}
+
+.K8s-hero-switcher-label {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.K8s-hero-cluster-select {
+  width: 100%;
+}
+
+.K8s-hero-cluster-meta {
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+  color: #64748b;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .K8s-page-shell :deep(.release-hero-title-row) {
   display: flex;
   align-items: center;
@@ -3102,6 +3141,12 @@ onBeforeUnmount(() => { disposeExecTerminal() })
   .K8s-hero {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .K8s-hero-cluster-switcher {
+    width: 100%;
+    grid-template-columns: auto minmax(0, 1fr);
+    justify-content: stretch;
   }
 
   .filter-inline-context {
