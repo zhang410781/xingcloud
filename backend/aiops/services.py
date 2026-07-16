@@ -6141,7 +6141,7 @@ def _is_direct_container_question(question):
         ])
         and any(keyword in lowered for keyword in [
             '有没有', '是否', '哪些', '列表', '状态', '运行状态', '运行情况', '情况', '异常',
-            '当前', '今天', '多少', '查看', '查看下', '看下', '看一下', '查询', '列出',
+            '当前', '今天', '多少', '几个', '几台', '数量', '查看', '查看下', '看下', '看一下', '查询', '列出',
         ])
     ):
         return True
@@ -6149,7 +6149,7 @@ def _is_direct_container_question(question):
         'k8s', 'kubernetes', 'pod', 'pods', '容器', '集群', 'namespace', '工作负载', 'svc', 'docker',
     ])
     has_lookup_intent = any(keyword in lowered for keyword in [
-        '有没有', '是否', '哪些', '列表', '状态', '异常', '当前', '今天', '多少', '情况',
+        '有没有', '是否', '哪些', '列表', '状态', '异常', '当前', '今天', '多少', '几个', '几台', '数量', '情况',
     ])
     return has_container_scope and has_lookup_intent
 
@@ -6174,12 +6174,20 @@ def _is_direct_k8s_resource_lookup_question(question):
     ))
     has_lookup_intent = any(keyword in lowered for keyword in [
         '查看', '查看下', '看下', '看一下', '查询', '查下', '列出', '列表', '当前',
-        '状态', '详情', '信息', '有哪些', '哪些', 'show', 'get', 'list',
+        '状态', '详情', '信息', '有哪些', '哪些', '多少', '几个', '几台', '数量', 'show', 'get', 'list',
     ])
     has_k8s_scope = any(keyword in lowered for keyword in [
-        'k8s', 'kubernetes', 'namespace', '命名空间', '集群',
+        'k8s', 'kubernetes', 'namespace', '命名空间', '集群', '节点', 'node', 'nodes',
     ]) or has_explicit_namespace or has_likely_mojibake_namespace
-    return (has_lookup_intent and has_k8s_scope) or has_explicit_namespace or has_likely_mojibake_namespace
+    return _is_k8s_resource_count_question(question) or (has_lookup_intent and has_k8s_scope) or has_explicit_namespace or has_likely_mojibake_namespace
+
+
+def _is_k8s_resource_count_question(question):
+    lowered = str(question or '').lower()
+    return bool(
+        _detect_k8s_resource_type(question)
+        and any(keyword in lowered for keyword in ['多少', '几个', '几台', '数量', '总数', 'count', 'how many'])
+    )
 
 
 def _extract_promql_from_question(question):
@@ -6316,7 +6324,7 @@ def _dedupe_tool_names(tool_names):
 def _is_k8s_analysis_question(question):
     text = str(question or '').lower()
     has_scope = any(keyword in text for keyword in ['k8s', 'kubernetes', 'pod', 'pods', '集群', '工作负载', 'workload', 'workloads'])
-    has_analysis = any(keyword in text for keyword in ['分析', '排查', '根因', '原因', '有没有问题', '健康'])
+    has_analysis = any(keyword in text for keyword in ['分析', '排查', '根因', '原因', '有没有问题', '健康', '巡检', '检查', '概览'])
     return has_scope and has_analysis
 
 
@@ -7094,6 +7102,57 @@ def _run_scoped_tool(session, user_message, user, collected_tool_outputs, sectio
     return tool_result
 
 
+def _build_k8s_resource_count_answer(tool_output, citations=None):
+    summary = (tool_output or {}).get('summary') or {}
+    resource_type = summary.get('resource_type') or 'resources'
+    cluster_name = summary.get('cluster_name') or ''
+    error = summary.get('error') or ''
+    labels = {
+        'nodes': ('节点', '个'),
+        'deployments': ('Deployment', '个'),
+        'services': ('Service', '个'),
+        'statefulsets': ('StatefulSet', '个'),
+        'daemonsets': ('DaemonSet', '个'),
+        'jobs': ('Job', '个'),
+        'cronjobs': ('CronJob', '个'),
+        'ingresses': ('Ingress', '个'),
+        'pvcs': ('PVC', '个'),
+        'configmaps': ('ConfigMap', '个'),
+        'secrets': ('Secret', '个'),
+        'workloads': ('工作负载', '个'),
+    }
+    label, unit = labels.get(resource_type, ('K8s 资源', '项'))
+    if error:
+        return '\n'.join([
+            '结论：',
+            f'- {cluster_name or "当前环境的 K8s 集群"}{label}查询失败：{error}',
+            '建议：',
+            '- 请检查集群连接状态后重试。',
+            '可继续查看：K8s 集群。',
+        ])
+    if not cluster_name:
+        return '\n'.join([
+            '结论：',
+            f'- 当前环境没有可查询的 K8s 集群，无法统计{label}数量。',
+            '建议：',
+            '- 请先在知识图谱环境中绑定 K8s 集群。',
+            '可继续查看：K8s 集群。',
+        ])
+
+    count = _safe_int(summary.get('count'), 0)
+    conclusion = f'- {cluster_name} 当前共有 {count} {unit}{label}。'
+    details = []
+    if resource_type == 'nodes':
+        ready_count = _safe_int(summary.get('ready_count'), 0)
+        not_ready_count = _safe_int(summary.get('not_ready_count'), max(count - ready_count, 0))
+        details.append(f'- Ready：{ready_count} 个；NotReady：{not_ready_count} 个。')
+    lines = ['结论：', conclusion]
+    if details:
+        lines.extend(['关键点：', *details])
+    lines.append('可继续查看：K8s 集群。')
+    return '\n'.join(lines)
+
+
 def _direct_tool_fastpath(
     session,
     user_message,
@@ -7132,12 +7191,13 @@ def _direct_tool_fastpath(
         arguments,
         emit=emit,
     )
+    deterministic_count_answer = tool_name == 'query_k8s_resources' and _is_k8s_resource_count_question(question)
     result = _build_evidence_bundle_result(
         question=question,
         scoped_question=scoped_question,
         knowledge_environment=knowledge_environment,
         analysis_scope=analysis_scope,
-        provider=provider,
+        provider=None if deterministic_count_answer else provider,
         active_skills=active_skills,
         sections=sections,
         citations=citations,
@@ -7146,6 +7206,11 @@ def _direct_tool_fastpath(
         execution_mode=execution_mode,
         extra_metadata=extra_metadata,
     )
+    if deterministic_count_answer:
+        tool_output = collected[0].get('tool_output') if collected else {}
+        result['content'] = _build_k8s_resource_count_answer(tool_output, citations=citations)
+        result.setdefault('metadata', {})['formatter_mode'] = 'deterministic_count'
+        result['metadata']['formatter_attempts'] = 0
     if selected_action:
         return _attach_selected_action_metadata(result, selected_action, extra_metadata={'action_route': execution_mode})
     return result
@@ -8373,6 +8438,23 @@ def _load_k8s_nodes(cluster):
     return get_k8s_nodes_snapshot(cluster)
 
 
+def _k8s_cluster_search_context(query='', knowledge_environment=None, cluster_name=''):
+    scoped_query = _strip_knowledge_environment_name(query, knowledge_environment)
+    cluster_query = cluster_name or _strip_common_query_phrases(
+        scoped_query,
+        [
+            '有没有', '是否', '异常', 'pod', 'Pod', '集群', 'k8s', 'K8s', 'Kubernetes',
+            '的', '吗', '情况', '这个', '环境', '今天', '当前', '巡检', '检查', '健康',
+            '概览', '摘要', '整体', '全部', '所有',
+        ],
+    )
+    tokens = _clean_tokens(cluster_query)
+    cluster_ids = (knowledge_environment or {}).get('k8s_cluster_ids') or []
+    if len(cluster_ids) == 1:
+        tokens = []
+    return scoped_query, cluster_query, tokens
+
+
 def _extract_k8s_query_object_name(query, resource_type):
     if resource_type == 'services':
         return _extract_k8s_service_name(query, {})
@@ -8475,9 +8557,10 @@ def query_k8s_resources(session, user_message, user, query='', resource_type='',
         return result
 
     queryset = K8sCluster.objects.all()
-    if knowledge_environment and knowledge_environment.get('k8s_cluster_ids'):
-        queryset = queryset.filter(id__in=knowledge_environment.get('k8s_cluster_ids') or [])
-    if cluster_name:
+    environment_cluster_ids = (knowledge_environment or {}).get('k8s_cluster_ids') or []
+    if environment_cluster_ids:
+        queryset = queryset.filter(id__in=environment_cluster_ids)
+    if cluster_name and len(environment_cluster_ids) != 1:
         queryset = queryset.filter(name__icontains=cluster_name)
     cluster = queryset.order_by('-updated_at', '-id').first()
     if not cluster:
@@ -8521,6 +8604,9 @@ def query_k8s_resources(session, user_message, user, query='', resource_type='',
         'namespaces': namespaces,
         'error': error,
     }
+    if resource_type == 'nodes':
+        summary['ready_count'] = len([item for item in items if item.get('status') == 'Ready'])
+        summary['not_ready_count'] = len(items) - summary['ready_count']
     _finish_tool_invocation(invocation, summary, started_at, success=not bool(error))
     return {
         'summary': summary,
@@ -8571,12 +8657,7 @@ def query_container_assets(session, user_message, user, query='', limit=6):
 def query_k8s_cluster_summary(session, user_message, user, query='', cluster_name='', limit=1):
     started_at = time.time()
     knowledge_environment = _resolve_knowledge_environment_for_query(query)
-    scoped_query = _strip_knowledge_environment_name(query, knowledge_environment)
-    cluster_query = cluster_name or _strip_common_query_phrases(
-        scoped_query,
-        ['有没有', '是否', '异常', 'pod', 'Pod', '集群', 'k8s', 'K8s', 'Kubernetes', '的', '吗', '情况', '这个', '环境', '今天', '当前'],
-    )
-    tokens = _clean_tokens(cluster_query)
+    scoped_query, cluster_query, tokens = _k8s_cluster_search_context(query, knowledge_environment, cluster_name)
     if knowledge_environment and knowledge_environment.get('k8s_cluster_ids') and not cluster_name and _is_direct_container_question(query):
         tokens = []
     invocation = _create_tool_invocation(
@@ -8590,9 +8671,10 @@ def query_k8s_cluster_summary(session, user_message, user, query='', cluster_nam
         return {'sections': [], 'citations': []}
 
     queryset = K8sCluster.objects.all()
-    if knowledge_environment and knowledge_environment.get('k8s_cluster_ids'):
-        queryset = queryset.filter(id__in=knowledge_environment.get('k8s_cluster_ids') or [])
-    if cluster_name:
+    environment_cluster_ids = (knowledge_environment or {}).get('k8s_cluster_ids') or []
+    if environment_cluster_ids:
+        queryset = queryset.filter(id__in=environment_cluster_ids)
+    if cluster_name and len(environment_cluster_ids) != 1:
         queryset = queryset.filter(name__icontains=cluster_name)
     elif tokens:
         queryset = _queryset_search(queryset, ['name', 'api_server', 'description'], tokens)
@@ -8632,6 +8714,7 @@ def query_k8s_cluster_summary(session, user_message, user, query='', cluster_nam
         'title': '集群概览',
         'items': [
             f"{cluster.name} / 状态 {summary_payload.get('status')}",
+            f"节点：Ready {summary_payload.get('nodes_ready', 0)} / 总数 {summary_payload.get('nodes_total', 0)} / NotReady {max(_safe_int(summary_payload.get('nodes_total'), 0) - _safe_int(summary_payload.get('nodes_ready'), 0), 0)}",
             f"异常 Pod：{summary_payload.get('pods_abnormal', 0)} / 重启 Pod：{summary_payload.get('pods_restarting', 0)} / 总重启次数：{summary_payload.get('total_restarts', 0)}",
             f"副本未就绪工作负载：{summary_payload.get('workloads_degraded', 0)} / 待绑定 PVC：{summary_payload.get('pvcs_pending', 0)}",
         ],
@@ -8663,11 +8746,16 @@ def query_k8s_cluster_summary(session, user_message, user, query='', cluster_nam
         'count': 1,
         'cluster_name': cluster.name,
         'namespaces': namespaces,
+        'status': summary_payload.get('status'),
+        'nodes_total': summary_payload.get('nodes_total', 0),
+        'nodes_ready': summary_payload.get('nodes_ready', 0),
+        'nodes_not_ready': max(_safe_int(summary_payload.get('nodes_total'), 0) - _safe_int(summary_payload.get('nodes_ready'), 0), 0),
         'pods_total': summary_payload.get('pods_total', 0),
         'pods_abnormal': summary_payload.get('pods_abnormal', 0),
         'pods_restarting': summary_payload.get('pods_restarting', 0),
         'total_restarts': summary_payload.get('total_restarts', 0),
         'workloads_degraded': summary_payload.get('workloads_degraded', 0),
+        'pvcs_pending': summary_payload.get('pvcs_pending', 0),
     }
     _finish_tool_invocation(invocation, tool_summary, started_at, success=True)
     return {'summary': tool_summary, 'sections': sections, 'citations': [{'title': 'K8s 集群', 'path': '/containers/k8s'}], 'cluster': summary_payload, 'pods': pods}
@@ -9240,11 +9328,17 @@ def _summarize_response_block_tool_output(tool_name, tool_output):
         count = summary.get('count', len(tool_output.get('logs') or []))
         service = summary.get('service') or ''
         return f"返回 {count} 条日志" + (f'，服务 {service}' if service else '')
-    if tool_name in {'query_k8s_cluster_summary', 'query_k8s_resources'}:
+    if tool_name == 'query_k8s_resources':
+        cluster_name = summary.get('cluster_name') or ''
+        resource_type = summary.get('resource_type') or 'resources'
+        return f"K8s 查询完成，{resource_type} 总数 {summary.get('count', 0)}" + (f'，集群 {cluster_name}' if cluster_name else '')
+    if tool_name == 'query_k8s_cluster_summary':
         cluster_name = summary.get('cluster_name') or summary.get('cluster') or ''
-        abnormal_count = summary.get('pods_abnormal') or summary.get('workloads_degraded') or summary.get('count')
-        if abnormal_count not in (None, ''):
-            return f"K8s 查询完成，异常/降级 {abnormal_count} 项" + (f'，集群 {cluster_name}' if cluster_name else '')
+        if cluster_name:
+            return (
+                f"K8s 巡检完成，节点 {summary.get('nodes_ready', 0)}/{summary.get('nodes_total', 0)} Ready，"
+                f"异常 Pod {summary.get('pods_abnormal', 0)}，降级工作负载 {summary.get('workloads_degraded', 0)}，集群 {cluster_name}"
+            )
         return 'K8s 查询完成' + (f'，集群 {cluster_name}' if cluster_name else '')
     if tool_name == 'query_task_resources':
         return f"返回 {summary.get('count', len(tool_output.get('resources') or []))} 个资源"
@@ -10009,6 +10103,28 @@ def _build_formatter_fact_digest(collected_tool_outputs, citations=None, pending
         if resources:
             labels = [f"{resource.get('name')}({resource.get('ip_address') or '-'})" for resource in resources[:3]]
             lines.append(f"- 资源底座目标：{'、'.join(labels)}")
+    for item in collected_tool_outputs or []:
+        if item.get('tool_name') not in {'query_k8s_resources', 'query_k8s_cluster_summary'}:
+            continue
+        tool_output = item.get('tool_output') or {}
+        summary = tool_output.get('summary') or {}
+        if item.get('tool_name') == 'query_k8s_resources':
+            lines.append(
+                f"- K8s 资源事实：集群 {summary.get('cluster_name') or '-'}，"
+                f"资源类型 {summary.get('resource_type') or '-'}，总数 {summary.get('count', 0)}。"
+            )
+            if summary.get('resource_type') == 'nodes':
+                lines.append(
+                    f"- K8s 节点状态：Ready={summary.get('ready_count', 0)}，"
+                    f"NotReady={summary.get('not_ready_count', 0)}。"
+                )
+        else:
+            lines.append(
+                f"- K8s 集群事实：集群 {summary.get('cluster_name') or '-'}，"
+                f"状态 {summary.get('status') or '-'}，节点 {summary.get('nodes_ready', 0)}/{summary.get('nodes_total', 0)} Ready，"
+                f"Pod 总数 {summary.get('pods_total', 0)}，异常 {summary.get('pods_abnormal', 0)}，"
+                f"降级工作负载 {summary.get('workloads_degraded', 0)}，待绑定 PVC {summary.get('pvcs_pending', 0)}。"
+            )
     if pending_action_draft:
         is_k8s_task = (
             pending_action_draft.get('target_type') == HostTask.TARGET_K8S
@@ -10067,6 +10183,8 @@ def _build_answer_formatter_messages(question, draft_content, sections, citation
         '日志分析可以根据日志文本、字段、trace_id、状态码、错误词、重复模式做归纳，但必须说明哪些是从日志直接观察到的证据，哪些是推断。',
         '如果 query_logs 的 summary.count 大于 0，禁止说“没有命中/未查到/没找到/0条”；必须围绕已返回日志做分析。',
         '如果 query_logs 的 summary.count 等于 0，禁止声称发现了具体日志样本；只能说明当前查询条件未命中，并提出放宽条件或检查采集链路。',
+        '如果 query_k8s_cluster_summary 已返回 cluster_name、节点、Pod 或工作负载统计，禁止说“工具未返回摘要/无法巡检/集群未注册”；必须直接报告集群状态和数量。',
+        '如果 query_k8s_resources 已返回 count，必须直接报告对应资源总数；不得要求用户再次提供已经由当前环境唯一确定的集群名称。',
         '如果事实不足，要明确说明“当前工具结果未覆盖该信息”。',
         '如果涉及任务生成：必须明确区分“任务草稿 / 待确认创建 / 已在任务中心创建待执行任务”，不能混淆为已执行完成。',
         '输出保持简洁、结构化、可读，优先使用短标题和项目符号，不要输出你的推理过程。',
@@ -10141,6 +10259,15 @@ def _content_conflicts_with_tool_facts(content, collected_tool_outputs):
             if count > 0 and has_log_word and any(pattern in compact for pattern in negative_patterns):
                 return True
             if count == 0 and has_log_word and positive_count_match:
+                return True
+        elif tool_name in {'query_k8s_resources', 'query_k8s_cluster_summary'}:
+            cluster_name = summary.get('cluster_name') or ''
+            has_k8s_facts = bool(cluster_name) and not summary.get('error')
+            k8s_negative_patterns = [
+                '工具未返回', '未返回摘要', '无法直接统计', '无法进行集群巡检',
+                '无法巡检', '集群未注册', '查询结果为空', '依据不足', '证据不足',
+            ]
+            if has_k8s_facts and any(pattern in compact for pattern in k8s_negative_patterns):
                 return True
     return False
 

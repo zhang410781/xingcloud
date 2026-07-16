@@ -7,15 +7,122 @@ from django.test import TestCase
 from ops.models import K8sCluster, LogDataSource, MetricDataSource
 
 from .knowledge_graph import _collapse_unassigned_system_nodes, resolve_knowledge_environment
-from .models import AIOpsAgentConfig, AIOpsKnowledgeEnvironment, AIOpsModelInvocation, AIOpsModelProvider
+from .models import (
+    AIOpsAgentConfig,
+    AIOpsChatMessage,
+    AIOpsChatSession,
+    AIOpsKnowledgeEnvironment,
+    AIOpsModelInvocation,
+    AIOpsModelProvider,
+)
 from .serializers import AIOpsKnowledgeEnvironmentSerializer
-from .services import _ensure_builtin_model_provider, list_model_provider_presets
+from .services import (
+    _build_k8s_resource_count_answer,
+    _content_conflicts_with_tool_facts,
+    _detect_k8s_resource_type,
+    _ensure_builtin_model_provider,
+    _is_direct_k8s_resource_lookup_question,
+    _is_k8s_analysis_question,
+    _is_k8s_resource_count_question,
+    _k8s_cluster_search_context,
+    list_model_provider_presets,
+    query_k8s_resources,
+)
 
 
 User = get_user_model()
 
 
 class AIOpsConfigurationTests(TestCase):
+    def test_k8s_node_count_question_uses_direct_resource_lookup(self):
+        question = '当前集群有几个节点'
+
+        self.assertEqual(_detect_k8s_resource_type(question), 'nodes')
+        self.assertTrue(_is_k8s_resource_count_question(question))
+        self.assertTrue(_is_direct_k8s_resource_lookup_question(question))
+        self.assertTrue(_is_direct_k8s_resource_lookup_question('有几个节点'))
+
+    def test_k8s_cluster_inspection_uses_deterministic_analysis_route(self):
+        self.assertTrue(_is_k8s_analysis_question('巡检集群'))
+
+    def test_k8s_cluster_inspection_uses_single_environment_cluster_without_name_matching(self):
+        scoped_query, cluster_query, tokens = _k8s_cluster_search_context(
+            '数智管理平台 巡检集群',
+            {'name': '数智管理平台', 'k8s_cluster_ids': [12]},
+            cluster_name='数智管理平台',
+        )
+
+        self.assertEqual(scoped_query, '巡检集群')
+        self.assertEqual(cluster_query, '数智管理平台')
+        self.assertEqual(tokens, [])
+
+    @patch('aiops.services._load_k8s_nodes')
+    @patch('aiops.services._resolve_knowledge_environment_for_query')
+    def test_k8s_resource_query_prefers_single_bound_cluster_over_wrong_model_cluster_name(self, resolve_environment, load_nodes):
+        user = User.objects.create_superuser(username='k8s-query-admin', password='Admin@123456')
+        cluster = K8sCluster.objects.create(name='数智平台', kubeconfig='')
+        session = AIOpsChatSession.objects.create(user=user)
+        message = AIOpsChatMessage.objects.create(
+            session=session,
+            role=AIOpsChatMessage.ROLE_USER,
+            content='集群有几个节点',
+        )
+        resolve_environment.return_value = {
+            'name': '数智管理平台',
+            'k8s_cluster_ids': [cluster.id],
+        }
+        load_nodes.return_value = [
+            {'name': 'node-1', 'status': 'Ready'},
+            {'name': 'node-2', 'status': 'Ready'},
+        ]
+
+        result = query_k8s_resources(
+            session,
+            message,
+            user,
+            query='数智管理平台 集群有几个节点',
+            resource_type='nodes',
+            cluster_name='数智管理平台',
+        )
+
+        self.assertEqual(result['summary']['cluster_name'], '数智平台')
+        self.assertEqual(result['summary']['count'], 2)
+        self.assertEqual(result['summary']['ready_count'], 2)
+
+    def test_k8s_node_count_answer_is_deterministic(self):
+        content = _build_k8s_resource_count_answer({
+            'summary': {
+                'count': 4,
+                'cluster_name': 'production-k8s',
+                'resource_type': 'nodes',
+                'ready_count': 3,
+                'not_ready_count': 1,
+                'error': '',
+            },
+        })
+
+        self.assertIn('production-k8s 当前共有 4 个节点', content)
+        self.assertIn('Ready：3 个；NotReady：1 个', content)
+
+    def test_k8s_formatter_cannot_discard_returned_cluster_summary(self):
+        conflicts = _content_conflicts_with_tool_facts(
+            '结论：当前工具未返回摘要数据，无法进行集群巡检。',
+            [{
+                'tool_name': 'query_k8s_cluster_summary',
+                'tool_output': {
+                    'summary': {
+                        'cluster_name': 'production-k8s',
+                        'nodes_total': 4,
+                        'nodes_ready': 4,
+                        'pods_total': 20,
+                        'pods_abnormal': 0,
+                    },
+                },
+            }],
+        )
+
+        self.assertTrue(conflicts)
+
     def test_knowledge_graph_collapses_unassigned_system_into_environment_service_edge(self):
         nodes = {
             'environment:production': {
