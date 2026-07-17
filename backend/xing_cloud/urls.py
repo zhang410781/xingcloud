@@ -23,7 +23,11 @@ urlpatterns = [
     path('api/', include('rbac.urls')),
     path('api/', include('ops.urls')),
     path('api/aiops/', include('aiops.urls')),
-    re_path(r'^(assets/.*|promo/.*|favicon\.svg)$', frontend_views.frontend_asset),
+    # Vite emits fingerprinted files below /assets and /promo.  Require a file
+    # extension here so SPA routes such as /assets/registration and
+    # /assets/middleware fall through to frontend_index instead of being
+    # mistaken for missing static files.
+    re_path(r'^((?:assets|promo)/.+\.[A-Za-z0-9]{2,10}|favicon\.svg)$', frontend_views.frontend_asset),
     path('', frontend_views.frontend_index),
     re_path(r'^(?!api/|admin/|ws/).*$' , frontend_views.frontend_index),
 ]

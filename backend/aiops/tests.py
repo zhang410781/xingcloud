@@ -6,7 +6,11 @@ from django.test import TestCase
 
 from ops.models import K8sCluster, LogDataSource, MetricDataSource
 
-from .knowledge_graph import _collapse_unassigned_system_nodes, resolve_knowledge_environment
+from .knowledge_graph import (
+    _collapse_unassigned_system_nodes,
+    _configmap_runtime_links,
+    resolve_knowledge_environment,
+)
 from .models import (
     AIOpsAgentConfig,
     AIOpsChatMessage,
@@ -205,6 +209,10 @@ class AIOpsConfigurationTests(TestCase):
     def test_knowledge_environment_catalog_works_without_event_wall_models(self):
         user = User.objects.create_superuser(username='catalog-admin', password='Admin@123456')
         self.client.force_login(user)
+        metric = MetricDataSource.objects.create(name='disabled-prometheus', is_enabled=False, config={})
+        context = AIOpsKnowledgeEnvironment.objects.create(
+            name='catalog-context', code='catalog-context', business_line='catalog', metric_datasource=metric,
+        )
 
         response = self.client.get('/api/aiops/knowledge-environments/catalog/')
 
@@ -212,6 +220,9 @@ class AIOpsConfigurationTests(TestCase):
         self.assertIn('metric_datasources', response.json())
         self.assertNotIn('event_environments', response.json())
         self.assertNotIn('docker_hosts', response.json())
+        item = next(row for row in response.json()['metric_datasources'] if row['id'] == metric.id)
+        self.assertFalse(item['is_enabled'])
+        self.assertEqual(item['bound_context']['id'], context.id)
 
     def test_knowledge_graph_works_after_event_wall_retirement(self):
         cache.clear()
@@ -237,7 +248,9 @@ class AIOpsConfigurationTests(TestCase):
         cluster = K8sCluster.objects.create(name='production-k8s', kubeconfig='')
         AIOpsKnowledgeEnvironment.objects.create(
             name='production',
-            k8s_cluster_ids=[cluster.id],
+            code='production',
+            business_line='production',
+            k8s_cluster=cluster,
             is_enabled=True,
             is_default=True,
         )
@@ -339,33 +352,88 @@ class AIOpsConfigurationTests(TestCase):
         self.assertEqual(response.json(), payload)
         catalog.assert_called_once_with(user=user)
 
-    def test_knowledge_environment_rejects_multiple_datasources(self):
+    def test_knowledge_environment_uses_context_code_for_metric_environment(self):
         first = MetricDataSource.objects.create(name='prometheus-a', config={})
-        second = MetricDataSource.objects.create(name='prometheus-b', config={})
+        first.environment = 'other'
+        first.save(update_fields=['environment'])
         serializer = AIOpsKnowledgeEnvironmentSerializer(data={
             'name': 'production',
-            'metric_datasource_ids': [first.id, second.id],
+            'code': 'prod',
+            'business_line': 'xing-cloud',
+            'metric_datasource': first.id,
         })
 
-        self.assertFalse(serializer.is_valid())
-        self.assertIn('metric_datasource_ids', serializer.errors)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        serializer.save()
+        first.refresh_from_db()
+        self.assertEqual(first.environment, 'prod')
+
+    def test_knowledge_environment_can_transfer_bound_resource_after_confirmation(self):
+        metric = MetricDataSource.objects.create(name='shared-prometheus', environment='old', config={})
+        previous = AIOpsKnowledgeEnvironment.objects.create(
+            name='previous', code='previous', business_line='xing-cloud', metric_datasource=metric,
+        )
+        blocked = AIOpsKnowledgeEnvironmentSerializer(data={
+            'name': 'next',
+            'code': 'next',
+            'business_line': 'xing-cloud',
+            'metric_datasource': metric.id,
+        })
+        self.assertFalse(blocked.is_valid())
+        self.assertIn('binding_conflicts', blocked.errors)
+
+        serializer = AIOpsKnowledgeEnvironmentSerializer(data={
+            'name': 'next',
+            'code': 'next',
+            'business_line': 'xing-cloud',
+            'metric_datasource': metric.id,
+            'transfer_bindings': True,
+        })
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        current = serializer.save()
+        previous.refresh_from_db()
+        metric.refresh_from_db()
+        self.assertIsNone(previous.metric_datasource_id)
+        self.assertEqual(current.metric_datasource_id, metric.id)
+        self.assertEqual(metric.environment, 'next')
 
     def test_knowledge_environment_single_fields_drive_legacy_lists_and_resolution(self):
         metric = MetricDataSource.objects.create(name='prometheus-prod', config={})
         logs = LogDataSource.objects.create(name='elasticsearch-prod', provider='elk', config={})
         serializer = AIOpsKnowledgeEnvironmentSerializer(data={
             'name': 'production',
+            'code': 'prod',
+            'business_line': 'xing-cloud',
             'metric_datasource': metric.id,
             'log_datasource': logs.id,
         })
 
         self.assertTrue(serializer.is_valid(), serializer.errors)
         environment = serializer.save()
-        self.assertEqual(environment.metric_datasource_ids, [metric.id])
-        self.assertEqual(environment.log_datasource_ids, [logs.id])
+        self.assertEqual(environment.metric_datasource_id, metric.id)
+        self.assertEqual(environment.log_datasource_id, logs.id)
 
         resolved = resolve_knowledge_environment('production')
         self.assertEqual(resolved['metric_datasource_id'], metric.id)
         self.assertEqual(resolved['log_datasource_id'], logs.id)
         self.assertEqual(resolved['metric_datasource_ids'], [metric.id])
         self.assertEqual(resolved['log_datasource_ids'], [logs.id])
+
+    def test_configmap_runtime_matching_is_bounded_for_large_values(self):
+        component = {
+            'id': 'runtime:redis',
+            'name': 'Redis',
+            'technology': 'Redis',
+            'details': [],
+        }
+        configmap = {
+            'name': 'orders-api-config',
+            'namespace': 'production',
+            'labels': {'app': 'orders-api'},
+            'data': {'application.yml': ('redis:\n  host: cache\n' * 20000)},
+        }
+
+        links = _configmap_runtime_links([configmap], {'orders-api'}, {'runtime:redis': component})
+
+        self.assertEqual(links[0]['service_name'], 'orders-api')
+        self.assertEqual(links[0]['component_id'], 'runtime:redis')

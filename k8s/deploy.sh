@@ -84,7 +84,7 @@ if ! kubectl wait --for=condition=complete job/xing-cloud-init -n "${NAMESPACE}"
   exit 1
 fi
 
-echo "==> Applying app, ingress and scheduler"
+echo "==> Applying app NodePort service, ingress and scheduler"
 kubectl apply -f "$(render_manifest 05-app.yaml)"
 kubectl apply -f 06-ingress.yaml
 kubectl apply -f "$(render_manifest 07-scheduler.yaml)"
@@ -95,5 +95,6 @@ kubectl rollout status deployment/xing-cloud-scheduler -n "${NAMESPACE}" --timeo
 
 echo "==> Done"
 echo "Image: ${IMAGE}"
-echo "Ingress host: xinghai.example.com"
+echo "Service URL: http://<node-ip>:31634"
+echo "Ingress URL: http://xinghai.example.com:31633"
 echo "Check pods: kubectl get pods -n ${NAMESPACE}"

@@ -8,8 +8,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from .log_views import ProviderError, _merge_config, _run_query
-from .models import Alert, AlertAnalysis, AlertRule, LogDataSource, MetricDataSource
+from .models import Alert, AlertAnalysis, AlertRule, MetricDataSource
 
 
 logger = logging.getLogger(__name__)
@@ -34,19 +33,6 @@ PATTERNS = [
 
 def _dict(value):
     return value if isinstance(value, dict) else {}
-
-
-def _int_list(value):
-    values = value if isinstance(value, (list, tuple, set)) else []
-    result = []
-    for item in values:
-        try:
-            number = int(item)
-        except (TypeError, ValueError):
-            continue
-        if number > 0 and number not in result:
-            result.append(number)
-    return result
 
 
 def _redact(value):
@@ -91,91 +77,20 @@ def _metric_datasource_id(alert, rule=None):
         return None
 
 
-def _singular_or_legacy_ids(environment, singular_name, legacy_name):
-    singular_id = getattr(environment, f'{singular_name}_id', None)
-    if singular_id:
-        return [int(singular_id)], ''
-    ids = _int_list(getattr(environment, legacy_name, []) or [])
-    if len(ids) > 1:
-        return [], f'知识环境“{environment.name}”配置了多个{singular_name}，每个环境只允许绑定一个'
-    return ids, ''
-
-
-def _environment_terms(environment):
-    return {
-        str(value).strip().casefold()
-        for value in [environment.name, *(environment.aliases or []), *(environment.alert_environments or [])]
-        if str(value or '').strip()
-    }
-
-
 def _resolve_environment(alert, rule=None):
-    from aiops.models import AIOpsKnowledgeEnvironment
+    from aiops.business_context import resolve_business_context
 
-    environments = list(AIOpsKnowledgeEnvironment.objects.filter(is_enabled=True).order_by('-is_default', 'id'))
     metric_id = _metric_datasource_id(alert, rule=rule)
-    alert_environment = str(alert.environment or _dict(alert.labels).get('environment') or '').strip().casefold()
-    candidates = []
-    for environment in environments:
-        metric_ids, metric_error = _singular_or_legacy_ids(environment, 'metric_datasource', 'metric_datasource_ids')
-        log_ids, log_error = _singular_or_legacy_ids(environment, 'log_datasource', 'log_datasource_ids')
-        if metric_error or log_error:
-            if (metric_id and metric_id in metric_ids) or (alert_environment and alert_environment in _environment_terms(environment)):
-                return environment, metric_ids, log_ids, metric_error or log_error
-            continue
-        score = 0
-        if metric_id and metric_id in metric_ids:
-            score += 100
-        if alert_environment and alert_environment in _environment_terms(environment):
-            score += 50
-        if score:
-            candidates.append((score, environment, metric_ids, log_ids))
-    if not candidates:
+    environment = alert.knowledge_environment if alert.knowledge_environment_id else resolve_business_context(alert.environment)
+    if not environment:
         return None, [], [], '告警未匹配到知识环境，未查询任何默认数据源'
-    candidates.sort(key=lambda item: (-item[0], item[1].id))
-    best_score = candidates[0][0]
-    best = [item for item in candidates if item[0] == best_score]
-    if len(best) > 1:
-        return None, [], [], '告警同时匹配多个知识环境，请完善环境或指标数据源关联'
-    _, environment, metric_ids, log_ids = best[0]
-    if len(metric_ids) != 1:
-        return environment, metric_ids, log_ids, f'知识环境“{environment.name}”未绑定唯一 Prometheus 数据源'
-    if metric_id and metric_ids[0] != metric_id:
+    if alert.environment != environment.code:
+        return environment, [], [], f'告警环境“{alert.environment}”与业务上下文编码“{environment.code}”不一致'
+    metric_ids = [environment.metric_datasource_id] if environment.metric_datasource_id else []
+    log_ids = [environment.log_datasource_id] if environment.log_datasource_id else []
+    if metric_id and (not metric_ids or metric_ids[0] != metric_id):
         return environment, metric_ids, log_ids, '告警规则绑定的 Prometheus 与知识环境不一致'
-    if len(log_ids) != 1:
-        return environment, metric_ids, log_ids, f'知识环境“{environment.name}”未绑定唯一日志源'
     return environment, metric_ids, log_ids, ''
-
-
-def _dimension_values(alert):
-    labels = _dict(alert.labels)
-    resource_type = str(alert.resource_type or '').lower()
-    resource = str(alert.resource or '').strip()
-    values = {
-        'cluster': str(alert.cluster or labels.get('cluster') or '').strip(),
-        'namespace': str(alert.namespace or labels.get('namespace') or labels.get('namespace_name') or '').strip(),
-        'pod': str(labels.get('pod') or labels.get('pod_name') or (resource if resource_type in {'pod', 'k8s', 'prometheus'} else '')).strip(),
-        'service': str(alert.service or labels.get('service') or labels.get('app') or labels.get('job') or '').strip(),
-        'node': str(labels.get('node') or labels.get('node_name') or (resource if resource_type == 'node' else '')).strip(),
-        'host': str(labels.get('host') or labels.get('instance') or (alert.host.hostname if alert.host_id and alert.host else '')).strip(),
-    }
-    return {key: value for key, value in values.items() if value}
-
-
-def _query_terms(dimensions):
-    ordered = ['pod', 'namespace', 'service', 'node', 'host', 'cluster']
-    terms = []
-    for key in ordered:
-        value = dimensions.get(key)
-        if value and value not in terms:
-            terms.append(value)
-        if len(terms) >= 3:
-            break
-    return ' '.join(f'"{item}"' for item in terms) or '*'
-
-
-def _window_end(alert):
-    return alert.ends_at or alert.last_received_at or alert.starts_at or timezone.now()
 
 
 def _window_minutes(alert, rule=None):
@@ -193,78 +108,18 @@ def _window_minutes(alert, rule=None):
     return max(15, min(int(max(values or [15])), 60))
 
 
-def _sanitize_log(log):
-    message = _redact(log.get('message'))[:1200]
-    return {
-        'timestamp': str(log.get('timestamp') or ''),
-        'level': str(log.get('level') or 'unknown').lower(),
-        'source': str(log.get('source') or ''),
-        'service': str(log.get('service') or ''),
-        'namespace': str(log.get('namespace') or ''),
-        'pod': str(log.get('pod') or ''),
-        'container': str(log.get('container') or ''),
-        'host': str(log.get('host') or ''),
-        'message': message,
-    }
-
-
-def _dedupe_logs(logs, limit=20):
-    result = []
-    seen = set()
-    for raw in logs or []:
-        item = _sanitize_log(raw)
-        fingerprint = re.sub(r'\b\d+\b', '#', item['message'].casefold())[:500]
-        key = (item['level'], item['source'], fingerprint)
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append(item)
-        if len(result) >= limit:
-            break
-    return result
-
-
-def _collect_log_evidence(alert, datasource, rule=None):
-    dimensions = _dimension_values(alert)
-    initial_minutes = _window_minutes(alert, rule=rule)
-    end_at = _window_end(alert)
-    attempts = []
-    result = None
-    for minutes in list(dict.fromkeys([initial_minutes, 60])):
-        payload = {
-            'query': _query_terms(dimensions),
-            'start_ms': int((end_at - timedelta(minutes=minutes)).timestamp() * 1000),
-            'end_ms': int(end_at.timestamp() * 1000),
-            'limit': 50,
-        }
-        if datasource.provider == 'clickhouse':
-            payload['collection'] = _dict(datasource.config).get('default_collection') or 'container-logs'
-        attempts.append({'window_minutes': minutes, 'query': payload['query']})
-        result = _run_query(datasource.provider, _merge_config(datasource.provider, datasource.config), payload)
-        if result.get('logs') or minutes == 60:
-            break
-    logs = _dedupe_logs((result or {}).get('logs') or [])
-    levels = Counter(item.get('level') or 'unknown' for item in logs)
-    return {
-        'status': 'ok',
-        'datasource': {'id': datasource.id, 'name': datasource.name, 'provider': datasource.provider},
-        'dimensions': dimensions,
-        'field_map': _redact_json(_dict(datasource.config).get('field_map') or {}),
-        'attempts': attempts,
-        'total': (result or {}).get('total', len(logs)),
-        'sample_count': len(logs),
-        'level_distribution': dict(levels),
-        'samples': logs,
-    }
-
-
 def collect_alert_evidence(alert):
     rule = _alert_rule(alert)
     raw_payload = _dict(alert.raw_payload)
     raw_event = _dict(raw_payload.get('event'))
     raw_rule = _dict(raw_payload.get('rule'))
-    environment, metric_ids, log_ids, config_error = _resolve_environment(alert, rule=rule)
+    environment, metric_ids, _log_ids, config_error = _resolve_environment(alert, rule=rule)
+    depth = {'critical': 'full', 'warning': 'targeted', 'info': 'light'}.get(alert.level, 'targeted')
     evidence = {
+        'profile': 'alert_analysis',
+        'depth': depth,
+        'stage_status': {},
+        'source_coverage': {},
         'alert': {
             'id': alert.id,
             'title': alert.title,
@@ -296,29 +151,34 @@ def collect_alert_evidence(alert):
         evidence['diagnostics'].append({'code': 'environment_configuration_error', 'message': config_error})
         evidence['logs'] = {'status': 'configuration_error', 'error': config_error, 'samples': []}
         return evidence
-    metric = MetricDataSource.objects.filter(pk=metric_ids[0], is_enabled=True).first()
+    metric = MetricDataSource.objects.filter(pk=metric_ids[0], is_enabled=True).first() if metric_ids else None
     if not metric:
         message = '知识环境绑定的 Prometheus 不存在或已停用'
         evidence['diagnostics'].append({'code': 'metric_datasource_unavailable', 'message': message})
     else:
         evidence['metric_datasource'] = {'id': metric.id, 'name': metric.name, 'provider': metric.provider}
-    datasource = LogDataSource.objects.filter(pk=log_ids[0], is_enabled=True).first()
-    if not datasource:
-        message = '知识环境绑定的日志源不存在或已停用'
-        evidence['diagnostics'].append({'code': 'log_datasource_unavailable', 'message': message})
-        evidence['logs'] = {'status': 'configuration_error', 'error': message, 'samples': []}
-        return evidence
-    try:
-        evidence['logs'] = _collect_log_evidence(alert, datasource, rule=rule)
-    except (ProviderError, Exception) as exc:
-        message = str(exc)
-        evidence['diagnostics'].append({'code': 'log_query_failed', 'message': message})
-        evidence['logs'] = {
-            'status': 'query_error',
-            'error': message,
-            'datasource': {'id': datasource.id, 'name': datasource.name, 'provider': datasource.provider},
-            'samples': [],
-        }
+    if environment:
+        try:
+            from .observability_evidence import collect_observability_evidence
+            observed = collect_observability_evidence(
+                environment,
+                profile='alert_analysis',
+                depth=depth,
+                alert=alert,
+                target=alert.resource or alert.service,
+                window_minutes=max(30, _window_minutes(alert, rule=rule)),
+            )
+            for key in [
+                'stage_status', 'source_coverage', 'metrics', 'metric_anomalies', 'k8s',
+                'k8s_findings', 'k8s_samples', 'event_findings', 'change_findings',
+                'topology_findings', 'assets', 'logs', 'log_findings',
+            ]:
+                if key in observed:
+                    evidence[key] = observed[key]
+            evidence['diagnostics'].extend(observed.get('diagnostics') or [])
+        except Exception as exc:
+            evidence['stage_status']['observability'] = 'failed'
+            evidence['diagnostics'].append({'code': 'observability_collection_failed', 'message': str(exc)[:300]})
     return evidence
 
 
@@ -341,7 +201,54 @@ def _deterministic_candidates(evidence):
             'score': min(0.85, 0.35 + count * 0.1),
             'evidence': [examples[code]],
         })
+    grouped = {item['code']: item for item in candidates}
+    for finding in evidence.get('k8s_findings') or []:
+        code = finding.get('code') or 'k8s_abnormal'
+        item = grouped.setdefault(code, {
+            'code': code,
+            'title': finding.get('message') or 'K8s 资源状态异常',
+            'score': 0.72 if finding.get('severity') == 'critical' else 0.58,
+            'evidence': [],
+        })
+        item['evidence'].append(finding.get('message'))
+        item['score'] = min(0.9, item['score'] + 0.04)
+    for metric in evidence.get('metric_anomalies') or []:
+        code = f"metric_{metric.get('code')}"
+        grouped.setdefault(code, {
+            'code': code,
+            'title': f"{metric.get('title')}偏离历史基线",
+            'score': min(0.85, 0.45 + float((metric.get('anomaly') or {}).get('confidence') or 0) * 0.35),
+            'evidence': [f"{(metric.get('anomaly') or {}).get('vote_count', 0)} 个算法判定异常"],
+        })
+    candidates = sorted(grouped.values(), key=lambda item: item.get('score', 0), reverse=True)[:5]
     return candidates
+
+
+def _confidence_policy(evidence):
+    coverage = evidence.get('source_coverage') if isinstance(evidence.get('source_coverage'), dict) else {}
+    independent_sources = {'metrics', 'k8s', 'logs', 'changes'}
+    sources = [name for name, available in coverage.items() if available and name in independent_sources]
+    direct = bool(
+        evidence.get('metric_anomalies')
+        or evidence.get('k8s_findings')
+        or evidence.get('event_findings')
+        or evidence.get('log_findings')
+    )
+    if len(sources) >= 3 and direct:
+        cap = 0.95
+    elif len(sources) >= 2:
+        cap = 0.79
+    elif len(sources) == 1:
+        cap = 0.49
+    else:
+        cap = 0.3
+    return {
+        'source_count': len(sources),
+        'sources': sources,
+        'direct_evidence': direct,
+        'confidence_cap': cap,
+        'reasons': [f'有效独立证据源 {len(sources)} 类', '存在直接异常证据' if direct else '缺少直接异常证据'],
+    }
 
 
 def _json_from_model(content):
@@ -366,7 +273,13 @@ def _llm_synthesis(evidence, candidates):
         'alert': evidence.get('alert'),
         'knowledge_environment': evidence.get('knowledge_environment'),
         'metric_datasource': evidence.get('metric_datasource'),
+        'metric_anomalies': evidence.get('metric_anomalies'),
+        'k8s_findings': evidence.get('k8s_findings'),
+        'k8s_samples': evidence.get('k8s_samples'),
+        'event_findings': evidence.get('event_findings'),
         'log_evidence': evidence.get('logs'),
+        'source_coverage': evidence.get('source_coverage'),
+        'confidence_cap': evidence.get('confidence_cap'),
         'diagnostics': evidence.get('diagnostics'),
         'deterministic_candidates': candidates,
     }
@@ -380,6 +293,7 @@ def _llm_synthesis(evidence, candidates):
                 'content': (
                     '你是生产运维告警研判器。只依据给出的告警与日志证据判断，不得臆测。'
                     '日志仅相关但不能证明因果时必须标记为关联现象。证据不足时不要给出确定根因。'
+                    'confidence 不得高于输入中的 confidence_cap。'
                     '仅输出 JSON：summary, root_cause, confidence(0到1), candidates(array), suggestions(array), evidence_notes(array)。'
                 ),
             },
@@ -422,6 +336,10 @@ def _project_compatibility(analysis):
 
 def execute_alert_analysis(analysis):
     evidence = collect_alert_evidence(analysis.alert)
+    confidence_policy = _confidence_policy(evidence)
+    evidence['evidence_quality'] = confidence_policy
+    evidence['confidence_cap'] = confidence_policy['confidence_cap']
+    evidence['confidence_reasons'] = confidence_policy['reasons']
     candidates = _deterministic_candidates(evidence)
     provider_name = ''
     model_name = ''
@@ -442,7 +360,7 @@ def execute_alert_analysis(analysis):
         status = AlertAnalysis.STATUS_PARTIAL
     confidence = result.get('confidence')
     try:
-        confidence = max(0.0, min(float(confidence), 1.0)) if confidence is not None else None
+        confidence = max(0.0, min(float(confidence), confidence_policy['confidence_cap'])) if confidence is not None else None
     except (TypeError, ValueError):
         confidence = None
     suggestions = result.get('suggestions') if isinstance(result.get('suggestions'), list) else []

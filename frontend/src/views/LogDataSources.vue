@@ -157,7 +157,7 @@
 
         <template v-else-if="form.provider === 'clickhouse'">
           <el-form-item label="CH 地址">
-            <el-input v-model="form.config.endpoint" placeholder="http://10.132.46.52:30812" />
+            <el-input v-model="form.config.endpoint" placeholder="http://clickhouse.example:8123" />
           </el-form-item>
           <el-form-item label="用户名">
             <el-input v-model="form.config.username" placeholder="xinghai" />

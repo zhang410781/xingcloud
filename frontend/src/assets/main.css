@@ -413,7 +413,7 @@ body {
   overflow-x: hidden;
 }
 
-@media (max-width: 760px) {
+@media (max-width: 900px) {
   .sidebar {
     width: var(--sidebar-collapsed-width);
     overflow: hidden;

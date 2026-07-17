@@ -195,11 +195,26 @@ class AIOpsSkill(models.Model):
 
 
 class AIOpsKnowledgeEnvironment(models.Model):
+    ENVIRONMENT_PROD = 'prod'
+    ENVIRONMENT_TEST = 'test'
+    ENVIRONMENT_DEV = 'dev'
+    ENVIRONMENT_TYPE_CHOICES = [
+        (ENVIRONMENT_PROD, '生产'),
+        (ENVIRONMENT_TEST, '测试'),
+        (ENVIRONMENT_DEV, '开发'),
+    ]
+
     name = models.CharField('知识图谱环境名', max_length=128, unique=True)
+    code = models.SlugField('业务上下文编码', max_length=128, unique=True)
+    business_line = models.CharField('业务线', max_length=128, blank=True, default='')
+    environment_type = models.CharField(
+        '环境类型', max_length=16, choices=ENVIRONMENT_TYPE_CHOICES, default=ENVIRONMENT_PROD,
+    )
+    owner = models.CharField('负责人', max_length=64, blank=True, default='')
     aliases = models.JSONField('环境别名', default=list, blank=True)
     description = models.CharField('描述', max_length=255, blank=True, default='')
     event_environments = models.JSONField('事件中心环境', default=list, blank=True)
-    metric_datasource = models.ForeignKey(
+    metric_datasource = models.OneToOneField(
         'ops.MetricDataSource',
         on_delete=models.SET_NULL,
         null=True,
@@ -207,13 +222,29 @@ class AIOpsKnowledgeEnvironment(models.Model):
         related_name='aiops_knowledge_environments',
         verbose_name='指标数据源',
     )
-    log_datasource = models.ForeignKey(
+    log_datasource = models.OneToOneField(
         'ops.LogDataSource',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
         related_name='aiops_knowledge_environments',
         verbose_name='日志数据源',
+    )
+    k8s_cluster = models.OneToOneField(
+        'ops.K8sCluster',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='aiops_knowledge_environment',
+        verbose_name='K8s 集群',
+    )
+    task_resource_environment = models.OneToOneField(
+        'ops.TaskResourceGroup',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='aiops_knowledge_environment',
+        verbose_name='资产环境分组',
     )
     # 兼容旧客户端一个发布周期；新代码以单值外键为准。
     metric_datasource_ids = models.JSONField('指标数据源', default=list, blank=True)

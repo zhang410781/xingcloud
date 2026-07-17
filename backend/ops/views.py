@@ -9,7 +9,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from aiops.models import AIOpsPendingAction
+from aiops.models import AIOpsKnowledgeEnvironment, AIOpsPendingAction
 from .eventwall_stub import EventWallModelViewSetMixin
 from .eventwall_stub import EventRecord
 from .eventwall_stub import build_json_preview, build_resource, record_event
@@ -91,7 +91,7 @@ from .alerting import (
 )
 from .alert_log_evidence import build_alert_log_evidence
 from .alert_analysis import enqueue_alert_analysis, serialize_analysis
-from .alert_rule_presets import ensure_builtin_alert_rule_templates, instantiate_rule_from_template
+from .alert_rule_presets import instantiate_rule_from_template
 from .alert_rules import trigger_alert_rule
 from .sla import build_dashboard_sla as build_sla_dashboard_summary
 
@@ -2153,6 +2153,9 @@ class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.Mod
         queryset = super().get_queryset().order_by('-last_received_at', '-created_at', '-id')
         queryset = _apply_system_alias_filter(self.request, queryset, 'business_line', 'host__business_line')
         params = self.request.query_params
+        knowledge_environment_id = params.get('knowledge_environment_id')
+        if knowledge_environment_id:
+            queryset = queryset.filter(knowledge_environment_id=knowledge_environment_id)
         claimed = params.get('claimed')
         if claimed is None:
             claimed = params.get('ack')
@@ -2312,7 +2315,6 @@ class AlertRuleTemplateViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, 
     }
 
     def get_queryset(self):
-        ensure_builtin_alert_rule_templates()
         return super().get_queryset().select_related('metric_datasource', 'template')
 
     def perform_create(self, serializer):
@@ -2362,7 +2364,6 @@ class AlertRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets
     }
 
     def get_queryset(self):
-        ensure_builtin_alert_rule_templates()
         queryset = super().get_queryset().select_related('metric_datasource', 'template')
         is_template = str(self.request.query_params.get('is_template', '')).lower()
         if is_template in {'1', 'true', 'yes'}:
@@ -2374,6 +2375,12 @@ class AlertRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets
         datasource_id = self.request.query_params.get('metric_datasource_id')
         if datasource_id not in (None, ''):
             queryset = queryset.filter(metric_datasource_id=datasource_id)
+        context_id = self.request.query_params.get('knowledge_environment_id')
+        if context_id not in (None, ''):
+            context = AIOpsKnowledgeEnvironment.objects.filter(pk=context_id, is_enabled=True).only('metric_datasource_id').first()
+            if not context or not context.metric_datasource_id:
+                return queryset.none()
+            queryset = queryset.filter(metric_datasource_id=context.metric_datasource_id)
         template_code = str(self.request.query_params.get('template_code') or '').strip()
         if template_code:
             queryset = queryset.filter(template__code=template_code)
@@ -2602,6 +2609,18 @@ class AlertNotificationPolicyViewSet(EventWallModelViewSetMixin, RBACPermissionM
         'destroy': ['ops.alert.config.manage'],
         'preview': ['ops.alert.config.view'],
     }
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        context_id = self.request.query_params.get('knowledge_environment_id')
+        if context_id in (None, ''):
+            return queryset
+        context = AIOpsKnowledgeEnvironment.objects.filter(pk=context_id, is_enabled=True).only('metric_datasource_id').first()
+        if not context:
+            return queryset.none()
+        if not context.metric_datasource_id:
+            return queryset.filter(metric_datasource__isnull=True)
+        return queryset.filter(Q(metric_datasource__isnull=True) | Q(metric_datasource_id=context.metric_datasource_id))
 
     @action(detail=False, methods=['post'])
     def preview(self, request):

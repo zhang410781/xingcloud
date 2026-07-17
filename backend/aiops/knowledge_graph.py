@@ -35,6 +35,10 @@ EXTERNAL_DISCOVERY_STALE_CACHE_TTL = 300
 FAST_EXTERNAL_TIMEOUT = 4
 FAST_TRACE_DETAIL_TIMEOUT = 2
 MAX_TRACE_DETAIL_SAMPLES = 5
+MAX_CONFIGMAPS_PER_GRAPH = 120
+MAX_CONFIGMAP_FIELDS = 32
+MAX_CONFIGMAP_VALUE_CHARS = 4096
+MAX_CONFIGMAP_TEXT_CHARS = 65536
 MOJIBAKE_HINTS = {
     '\u9422', '\u975b', '\u6662', '\u93c8', '\u9359', '\u6d5c', '\u7eef',
     '\u93ac', '\u5a34', '\u6fa7', '\u7039', '\u68ff', '\u6d60', '\u65c2',
@@ -426,7 +430,7 @@ def _graph_cache_key(params):
         sort_keys=True,
         default=str,
     )
-    return f"aiops:knowledge_graph:v6:{hashlib.md5(raw.encode('utf-8')).hexdigest()}"
+    return f"aiops:knowledge_graph:v7:{hashlib.md5(raw.encode('utf-8')).hexdigest()}"
 
 
 def _empty_graph(filters=None):
@@ -500,7 +504,7 @@ def resolve_knowledge_environment(name):
     text = _clean(name)
     if not text:
         return None
-    config = AIOpsKnowledgeEnvironment.objects.filter(is_enabled=True, name=text).first()
+    config = AIOpsKnowledgeEnvironment.objects.filter(is_enabled=True).filter(Q(name=text) | Q(code=text)).first()
     if not config:
         for item in _enabled_knowledge_environments():
             aliases = _clean_list(getattr(item, 'aliases', []) or [])
@@ -510,26 +514,28 @@ def resolve_knowledge_environment(name):
     if not config:
         return None
     metric_datasource_id = getattr(config, 'metric_datasource_id', None)
-    if not metric_datasource_id:
-        metric_datasource_ids = _int_list(getattr(config, 'metric_datasource_ids', []) or [])[:1]
-        metric_datasource_id = metric_datasource_ids[0] if metric_datasource_ids else None
     log_datasource_id = getattr(config, 'log_datasource_id', None)
-    if not log_datasource_id:
-        log_datasource_ids = _int_list(getattr(config, 'log_datasource_ids', []) or [])[:1]
-        log_datasource_id = log_datasource_ids[0] if log_datasource_ids else None
+    k8s_cluster_id = getattr(config, 'k8s_cluster_id', None)
+    task_resource_environment_id = getattr(config, 'task_resource_environment_id', None)
     return {
+        'id': config.id,
         'name': config.name,
+        'code': config.code,
+        'business_line': config.business_line,
+        'environment_type': config.environment_type,
         'aliases': _clean_list(getattr(config, 'aliases', []) or []),
         'event_environments': [],
         'metric_datasource_id': metric_datasource_id,
         'log_datasource_id': log_datasource_id,
         'metric_datasource_ids': [metric_datasource_id] if metric_datasource_id else [],
         'log_datasource_ids': [log_datasource_id] if log_datasource_id else [],
-        'alert_environments': _clean_list(config.alert_environments),
-        'k8s_cluster_ids': _int_list(config.k8s_cluster_ids),
+        'alert_environments': [config.code],
+        'k8s_cluster_id': k8s_cluster_id,
+        'k8s_cluster_ids': [k8s_cluster_id] if k8s_cluster_id else [],
         'k8s_namespaces': config.k8s_namespaces if isinstance(config.k8s_namespaces, dict) else {},
         'docker_host_ids': [],
-        'task_resource_environment_ids': _int_list(getattr(config, 'task_resource_environment_ids', []) or []),
+        'task_resource_environment_id': task_resource_environment_id,
+        'task_resource_environment_ids': [task_resource_environment_id] if task_resource_environment_id else [],
         'association_snapshot': config.association_snapshot if isinstance(config.association_snapshot, dict) else {},
         'child_node_snapshot': config.child_node_snapshot if isinstance(config.child_node_snapshot, dict) else {},
     }
@@ -540,7 +546,7 @@ def resolve_knowledge_environments_from_text(text):
     matches = []
     for config in _enabled_knowledge_environments():
         aliases = _clean_list(getattr(config, 'aliases', []) or [])
-        candidates = [config.name, *aliases]
+        candidates = [config.name, config.code, *aliases]
         if any(candidate and candidate in query for candidate in candidates):
             resolved = resolve_knowledge_environment(config.name)
             if resolved:
@@ -852,10 +858,10 @@ def _service_names_related(left, right):
 
 
 def _runtime_text_matches(service_name, *values):
-    aliases = _service_aliases(service_name)
-    if not aliases:
-        return False
+    return _runtime_alias_matches_haystacks(service_name, _runtime_haystacks(*values))
 
+
+def _runtime_haystacks(*values):
     haystacks = set()
     for value in values:
         raw = _clean(value).lower()
@@ -868,6 +874,13 @@ def _runtime_text_matches(service_name, *values):
             compact = normalized.replace('-', '')
             if compact:
                 haystacks.add(compact)
+    return haystacks
+
+
+def _runtime_alias_matches_haystacks(service_name, haystacks):
+    aliases = _service_aliases(service_name)
+    if not aliases or not haystacks:
+        return False
 
     for alias in sorted(aliases, key=len, reverse=True):
         if any(alias in haystack for haystack in haystacks):
@@ -1274,9 +1287,12 @@ def _configmap_text(configmap):
     labels = configmap.get('labels') if isinstance(configmap.get('labels'), dict) else {}
     data = configmap.get('data') if isinstance(configmap.get('data'), dict) else {}
     for mapping in (labels, data):
-        for key, value in mapping.items():
-            parts.extend([_clean(key), _clean(value)])
-    return ' '.join(part for part in parts if part)
+        for key, value in list(mapping.items())[:MAX_CONFIGMAP_FIELDS]:
+            parts.extend([
+                _clean(key),
+                _clean(str(value or '')[:MAX_CONFIGMAP_VALUE_CHARS]),
+            ])
+    return ' '.join(part for part in parts if part)[:MAX_CONFIGMAP_TEXT_CHARS]
 
 
 def _configmap_scope_text(configmap):
@@ -1285,8 +1301,11 @@ def _configmap_scope_text(configmap):
         _clean(configmap.get('namespace')),
     ]
     labels = configmap.get('labels') if isinstance(configmap.get('labels'), dict) else {}
-    for key, value in labels.items():
-        parts.extend([_clean(key), _clean(value)])
+    for key, value in list(labels.items())[:MAX_CONFIGMAP_FIELDS]:
+        parts.extend([
+            _clean(key),
+            _clean(str(value or '')[:MAX_CONFIGMAP_VALUE_CHARS]),
+        ])
     return ' '.join(part for part in parts if part)
 
 
@@ -1294,21 +1313,23 @@ def _configmap_scoped_services(configmap, service_names):
     scope_text = _configmap_scope_text(configmap)
     if not scope_text:
         return []
+    haystacks = _runtime_haystacks(scope_text)
     return [
         service_name
         for service_name in service_names
-        if _service_names_related(service_name, scope_text) or _runtime_text_matches(service_name, scope_text)
+        if _runtime_alias_matches_haystacks(service_name, haystacks)
     ]
 
 
 def _configmap_runtime_links(configmaps, service_names, runtime_components):
     links = []
-    runtime_records = list(runtime_components.values())
-    for configmap in configmaps or []:
+    runtime_records = list(runtime_components.values())[:200]
+    for configmap in list(configmaps or [])[:MAX_CONFIGMAPS_PER_GRAPH]:
         text = _configmap_text(configmap)
         normalized_text = _normalized_runtime_text(text)
         if not normalized_text:
             continue
+        text_haystacks = _runtime_haystacks(text)
         matched_services = _configmap_scoped_services(configmap, service_names)
         if not matched_services:
             continue
@@ -1320,7 +1341,7 @@ def _configmap_runtime_links(configmaps, service_names, runtime_components):
                 component.get('technology'),
                 *(detail.get('value') for detail in component.get('details') or [] if isinstance(detail, dict)),
             ]
-            if any(_runtime_text_matches(candidate, text) for candidate in candidates if candidate):
+            if any(_runtime_alias_matches_haystacks(candidate, text_haystacks) for candidate in candidates if candidate):
                 matched_component_ids.add(component['id'])
                 continue
             if classification and component.get('technology') == classification.get('technology'):
@@ -1488,7 +1509,11 @@ def build_knowledge_graph(params=None):
     selected_env = {_clean(item) for item in params.getlist('environment') if _clean(item)} if hasattr(params, 'getlist') else set()
     selected_service = {_clean(item) for item in params.getlist('service') if _clean(item)} if hasattr(params, 'getlist') else set()
     knowledge_env_configs = _enabled_knowledge_environments()
-    selected_knowledge_configs = [config for config in knowledge_env_configs if config.name in selected_env]
+    selected_knowledge_configs = [
+        config
+        for config in knowledge_env_configs
+        if config.name in selected_env or _clean(config.code) in selected_env or str(config.id) in selected_env
+    ]
     use_knowledge_env = bool(selected_knowledge_configs)
     event_env_to_graph = {}
     alert_env_to_graph = {}
@@ -1504,25 +1529,24 @@ def build_knowledge_graph(params=None):
     if use_knowledge_env:
         selected_env = {config.name for config in selected_knowledge_configs}
         for config in selected_knowledge_configs:
-            for environment in _clean_list(config.alert_environments):
-                selected_alert_environments.add(environment)
-                alert_env_to_graph[environment] = config.name
-                source_env_to_graph.setdefault(environment, config.name)
+            context_code = _clean(config.code)
+            if context_code:
+                selected_alert_environments.add(context_code)
+                alert_env_to_graph[context_code] = config.name
+                source_env_to_graph.setdefault(context_code, config.name)
             metric_datasource_id = getattr(config, 'metric_datasource_id', None)
             if metric_datasource_id:
                 selected_metric_datasource_ids.add(metric_datasource_id)
-            else:
-                selected_metric_datasource_ids.update(_int_list(getattr(config, 'metric_datasource_ids', []) or [])[:1])
             log_datasource_id = getattr(config, 'log_datasource_id', None)
             if log_datasource_id:
                 selected_log_datasource_ids.add(log_datasource_id)
-            else:
-                selected_log_datasource_ids.update(_int_list(getattr(config, 'log_datasource_ids', []) or [])[:1])
-            config_k8s_cluster_ids = _int_list(config.k8s_cluster_ids)
-            selected_k8s_cluster_ids.update(config_k8s_cluster_ids)
-            for cluster_id in config_k8s_cluster_ids:
-                selected_k8s_namespaces[cluster_id].update(_namespaces_for_cluster(config, cluster_id))
-            selected_task_resource_environment_ids.update(_int_list(getattr(config, 'task_resource_environment_ids', []) or []))
+            k8s_cluster_id = getattr(config, 'k8s_cluster_id', None)
+            if k8s_cluster_id:
+                selected_k8s_cluster_ids.add(k8s_cluster_id)
+                selected_k8s_namespaces[k8s_cluster_id].update(_namespaces_for_cluster(config, k8s_cluster_id))
+            task_resource_environment_id = getattr(config, 'task_resource_environment_id', None)
+            if task_resource_environment_id:
+                selected_task_resource_environment_ids.add(task_resource_environment_id)
 
     def graph_environment(source_environment, kind=''):
         environment = _clean(source_environment, UNKNOWN_ENV)
@@ -1785,13 +1809,15 @@ def build_knowledge_graph(params=None):
         relation_field = {
             'metric_datasource_ids': 'metric_datasource_id',
             'log_datasource_ids': 'log_datasource_id',
+            'k8s_cluster_ids': 'k8s_cluster_id',
+            'task_resource_environment_ids': 'task_resource_environment_id',
         }.get(field_name)
         matched = [
             config.name
             for config in selected_knowledge_configs
             if (
                 getattr(config, relation_field, None) == item_id
-                if relation_field and getattr(config, relation_field, None)
+                if relation_field
                 else item_id in _int_list(getattr(config, field_name, []))[:1]
             )
         ]

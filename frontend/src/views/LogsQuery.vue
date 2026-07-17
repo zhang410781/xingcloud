@@ -54,21 +54,9 @@
           <div class="log-query-provider-strip">
             <div class="log-filter-datasource-row">
               <span class="log-query-provider-label">数据源</span>
-              <el-select
-                v-model="currentTab.datasourceId"
-                class="search-control log-datasource-control"
-                size="small"
-                filterable
-                placeholder="请选择日志数据源"
-                @change="handleDatasourceChange"
-              >
-                <el-option
-                  v-for="item in dataSources"
-                  :key="item.id"
-                  :label="`${item.name}（${providerLabel(item.provider)}）`"
-                  :value="item.id"
-                />
-              </el-select>
+              <div class="bound-log-datasource">
+                {{ currentDataSource ? `${currentDataSource.name}（${providerLabel(currentDataSource.provider)}）` : '当前业务上下文未绑定日志数据源' }}
+              </div>
             </div>
           </div>
 
@@ -342,19 +330,22 @@
 
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 import echarts from '@/lib/echarts'
 import { ElMessage } from 'element-plus'
 import { getLogDataSources, getLogProviderCatalog, queryLogs } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
+import { useBusinessContextStore } from '@/stores/businessContext'
 
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
+const businessContextStore = useBusinessContextStore()
+const { currentContext, currentContextId } = storeToRefs(businessContextStore)
 const LAST_DATASOURCE_KEY = 'logs:last-datasource-id'
 const QUERY_HISTORY_KEY = 'logs:query-history'
 const QUERY_FAVORITES_KEY = 'logs:query-favorites'
-const DEFAULT_DATASOURCE_NAME = ''
 const MAX_HISTORY_ITEMS = 12
 const MAX_FAVORITE_ITEMS = 8
 const SYNTAX_HELP_DOCS = {
@@ -664,13 +655,8 @@ function formatTimeRangeSummary(range) {
 }
 
 function getPreferredDatasourceId() {
-  const defaultSource = dataSources.value.find((item) => item.is_default)
-  if (defaultSource) return defaultSource.id
-  const saved = Number(localStorage.getItem(LAST_DATASOURCE_KEY))
-  if (saved && dataSources.value.some((item) => item.id === saved)) return saved
-  const shanghai = dataSources.value.find((item) => item.name === DEFAULT_DATASOURCE_NAME)
-  if (shanghai) return shanghai.id
-  return dataSources.value[0]?.id || null
+  const boundId = Number(currentContext.value?.log_datasource)
+  return dataSources.value.some(item => item.id === boundId) ? boundId : null
 }
 
 function getPreferredDatasourceByProvider(provider) {
@@ -797,7 +783,9 @@ async function fetchDataSources() {
   loadingSources.value = true
   try {
     const response = await getLogDataSources({ is_enabled: true })
-    dataSources.value = Array.isArray(response) ? response : response.results || []
+    const items = Array.isArray(response) ? response : response.results || []
+    const boundId = Number(currentContext.value?.log_datasource)
+    dataSources.value = boundId ? items.filter(item => item.id === boundId) : []
   } finally {
     loadingSources.value = false
   }
@@ -1603,10 +1591,14 @@ function handleResize() {
   chart?.resize()
 }
 
+let logsPageMounted = false
+
 onMounted(async () => {
   loadSavedQueries()
+  await businessContextStore.loadContexts()
   await fetchDataSources()
   await initializeTabs()
+  logsPageMounted = true
   if (!(await applyTraceRoutePreset())) {
     if (!(await applyLokiRoutePreset())) {
       await applyKeywordRoutePreset()
@@ -1615,6 +1607,13 @@ onMounted(async () => {
   await nextTick()
   renderChart()
   window.addEventListener('resize', handleResize)
+})
+
+watch(currentContextId, async () => {
+  if (!logsPageMounted) return
+  await fetchDataSources()
+  queryTabs.value = []
+  await initializeTabs()
 })
 
 watch(
@@ -1912,6 +1911,19 @@ onUnmounted(() => {
 .log-datasource-control {
   flex: 1 1 auto;
   max-width: none;
+}
+
+.bound-log-datasource {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  padding: 6px 9px;
+  border: 1px solid #dbe4ee;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .search-panel {

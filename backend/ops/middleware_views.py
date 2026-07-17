@@ -7,7 +7,7 @@ from rest_framework.response import Response
 from rbac.permissions import build_rbac_permission
 from rbac.services import DEMO_ACCOUNT_MUTATION_MESSAGE, is_demo_account
 
-from .models import MiddlewareAsset
+from .models import MiddlewareAsset, TaskResourceGroup
 
 
 ASSET_TYPES = {choice[0] for choice in MiddlewareAsset.TYPE_CHOICES}
@@ -24,6 +24,8 @@ def _serialize_asset(asset):
         'name': asset.name,
         'asset_type': asset.asset_type,
         'asset_type_label': asset.get_asset_type_display(),
+        'task_resource_environment_id': asset.task_resource_environment_id,
+        'task_resource_environment_name': getattr(asset.task_resource_environment, 'name', ''),
         'environment': asset.environment,
         'endpoint': asset.endpoint,
         'username': asset.username,
@@ -40,8 +42,11 @@ def _serialize_asset(asset):
     }
 
 
-def _build_overview():
-    assets = list(MiddlewareAsset.objects.all())
+def _build_overview(task_resource_environment_id=None):
+    queryset = MiddlewareAsset.objects.select_related('task_resource_environment')
+    if task_resource_environment_id:
+        queryset = queryset.filter(task_resource_environment_id=task_resource_environment_id)
+    assets = list(queryset)
     by_type = {asset_type: 0 for asset_type in ASSET_TYPES}
     by_status = {status: 0 for status in ASSET_STATUSES}
     for asset in assets:
@@ -89,7 +94,33 @@ def _validate_payload(payload, *, partial=False):
         if not isinstance(payload.get('metadata'), dict):
             return None, 'metadata must be an object.'
         cleaned['metadata'] = payload.get('metadata')
+    if 'task_resource_environment_id' in payload:
+        try:
+            cleaned['task_resource_environment_id'] = int(payload.get('task_resource_environment_id'))
+        except (TypeError, ValueError):
+            return None, 'task_resource_environment_id must be an integer.'
     return cleaned, ''
+
+
+def _validate_asset_environment(cleaned):
+    environment_id = cleaned.get('task_resource_environment_id')
+    if not environment_id:
+        matches = list(TaskResourceGroup.objects.filter(
+            group_type=TaskResourceGroup.GROUP_ENVIRONMENT,
+            code=cleaned.get('environment'),
+        )[:2])
+        if len(matches) != 1:
+            return None, '请选择业务上下文绑定的资产环境分组。'
+        cleaned['task_resource_environment_id'] = matches[0].id
+        return matches[0], ''
+    group = TaskResourceGroup.objects.filter(
+        pk=environment_id,
+        group_type=TaskResourceGroup.GROUP_ENVIRONMENT,
+    ).first()
+    if not group:
+        return None, '资产环境分组不存在或类型不正确。'
+    cleaned['environment'] = group.code
+    return group, ''
 
 
 def _actor_name(user):
@@ -101,7 +132,8 @@ def _actor_name(user):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, build_rbac_permission('ops.middleware.view')])
 def middleware_overview(request):
-    return Response(_build_overview())
+    environment_id = request.query_params.get('task_resource_environment_id')
+    return Response(_build_overview(environment_id))
 
 
 @api_view(['POST'])
@@ -128,6 +160,9 @@ def middleware_action(request):
         cleaned, error = _validate_payload(payload)
         if error:
             return Response({'detail': error}, status=400)
+        _, error = _validate_asset_environment(cleaned)
+        if error:
+            return Response({'detail': error}, status=400)
         password = cleaned.pop('password', '')
         try:
             with transaction.atomic():
@@ -143,11 +178,11 @@ def middleware_action(request):
             'success': True,
             'message': '中间件资产已登记。',
             'asset': _serialize_asset(asset),
-            'data': _build_overview(),
+            'data': _build_overview(asset.task_resource_environment_id),
         }, status=201)
 
     try:
-        asset = MiddlewareAsset.objects.get(pk=target_id)
+        asset = MiddlewareAsset.objects.select_related('task_resource_environment').get(pk=target_id)
     except (MiddlewareAsset.DoesNotExist, TypeError, ValueError):
         return Response({'detail': 'Middleware asset not found.'}, status=404)
 
@@ -156,7 +191,7 @@ def middleware_action(request):
         return Response({
             'success': True,
             'message': '中间件资产已删除。',
-            'data': _build_overview(),
+            'data': _build_overview(asset.task_resource_environment_id),
         })
 
     cleaned, error = _validate_payload(payload, partial=True)
@@ -164,6 +199,10 @@ def middleware_action(request):
         return Response({'detail': error}, status=400)
     if not cleaned:
         return Response({'detail': 'No middleware asset fields to update.'}, status=400)
+    if 'task_resource_environment_id' in cleaned:
+        _, error = _validate_asset_environment(cleaned)
+        if error:
+            return Response({'detail': error}, status=400)
     for field, value in cleaned.items():
         setattr(asset, field, value)
     asset.updated_by = actor
@@ -176,5 +215,5 @@ def middleware_action(request):
         'success': True,
         'message': '中间件资产已更新。',
         'asset': _serialize_asset(asset),
-        'data': _build_overview(),
+        'data': _build_overview(asset.task_resource_environment_id),
     })

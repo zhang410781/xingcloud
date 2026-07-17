@@ -9,7 +9,7 @@
         </div>
       </div>
       <div class="hero-actions">
-        <el-button v-if="canManage" type="primary" :icon="Plus" @click="openRegistration()">登记资产</el-button>
+        <el-button v-if="canManage" type="primary" :icon="Plus" :disabled="!currentContext?.task_resource_environment" @click="openRegistration()">登记资产</el-button>
         <el-button :icon="Refresh" :loading="loading" @click="loadOverview">刷新</el-button>
       </div>
     </section>
@@ -89,7 +89,7 @@
         :description="activeType ? `暂无已登记的 ${typeLabel(activeType)} 资产` : '暂无已登记的中间件资产'"
         class="asset-empty"
       >
-        <el-button v-if="canManage" type="primary" :icon="Plus" @click="openRegistration(null, activeType)">登记第一条资产</el-button>
+        <el-button v-if="canManage" type="primary" :icon="Plus" :disabled="!currentContext?.task_resource_environment" @click="openRegistration(null, activeType)">登记第一条资产</el-button>
       </el-empty>
     </section>
 
@@ -104,7 +104,7 @@
           <el-input v-model="registrationForm.name" placeholder="请输入实际资产或集群名称" maxlength="128" />
         </el-form-item>
         <el-form-item label="所属环境" required>
-          <el-input v-model="registrationForm.environment" placeholder="例如 prod、test 或业务环境名称" maxlength="32" />
+          <div class="bound-environment-value">{{ currentContext?.task_resource_environment_name || '当前业务上下文未绑定资产分组' }}</div>
         </el-form-item>
         <el-form-item label="访问地址" required>
           <el-input v-model="registrationForm.endpoint" placeholder="请输入实际连接地址或管理地址" maxlength="255" />
@@ -132,14 +132,18 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import { ElMessage } from 'element-plus'
 import { Coin, Connection, Grid, Plus, Refresh } from '@element-plus/icons-vue'
 
 import { getMiddlewareOverview, runMiddlewareAction } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
+import { useBusinessContextStore } from '@/stores/businessContext'
 
 const authStore = useAuthStore()
+const businessContextStore = useBusinessContextStore()
+const { currentContext, currentContextId } = storeToRefs(businessContextStore)
 const loading = ref(false)
 const overview = ref({ assets: [], summary: { total: 0, by_type: {}, by_status: {} } })
 const activeType = ref('')
@@ -162,7 +166,7 @@ const filteredAssets = computed(() => activeType.value
   : assets.value)
 
 function emptyForm(assetType = 'redis') {
-  return { asset_type: assetType, name: '', environment: 'prod', endpoint: '', username: '', password: '', version: '', description: '' }
+  return { asset_type: assetType, name: '', environment: '', endpoint: '', username: '', password: '', version: '', description: '' }
 }
 
 function typeCount(type) {
@@ -191,7 +195,10 @@ function toggleType(type) {
 async function loadOverview() {
   loading.value = true
   try {
-    overview.value = await getMiddlewareOverview()
+    const environmentId = currentContext.value?.task_resource_environment
+    overview.value = environmentId
+      ? await getMiddlewareOverview({ task_resource_environment_id: environmentId })
+      : { assets: [], summary: { total: 0, by_type: {}, by_status: {} } }
   } finally {
     loading.value = false
   }
@@ -216,8 +223,10 @@ async function submitRegistration() {
   const payload = Object.fromEntries(
     Object.entries(registrationForm).map(([key, value]) => [key, String(value || '').trim()]),
   )
-  if (!payload.asset_type || !payload.name || !payload.environment || !payload.endpoint) {
-    return ElMessage.warning('请完整填写资产类型、名称、环境和访问地址')
+  payload.environment = currentContext.value?.code || ''
+  payload.task_resource_environment_id = currentContext.value?.task_resource_environment || ''
+  if (!payload.asset_type || !payload.name || !payload.environment || !payload.endpoint || !payload.task_resource_environment_id) {
+    return ElMessage.warning('请先配置业务上下文资产分组，并完整填写资产类型、名称和访问地址')
   }
   registrationSubmitting.value = true
   try {
@@ -241,11 +250,17 @@ async function deleteAsset(row) {
   ElMessage.success(response.message || '中间件资产已删除')
 }
 
-onMounted(loadOverview)
+watch(currentContextId, loadOverview)
+
+onMounted(async () => {
+  await businessContextStore.loadContexts()
+  await loadOverview()
+})
 </script>
 
 <style scoped>
 .middleware-page { display: flex; flex-direction: column; gap: 10px; }
+.bound-environment-value { width: 100%; min-height: 32px; padding: 7px 10px; border: 1px solid #dbe4ee; background: #f8fafc; color: #334155; font-size: 12px; }
 .middleware-hero { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 15px 18px; border: 1px solid rgba(148, 163, 184, .2); border-radius: 16px; background: linear-gradient(135deg, #fff, #f5f9ff); box-shadow: 0 12px 28px rgba(15, 23, 42, .05); }
 .hero-copy { display: flex; align-items: center; min-width: 0; gap: 12px; }
 .hero-icon { display: inline-flex; align-items: center; justify-content: center; width: 42px; height: 42px; flex: 0 0 auto; border-radius: 13px; color: #fff; font-size: 21px; background: linear-gradient(135deg, #2563eb, #0f766e); }

@@ -7,11 +7,12 @@ metadata:
     app: xing-cloud
     component: app
 spec:
-  type: ClusterIP
+  type: NodePort
   ports:
     - name: http
       port: 8000
       targetPort: 8000
+      nodePort: 31634
   selector:
     app: xing-cloud
     component: app
@@ -38,7 +39,7 @@ spec:
     spec:
       containers:
         - name: xing-cloud
-          image: registry.cn-hangzhou.aliyuncs.com/xinghaik8s/ops-agent:a1.03
+          image: registry.cn-hangzhou.aliyuncs.com/xinghaik8s/ops-agent:context-catalog-20260717-1209
           imagePullPolicy: Always
           envFrom:
             - configMapRef:

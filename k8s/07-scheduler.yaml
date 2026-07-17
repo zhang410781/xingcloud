@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: xing-cloud-scheduler
-          image: registry.cn-hangzhou.aliyuncs.com/xinghaik8s/ops-agent:a1.03
+          image: registry.cn-hangzhou.aliyuncs.com/xinghaik8s/ops-agent:context-catalog-20260717-1209
           imagePullPolicy: Always
           envFrom:
             - configMapRef:

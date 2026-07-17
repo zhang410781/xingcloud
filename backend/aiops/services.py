@@ -3749,7 +3749,7 @@ def _enabled_knowledge_environment_options():
             text = str(item or '').strip()
             if text and text not in aliases:
                 aliases.append(text)
-        options.append({'name': config.name, 'aliases': aliases})
+        options.append({'id': config.id, 'name': config.name, 'code': config.code, 'aliases': aliases})
     return options
 
 
@@ -3771,20 +3771,10 @@ def _resolve_chat_environment(session, question):
     fingerprint = _extract_alert_fingerprint(text)
     if fingerprint:
         alert = Alert.objects.filter(fingerprint=fingerprint).order_by('-last_received_at', '-created_at', '-id').first()
-        if alert:
-            for option in _enabled_knowledge_environment_options():
-                resolved = resolve_knowledge_environment(option['name'])
-                if not resolved:
-                    continue
-                candidates = [
-                    resolved.get('name'),
-                    *(resolved.get('aliases') or []),
-                    *(resolved.get('alert_environments') or []),
-                    *(resolved.get('event_environments') or []),
-                ]
-                alert_values = [alert.environment, alert.cluster, alert.namespace]
-                if any(value and value in candidates for value in alert_values):
-                    return {'status': 'resolved', 'environment': resolved, 'source': 'alert_fingerprint', 'candidates': []}
+        if alert and alert.knowledge_environment_id:
+            resolved = resolve_knowledge_environment(alert.knowledge_environment.code)
+            if resolved:
+                return {'status': 'resolved', 'environment': resolved, 'source': 'alert_fingerprint', 'candidates': []}
 
     context = session.context if isinstance(getattr(session, 'context', None), dict) else {}
     page_context = normalize_page_context(context.get('page_context'))
@@ -3799,24 +3789,6 @@ def _resolve_chat_environment(session, question):
         return {'status': 'resolved', 'environment': resolved, 'source': 'session', 'candidates': []}
 
     options = _enabled_knowledge_environment_options()
-    lowered = text.lower()
-    fuzzy_matches = []
-    for option in options:
-        candidates = [option['name'], *(option.get('aliases') or [])]
-        for candidate in candidates:
-            candidate_text = str(candidate or '').strip()
-            if not candidate_text:
-                continue
-            if candidate_text.lower() in lowered or lowered in candidate_text.lower():
-                resolved = resolve_knowledge_environment(option['name'])
-                if resolved and resolved.get('name') not in {item.get('name') for item in fuzzy_matches}:
-                    fuzzy_matches.append(resolved)
-                break
-    if len(fuzzy_matches) == 1:
-        return {'status': 'resolved', 'environment': fuzzy_matches[0], 'source': 'fuzzy', 'candidates': []}
-    if len(fuzzy_matches) > 1:
-        return {'status': 'ambiguous', 'environment': None, 'source': 'fuzzy', 'candidates': fuzzy_matches}
-
     return {'status': 'missing', 'environment': None, 'source': '', 'candidates': [resolve_knowledge_environment(item['name']) for item in options if resolve_knowledge_environment(item['name'])]}
 
 
@@ -5161,19 +5133,6 @@ def _select_alert_metric_datasource_id(knowledge_environment, alert, metric_data
         ids = knowledge_environment.get('metric_datasource_ids') or []
         if ids:
             return ids[0]
-    env_names = []
-    if alert.environment:
-        env_names.append(alert.environment)
-    if knowledge_environment:
-        env_names.append(knowledge_environment.get('name'))
-        env_names.extend(knowledge_environment.get('alert_environments') or [])
-    for env_name in [item for item in dict.fromkeys(env_names) if item]:
-        datasource = MetricDataSource.objects.filter(is_enabled=True, environment=env_name).order_by('-is_default', 'name').first()
-        if datasource:
-            return datasource.id
-    datasource = MetricDataSource.objects.filter(is_enabled=True, is_default=True).order_by('environment', 'name').first()
-    if datasource:
-        return datasource.id
     return ''
 
 
@@ -7378,26 +7337,48 @@ def _run_k8s_analysis_evidence(session, user_message, user, question, scoped_que
         step={'title': 'K8s 异常证据收集', 'detail': '同时收集工作负载、集群摘要、告警和事件。', 'status': PROCESSING_STATUS_COMPLETED},
         text='正在收集 K8s 异常证据',
     )
-    sections, citations, tool_names, collected = [], [], [], []
-    resource_type = _detect_k8s_resource_type(question) or 'workloads'
-    _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_k8s_resources', {'query': scoped_question, 'resource_type': resource_type, 'limit': 12}, emit=emit)
-    _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_k8s_cluster_summary', {'query': scoped_question, 'limit': 1}, emit=emit)
-    environment_query = knowledge_environment.get('name') or scoped_question
-    _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_alerts', {'query': environment_query, 'status': Alert.STATUS_ACTIVE, 'limit': 8}, emit=emit)
-    _run_scoped_tool(session, user_message, user, collected, sections, citations, tool_names, 'query_events', {'query': environment_query, 'date_filter': 'last_hour' if '一小时' in question else '', 'limit': 8}, emit=emit)
-    return _build_evidence_bundle_result(
-        question=question,
-        scoped_question=scoped_question,
-        knowledge_environment=knowledge_environment,
-        analysis_scope=analysis_scope,
+    from ops.observability_evidence import collect_observability_evidence, inspection_result
+
+    context_id = knowledge_environment.get('id')
+    depth = 'targeted' if _detect_k8s_resource_type(question) else 'full'
+    evidence = collect_observability_evidence(
+        context_id,
+        profile='inspection',
+        depth=depth,
+        target='',
+        window_minutes=_detect_log_duration_minutes(question),
+    )
+    result = inspection_result(evidence)
+    summary = result.get('cluster_summary') or {}
+    findings = result.get('findings') or []
+    sections = [
+        {'title': '巡检结论', 'items': [f"{result.get('conclusion')}，健康分 {result.get('health_score')} 分"]},
+        {'title': '集群概览', 'items': [
+            f"节点 {summary.get('ready_nodes', 0)}/{summary.get('node_count', 0)} Ready",
+            f"Pod 总数 {summary.get('pod_count', 0)}，状态分布 {summary.get('pod_status') or {}}",
+        ]},
+        {'title': '异常项', 'items': [f"[{item.get('severity')}] {item.get('target') or '-'}：{item.get('message')}" for item in findings] or ['未发现明确异常']},
+        {'title': '建议操作', 'items': result.get('suggestions') or []},
+    ]
+    if result.get('missing_evidence'):
+        sections.append({'title': '未获取证据', 'items': result['missing_evidence']})
+    tool_result = {
+        'summary': {'health_score': result.get('health_score'), **summary},
+        'sections': sections,
+        'citations': result.get('links') or [],
+        'inspection': result,
+    }
+    return _build_direct_tool_result(
+        'inspect_business_context',
+        tool_result,
+        question,
+        knowledge_environment,
+        analysis_scope,
+        'deterministic_k8s_inspection',
+        extra_metadata={'inspection': result, 'k8s_resource_type': _detect_k8s_resource_type(question) or 'cluster'},
         provider=provider,
         active_skills=active_skills,
-        sections=sections,
-        citations=citations,
-        tool_names=tool_names,
-        collected_tool_outputs=collected,
-        execution_mode='deterministic_k8s_rca',
-        extra_metadata={'k8s_resource_type': resource_type},
+        prefer_llm=False,
     )
 
 

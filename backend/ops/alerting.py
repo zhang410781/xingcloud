@@ -198,6 +198,8 @@ def upsert_alert(normalized, actor='system', action=None, action_note=None):
         'last_received_at': now,
     }
     defaults['host'] = _host_for(defaults['resource'], defaults['labels'])
+    from aiops.business_context import resolve_business_context
+    defaults['knowledge_environment'] = resolve_business_context(defaults['environment'])
 
     created = existing is None
     if created:

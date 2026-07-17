@@ -174,7 +174,7 @@ export const getObservabilityIntegrations = () => request.get('/observability/in
 export const installIntegrationRules = (key, data = {}) => request.post(`/observability/integrations/${key}/install-rules/`, data)
 export const installIntegrationDashboards = (key, data = {}) => request.post(`/observability/integrations/${key}/install-dashboards/`, data)
 export const getSlaSummary = () => request.get('/observability/sla/summary/')
-export const getMiddlewareOverview = () => request.get('/middleware/overview/')
+export const getMiddlewareOverview = (params) => request.get('/middleware/overview/', { params })
 export const runMiddlewareAction = (data) => request.post('/middleware/action/', data)
 export const queryMetrics = (data) => request.post('/observability/metrics/query/', data)
 export const getDashboardDefinitions = (params) => request.get('/observability/dashboard-definitions/', { params })

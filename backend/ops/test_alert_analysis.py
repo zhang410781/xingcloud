@@ -36,10 +36,10 @@ class AlertAnalysisTests(TestCase):
         )
         self.environment = AIOpsKnowledgeEnvironment.objects.create(
             name='production',
-            aliases=['prod'],
-            alert_environments=['prod'],
-            metric_datasource_ids=[self.metric.id],
-            log_datasource_ids=[self.logs.id],
+            code='prod',
+            business_line='xing-cloud',
+            metric_datasource=self.metric,
+            log_datasource=self.logs,
             is_enabled=True,
         )
         self.alert = Alert.objects.create(
@@ -50,6 +50,7 @@ class AlertAnalysisTests(TestCase):
             source_type=Alert.SOURCE_PLATFORM,
             message='Pod 15 分钟内重启超过阈值',
             environment='prod',
+            knowledge_environment=self.environment,
             cluster='cluster-a',
             namespace='ops',
             service='kubernetes',
@@ -70,7 +71,7 @@ class AlertAnalysisTests(TestCase):
             },
         )
 
-    @patch('ops.alert_analysis._run_query')
+    @patch('ops.observability_evidence._run_query')
     def test_collects_elasticsearch_logs_with_environment_dimensions_and_window(self, run_query):
         run_query.return_value = {
             'total': 2,
@@ -108,21 +109,20 @@ class AlertAnalysisTests(TestCase):
         self.assertNotIn('secret-value', sample)
         self.assertNotIn('13800138000', sample)
 
-    def test_multiple_legacy_log_sources_is_diagnostic_and_never_falls_back(self):
-        second = LogDataSource.objects.create(name='another-log-source', provider='clickhouse', config={})
-        self.environment.log_datasource_ids = [self.logs.id, second.id]
-        self.environment.save(update_fields=['log_datasource_ids'])
+    def test_mismatched_alert_environment_is_diagnostic_and_never_falls_back(self):
+        self.alert.environment = 'other-prod'
+        self.alert.save(update_fields=['environment'])
 
-        with patch('ops.alert_analysis._run_query') as run_query:
+        with patch('ops.observability_evidence._run_query') as run_query:
             evidence = collect_alert_evidence(self.alert)
 
         self.assertEqual(evidence['logs']['status'], 'configuration_error')
-        self.assertIn('只允许绑定一个', evidence['logs']['error'])
+        self.assertIn('不一致', evidence['logs']['error'])
         run_query.assert_not_called()
 
     @patch('ops.alerting.dispatch_alert_notifications')
     @patch('ops.alert_analysis._llm_synthesis')
-    @patch('ops.alert_analysis._run_query')
+    @patch('ops.observability_evidence._run_query')
     def test_model_failure_keeps_evidence_and_marks_partial(self, run_query, llm_synthesis, dispatch):
         run_query.return_value = {
             'total': 1,

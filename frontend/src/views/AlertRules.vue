@@ -8,8 +8,8 @@
       </div>
       <div class="header-actions">
         <el-button :icon="Refresh" :loading="loading" @click="loadAll">刷新</el-button>
-        <el-button v-if="activeTab === 'rules'" type="primary" :icon="Plus" @click="openInstantiate">从模板创建</el-button>
-        <el-button v-if="activeTab === 'rules'" type="primary" plain @click="openCustomRule">自定义规则</el-button>
+        <el-button v-if="activeTab === 'rules'" type="primary" :icon="Plus" :disabled="!currentContext?.metric_datasource" @click="openInstantiate">从模板创建</el-button>
+        <el-button v-if="activeTab === 'rules'" type="primary" plain :disabled="!currentContext?.metric_datasource" @click="openCustomRule">自定义规则</el-button>
         <el-button v-if="activeTab === 'policies'" type="primary" :icon="Plus" @click="openPolicy">新增通知策略</el-button>
       </div>
     </header>
@@ -30,7 +30,7 @@
         </div>
         <div class="toolbar-field source-field">
           <span>{{ viewMode === 'source' ? '当前 K8S 源' : '指标数据源' }}</span>
-          <el-select v-model="selectedSourceId" clearable filterable placeholder="全部数据源" @change="loadRules">
+          <el-select v-model="selectedSourceId" disabled placeholder="当前上下文未绑定指标数据源">
             <el-option v-for="item in metricSources" :key="item.id" :label="sourceLabel(item)" :value="item.id" />
           </el-select>
         </div>
@@ -63,8 +63,8 @@
       </section>
 
       <section class="panel table-panel">
-        <el-table :data="filteredRules" stripe v-loading="loading" empty-text="当前数据源暂无规则实例">
-          <el-table-column label="规则" min-width="240">
+        <el-table class="rule-instance-table" :data="filteredRules" stripe v-loading="loading" :empty-text="ruleEmptyText">
+          <el-table-column label="规则" min-width="180">
             <template #default="{ row }">
               <div class="primary-cell">
                 <strong>{{ row.name }}</strong>
@@ -72,7 +72,7 @@
               </div>
             </template>
           </el-table-column>
-          <el-table-column label="数据源 / 集群" min-width="200">
+          <el-table-column label="数据源 / 集群" min-width="160">
             <template #default="{ row }">
               <div v-if="row.metric_datasource_detail" class="source-cell">
                 <strong>{{ row.metric_datasource_detail.cluster_name || row.metric_datasource_detail.name }}</strong>
@@ -81,7 +81,7 @@
               <el-tag v-else type="warning" effect="plain">待绑定</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="模板" min-width="180">
+          <el-table-column label="模板" min-width="160">
             <template #default="{ row }">
               <div class="primary-cell">
                 <strong>{{ row.template_detail?.name || row.source || '自定义' }}</strong>
@@ -97,10 +97,10 @@
               <el-switch :model-value="row.is_enabled" :disabled="row.needs_binding" @change="toggleRule(row, $event)" />
             </template>
           </el-table-column>
-          <el-table-column label="最近评估" width="170">
+          <el-table-column label="最近评估" width="150">
             <template #default="{ row }">{{ formatTime(row.last_evaluated_at) }}</template>
           </el-table-column>
-          <el-table-column label="操作" width="210" fixed="right">
+          <el-table-column label="操作" width="160" fixed="right">
             <template #default="{ row }">
               <el-button link type="primary" @click="runRule(row)">试运行</el-button>
               <el-button link @click="openEditRule(row)">编辑</el-button>
@@ -371,9 +371,11 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import { Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
+import { useBusinessContextStore } from '@/stores/businessContext'
 import {
   createAlertNotificationChannel,
   createAlertNotificationPolicy,
@@ -403,6 +405,8 @@ import {
   updateAlertRecipientGroup,
 } from '@/api/modules/ops'
 
+const businessContextStore = useBusinessContextStore()
+const { currentContext, currentContextId } = storeToRefs(businessContextStore)
 const activeTab = ref('rules')
 const loading = ref(false)
 const saving = ref(false)
@@ -447,6 +451,7 @@ const recipientForm = reactive(emptyRecipientForm())
 const recipientGroupForm = reactive(emptyRecipientGroupForm())
 const addRecipientToOpenGroup = ref(false)
 const previewResult = ref(null)
+const contextReady = ref(false)
 
 const k8sTemplates = computed(() => templates.value.filter((item) => item.category === 'k8s' && item.source_type === 'prometheus'))
 const templateGroupOptions = computed(() => {
@@ -475,7 +480,15 @@ const filteredRules = computed(() => rules.value.filter((item) => {
 }))
 const enabledRuleCount = computed(() => filteredRules.value.filter((item) => item.is_enabled).length)
 const bindingRuleCount = computed(() => filteredRules.value.filter((item) => item.needs_binding).length)
+const ruleEmptyText = computed(() => {
+  if (!currentContext.value) return '请先在顶部选择业务上下文'
+  if (!currentContext.value.metric_datasource) return '当前业务上下文未绑定指标数据源'
+  return '当前数据源暂无规则实例'
+})
 const filteredPolicies = computed(() => policies.value.filter((item) => {
+  const boundDatasourceId = String(currentContext.value?.metric_datasource || '')
+  if (!currentContextId.value || !boundDatasourceId) return false
+  if (item.metric_datasource && String(item.metric_datasource) !== boundDatasourceId) return false
   if (policySourceFilter.value === 'global' && item.metric_datasource) return false
   if (policySourceFilter.value && policySourceFilter.value !== 'global' && String(item.metric_datasource) !== policySourceFilter.value) return false
   return !policySearch.value.trim() || item.name.toLowerCase().includes(policySearch.value.trim().toLowerCase())
@@ -537,13 +550,14 @@ async function loadAll() {
       getAlertRecipientGroups({ page_size: 200 }),
       getUsers({ page_size: 500 }),
     ])
-    metricSources.value = listOf(sourceResult)
+    const boundDatasourceId = String(currentContext.value?.metric_datasource || '')
+    metricSources.value = listOf(sourceResult).filter((item) => boundDatasourceId && String(item.id) === boundDatasourceId)
     templates.value = listOf(templateResult)
     channels.value = listOf(channelResult)
     recipients.value = listOf(recipientResult)
     recipientGroups.value = listOf(groupResult)
     users.value = listOf(userResult)
-    if (viewMode.value === 'source' && !selectedSourceId.value) selectedSourceId.value = metricSources.value[0]?.id || ''
+    selectedSourceId.value = metricSources.value[0]?.id || ''
     await Promise.all([loadRules(), loadPolicies()])
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '告警配置加载失败')
@@ -552,9 +566,29 @@ async function loadAll() {
   }
 }
 
-async function loadRules() { rules.value = listOf(await getAlertRules({ is_template: false, metric_datasource_id: selectedSourceId.value || undefined, page_size: 200 })) }
-async function loadPolicies() { policies.value = listOf(await getAlertNotificationPolicies({ page_size: 200 })) }
-async function handleViewMode() { if (viewMode.value === 'source' && !selectedSourceId.value) selectedSourceId.value = metricSources.value[0]?.id || ''; if (viewMode.value === 'all') selectedSourceId.value = ''; await loadRules() }
+async function loadRules() {
+  if (!currentContextId.value || !selectedSourceId.value) {
+    rules.value = []
+    return
+  }
+  rules.value = listOf(await getAlertRules({
+    is_template: false,
+    knowledge_environment_id: currentContextId.value,
+    metric_datasource_id: selectedSourceId.value,
+    page_size: 200,
+  }))
+}
+async function loadPolicies() {
+  if (!currentContextId.value) {
+    policies.value = []
+    return
+  }
+  policies.value = listOf(await getAlertNotificationPolicies({
+    knowledge_environment_id: currentContextId.value,
+    page_size: 200,
+  }))
+}
+async function handleViewMode() { await loadRules() }
 
 function handleTemplateGroupChange() {
   const availableCodes = groupedK8sTemplates.value.flatMap((group) => group.templates.map((item) => item.code))
@@ -759,7 +793,14 @@ async function removeRecipientGroup(row) {
 }
 
 watch(activeTab, async (value) => { if (value === 'policies') await loadPolicies() })
-onMounted(loadAll)
+watch(currentContextId, async () => {
+  if (contextReady.value) await loadAll()
+})
+onMounted(async () => {
+  await businessContextStore.loadContexts()
+  contextReady.value = true
+  await loadAll()
+})
 </script>
 
 <style scoped>
@@ -781,6 +822,6 @@ onMounted(loadAll)
 .form-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0 12px; }.form-grid.triple { grid-template-columns: repeat(3,minmax(0,1fr)); }.suffix { margin-left: 7px; color: #71869c; font-size: 12px; }.form-help { margin-left: 9px; color: #73879d; font-size: 12px; }
 .matcher-list { display: grid; gap: 7px; width: 100%; }.matcher-row { display: grid; grid-template-columns: 1.3fr 90px 1.3fr 54px; gap: 7px; }.preview-result { display: grid; gap: 8px; padding: 12px; border: 1px solid #dce5ef; background: #f8fafc; }.preview-result > div { display: flex; justify-content: space-between; gap: 10px; }.result-json { max-height: 560px; overflow: auto; padding: 14px; color: #dbeafe; background: #172334; white-space: pre-wrap; }
 :deep(.el-select), :deep(.el-input) { width: 100%; }:deep(.el-table) { --el-table-header-bg-color: #f5f8fb; --el-table-row-hover-bg-color: #f5f9ff; }
-@media (max-width: 1000px) { .summary-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }.form-grid,.form-grid.triple { grid-template-columns: 1fr; }.section-head { flex-direction: column; }.resource-actions { width: 100%; min-width: 0; } }
+@media (max-width: 1000px) { .summary-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }.form-grid,.form-grid.triple { grid-template-columns: 1fr; }.section-head { flex-direction: column; }.resource-actions { width: 100%; min-width: 0; }.rule-instance-table :deep(.el-table__header),.rule-instance-table :deep(.el-table__body),.rule-instance-table :deep(.el-scrollbar__view) { width: 100% !important; }.rule-instance-table :deep(col:nth-child(2)),.rule-instance-table :deep(col:nth-child(3)),.rule-instance-table :deep(col:nth-child(6)),.rule-instance-table :deep(th:nth-child(2)),.rule-instance-table :deep(th:nth-child(3)),.rule-instance-table :deep(th:nth-child(6)),.rule-instance-table :deep(td:nth-child(2)),.rule-instance-table :deep(td:nth-child(3)),.rule-instance-table :deep(td:nth-child(6)) { display: none; } }
 @media (max-width: 700px) { .alert-rule-page { padding: 12px; }.page-header { flex-direction: column; }.header-actions { justify-content: flex-start; }.summary-grid { grid-template-columns: 1fr; }.toolbar-field,.source-field,.search-field { width: 100%; }.matcher-row { grid-template-columns: 1fr; }.work-tabs,.resource-tabs { overflow-x: auto; }.work-tabs button,.resource-tabs button { min-width: 110px; }.resource-actions,.member-selector { align-items: stretch; flex-direction: column; }.resource-actions .el-input { min-width: 0; width: 100%; } }
 </style>

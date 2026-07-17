@@ -9,7 +9,7 @@
         >
           <el-icon style="margin-right:4px;vertical-align:-2px;"><Connection /></el-icon>资产分组
         </span>
-        <el-button v-if="canManage" link type="primary" size="small" class="tree-head-btn" @click="openNodeDialog()">
+        <el-button v-if="canManage && !currentContext?.task_resource_environment" link type="primary" size="small" class="tree-head-btn" @click="openNodeDialog()">
           <el-icon><Plus /></el-icon>
         </el-button>
       </div>
@@ -69,9 +69,7 @@
             <el-option label="主机" value="host" />
             <el-option label="K8S 集群" value="k8s" />
           </el-select>
-          <el-select v-model="filters.environment" placeholder="资产分组" clearable filterable style="width:128px" size="small" @change="onEnvironmentFilterChange">
-            <el-option v-for="env in environments" :key="env.id" :label="env.name" :value="env.id" />
-          </el-select>
+          <div class="bound-asset-environment">{{ currentContext?.task_resource_environment_name || '当前上下文未绑定资产分组' }}</div>
           <el-select v-model="filters.asset_environment" placeholder="环境" clearable style="width:108px" size="small" @change="refreshResourceView">
             <el-option v-for="item in assetEnvironmentOptions" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
@@ -95,8 +93,8 @@
         <div class="toolbar-right resource-toolbar-right">
           <el-button size="small" @click="resetFilters">重置</el-button>
           <el-button size="small" :loading="loading.resources" @click="reloadAll">刷新</el-button>
-          <el-button v-if="canManage" size="small" @click="openResourceDialog(null, 'host')">登记服务器</el-button>
-          <el-button v-if="canManage" type="primary" size="small" @click="openResourceDialog(null, 'k8s')">登记 K8S 集群</el-button>
+          <el-button v-if="canManage" size="small" :disabled="!currentContext?.task_resource_environment" @click="openResourceDialog(null, 'host')">登记服务器</el-button>
+          <el-button v-if="canManage" type="primary" size="small" :disabled="!currentContext?.task_resource_environment" @click="openResourceDialog(null, 'k8s')">登记 K8S 集群</el-button>
         </div>
       </div>
 
@@ -122,40 +120,40 @@
           :data="resources"
           v-loading="loading.resources"
           row-key="id"
-          class="resource-table"
+          class="resource-table responsive-resource-table"
           height="100%"
           :empty-text="emptyText"
         >
-          <el-table-column prop="name" label="名称" min-width="170" show-overflow-tooltip />
-          <el-table-column label="类型" width="90">
+          <el-table-column prop="name" label="名称" min-width="140" show-overflow-tooltip />
+          <el-table-column label="类型" width="80">
             <template #default="{ row }">
               <el-tag size="small" effect="plain" :type="row.resource_type === 'host' ? 'success' : 'info'">
                 {{ row.resource_type_display || resourceTypeLabel(row.resource_type) }}
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="environment_name" label="资产分组" width="128" show-overflow-tooltip />
-          <el-table-column label="环境" width="92">
+          <el-table-column prop="environment_name" label="资产分组" width="100" show-overflow-tooltip />
+          <el-table-column label="环境" width="80">
             <template #default="{ row }">{{ assetEnvironmentLabel(row.asset_environment) }}</template>
           </el-table-column>
-          <el-table-column label="执行入口" min-width="190" show-overflow-tooltip>
+          <el-table-column label="执行入口" min-width="140" show-overflow-tooltip>
             <template #default="{ row }">{{ resourceEndpoint(row) }}</template>
           </el-table-column>
-          <el-table-column prop="owner" label="运维负责人" width="118" show-overflow-tooltip>
+          <el-table-column prop="owner" label="运维负责人" width="90" show-overflow-tooltip>
             <template #default="{ row }">{{ row.owner || '-' }}</template>
           </el-table-column>
-          <el-table-column prop="project_owner" label="业务负责人" width="118" show-overflow-tooltip>
+          <el-table-column prop="project_owner" label="业务负责人" width="90" show-overflow-tooltip>
             <template #default="{ row }">{{ row.project_owner || '-' }}</template>
           </el-table-column>
-          <el-table-column label="状态" width="90">
+          <el-table-column label="状态" width="80">
             <template #default="{ row }">
               <el-tag size="small" effect="plain" :type="statusType(row.status)">
                 {{ row.status_display || statusLabel(row.status) }}
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="description" label="说明" min-width="160" show-overflow-tooltip />
-          <el-table-column v-if="canManage" label="操作" width="120" fixed="right">
+          <el-table-column prop="description" label="说明" min-width="110" show-overflow-tooltip />
+          <el-table-column v-if="canManage" label="操作" width="100" fixed="right">
             <template #default="{ row }">
               <el-button link size="small" @click="openResourceDialog(row)">编辑</el-button>
               <el-button link size="small" type="danger" @click="removeResource(row)">删除</el-button>
@@ -224,9 +222,7 @@
         </div>
         <div class="form-row">
           <el-form-item label="资产分组" required class="form-col">
-            <el-select v-model="resourceForm.environment" filterable style="width:100%" @change="resourceForm.system = ''">
-              <el-option v-for="env in environments" :key="env.id" :label="env.name" :value="env.id" />
-            </el-select>
+            <div class="bound-form-value">{{ currentContext?.task_resource_environment_name || '未绑定' }}</div>
           </el-form-item>
           <el-form-item label="环境" required class="form-col">
             <el-select v-model="resourceForm.asset_environment" style="width:100%">
@@ -291,7 +287,8 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Connection, Delete, Edit, Monitor, Plus, Search } from '@element-plus/icons-vue'
 import { getK8sClusters } from '@/api/modules/container'
@@ -307,9 +304,12 @@ import {
   updateTaskResourceGroup,
 } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
+import { useBusinessContextStore } from '@/stores/businessContext'
 
 const emit = defineEmits(['tree-updated', 'stats-updated'])
 const auth = useAuthStore()
+const businessContextStore = useBusinessContextStore()
+const { currentContext, currentContextId } = storeToRefs(businessContextStore)
 const canManage = computed(() => auth.hasPermission('ops.task.resource.manage'))
 
 const treeRef = ref(null)
@@ -415,7 +415,7 @@ function statusType(status) {
 
 function clearTreeFilter() {
   treeRef.value?.setCurrentKey(null)
-  filters.environment = ''
+  filters.environment = currentContext.value?.task_resource_environment || ''
   refreshResourceView()
 }
 
@@ -430,7 +430,7 @@ function onEnvironmentFilterChange() {
 }
 
 function resetFilters() {
-  Object.assign(filters, { search: '', resource_type: '', status: '', environment: '', asset_environment: '' })
+  Object.assign(filters, { search: '', resource_type: '', status: '', environment: currentContext.value?.task_resource_environment || '', asset_environment: '' })
   treeRef.value?.setCurrentKey(null)
   refreshResourceView()
 }
@@ -495,7 +495,7 @@ function openResourceDialog(row = null, preferredType = '') {
   } else {
     Object.assign(resourceForm, {
       resource_type: preferredType || 'host',
-      environment: filters.environment || '',
+      environment: currentContext.value?.task_resource_environment || '',
     })
   }
   resourceDialogVisible.value = true
@@ -505,7 +505,9 @@ async function fetchTree() {
   loading.tree = true
   try {
     const res = await getTaskResourceTree()
-    treeData.value = normalizeTree(normalizeList(res))
+    const boundId = Number(currentContext.value?.task_resource_environment)
+    treeData.value = normalizeTree(normalizeList(res)).filter(item => item.id === boundId)
+    filters.environment = boundId || ''
     emit('tree-updated', treeData.value)
   } finally {
     loading.tree = false
@@ -515,6 +517,10 @@ async function fetchTree() {
 async function fetchResources() {
   loading.resources = true
   try {
+    if (!currentContext.value?.task_resource_environment) {
+      resources.value = []
+      return
+    }
     const res = await getTaskResources({ ...filters })
     resources.value = normalizeList(res)
   } finally {
@@ -532,6 +538,11 @@ function statFilterParams() {
 }
 
 async function fetchStats() {
+  if (!currentContext.value?.task_resource_environment) {
+    stats.value = {}
+    emit('stats-updated', stats.value)
+    return
+  }
   const res = await getTaskResourceStats(statFilterParams())
   stats.value = res || {}
   emit('stats-updated', stats.value)
@@ -543,13 +554,15 @@ async function refreshResourceView() {
 
 async function fetchK8sClusters() {
   try {
-    k8sClusters.value = normalizeList(await getK8sClusters())
+    const boundId = Number(currentContext.value?.k8s_cluster)
+    k8sClusters.value = normalizeList(await getK8sClusters()).filter(item => item.id === boundId)
   } catch {
     k8sClusters.value = []
   }
 }
 
 async function reloadAll() {
+  filters.environment = currentContext.value?.task_resource_environment || ''
   await Promise.all([fetchTree(), fetchResources(), fetchStats(), fetchK8sClusters()])
 }
 
@@ -634,10 +647,40 @@ async function removeResource(row) {
   await reloadAll()
 }
 
-onMounted(reloadAll)
+watch(currentContextId, async () => {
+  await reloadAll()
+})
+
+onMounted(async () => {
+  await businessContextStore.loadContexts()
+  await reloadAll()
+})
 </script>
 
 <style scoped>
+.bound-asset-environment,
+.bound-form-value {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #dbe4ee;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bound-asset-environment {
+  width: 180px;
+  padding: 6px 9px;
+}
+
+.bound-form-value {
+  width: 100%;
+  min-height: 32px;
+  padding: 7px 10px;
+}
+
 .custom-tree-node {
   transition: background 0.2s;
   border-radius: 6px;
@@ -979,6 +1022,40 @@ onMounted(reloadAll)
 }
 
 @media (max-width: 900px) {
+  .responsive-resource-table :deep(.el-table__header),
+  .responsive-resource-table :deep(.el-table__body),
+  .responsive-resource-table :deep(.el-scrollbar__view) {
+    width: 100% !important;
+  }
+
+  .cmdb-stats-row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    overflow: visible;
+  }
+
+  .cmdb-stat-card {
+    min-width: 0;
+  }
+
+  .responsive-resource-table :deep(col:nth-child(3)),
+  .responsive-resource-table :deep(col:nth-child(4)),
+  .responsive-resource-table :deep(col:nth-child(6)),
+  .responsive-resource-table :deep(col:nth-child(7)),
+  .responsive-resource-table :deep(col:nth-child(9)),
+  .responsive-resource-table :deep(th:nth-child(3)),
+  .responsive-resource-table :deep(th:nth-child(4)),
+  .responsive-resource-table :deep(th:nth-child(6)),
+  .responsive-resource-table :deep(th:nth-child(7)),
+  .responsive-resource-table :deep(th:nth-child(9)),
+  .responsive-resource-table :deep(td:nth-child(3)),
+  .responsive-resource-table :deep(td:nth-child(4)),
+  .responsive-resource-table :deep(td:nth-child(6)),
+  .responsive-resource-table :deep(td:nth-child(7)),
+  .responsive-resource-table :deep(td:nth-child(9)) {
+    display: none;
+  }
+
   .cmdb-items-layout {
     flex-direction: column;
   }
@@ -999,6 +1076,12 @@ onMounted(reloadAll)
   .form-row {
     flex-direction: column;
     gap: 0;
+  }
+}
+
+@media (max-width: 600px) {
+  .cmdb-stats-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 </style>

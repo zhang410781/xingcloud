@@ -39,16 +39,7 @@
       <div class="metric-query-provider-strip">
         <div class="metric-filter-datasource-row">
           <span class="metric-query-provider-label">数据源</span>
-          <el-select
-            v-model="queryForm.metric_datasource_id"
-            class="search-control metric-datasource-control"
-            size="small"
-            clearable
-            filterable
-            placeholder="请选择指标数据源"
-          >
-            <el-option v-for="item in dataSources" :key="item.id" :label="sourceOptionLabel(item)" :value="item.id" />
-          </el-select>
+          <div class="bound-metric-datasource">{{ boundMetricSource ? sourceOptionLabel(boundMetricSource) : '当前业务上下文未绑定指标数据源' }}</div>
         </div>
       </div>
 
@@ -372,12 +363,14 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { CaretRight, CollectionTag, CopyDocument, DataAnalysis, DataBoard, Plus, RefreshRight, Search } from '@element-plus/icons-vue'
 import echarts from '@/lib/echarts'
 import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
 import { useAuthStore } from '@/stores/auth'
+import { useBusinessContextStore } from '@/stores/businessContext'
 import {
   createMetricDataSource,
   deleteMetricDataSource,
@@ -395,6 +388,8 @@ const props = defineProps({
 
 const route = useRoute()
 const authStore = useAuthStore()
+const businessContextStore = useBusinessContextStore()
+const { currentContext, currentContextId } = storeToRefs(businessContextStore)
 const canQuery = computed(() => authStore.hasPermission('ops.metric.query'))
 const canManageDatasource = computed(() => authStore.hasPermission('ops.metric.datasource.manage'))
 const activeTab = ref(props.initialTab === 'datasources' || route.query.tab === 'datasources' ? 'datasources' : 'query')
@@ -402,6 +397,9 @@ const loadingSources = ref(false)
 const queryLoading = ref(false)
 const savingSource = ref(false)
 const dataSources = ref([])
+const boundMetricSource = computed(() => dataSources.value.find(
+  item => String(item.id) === String(currentContext.value?.metric_datasource || ''),
+) || null)
 const lastResult = ref({})
 const queryError = ref('')
 const lastQueryDuration = ref(0)
@@ -1630,10 +1628,7 @@ async function loadDataSources() {
   try {
     const response = await getMetricDataSources()
     dataSources.value = Array.isArray(response) ? response : (response.results || [])
-    if (!queryForm.metric_datasource_id && dataSources.value.length) {
-      const defaultSource = dataSources.value.find(item => item.is_default && item.is_enabled) || dataSources.value.find(item => item.is_enabled)
-      queryForm.metric_datasource_id = defaultSource?.id || ''
-    }
+    queryForm.metric_datasource_id = currentContext.value?.metric_datasource || ''
   } finally {
     loadingSources.value = false
   }
@@ -1771,7 +1766,14 @@ watch(
   { immediate: true }
 )
 
+watch(currentContextId, () => {
+  queryForm.metric_datasource_id = currentContext.value?.metric_datasource || ''
+  lastResult.value = {}
+  queryError.value = ''
+})
+
 onMounted(async () => {
+  await businessContextStore.loadContexts()
   await loadDataSources()
   await nextTick()
   refreshPromqlSuggestions()
@@ -2017,6 +2019,19 @@ onBeforeUnmount(() => {
 .metric-datasource-control {
   flex: 1 1 auto;
   max-width: none;
+}
+
+.bound-metric-datasource {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  padding: 6px 9px;
+  border: 1px solid #dbe4ee;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .search-panel {

@@ -10,31 +10,9 @@
       </div>
       <div class="K8s-hero-cluster-switcher">
         <span class="K8s-hero-switcher-label">当前集群</span>
-        <el-select
-          v-model="selectedClusterId"
-          :disabled="!clusters.length"
-          :placeholder="clusters.length ? '选择 K8S 集群' : '暂无已接入集群'"
-          @change="onClusterChange"
-          class="industrial-select K8s-hero-cluster-select"
-          popper-class="K8s-context-popper K8s-context-popper--cluster K8s-hero-cluster-popper"
-        >
-          <el-option v-for="c in clusters" :key="c.id" :label="c.name" :value="c.id">
-            <div class="context-option-row">
-              <div class="context-option-main">
-                <div class="context-option-head">
-                  <div class="context-option-main context-option-main--cluster">
-                    <span class="state-pulse" :class="c.status === 'connected' ? 'running' : 'exited'"></span>
-                    <span class="context-option-title">{{ c.name }}</span>
-                  </div>
-                  <span class="context-status-pill" :class="c.status === 'connected' ? 'context-status-pill--success' : 'context-status-pill--info'">
-                    {{ c.status === 'connected' ? '在线' : '离线' }}
-                  </span>
-                </div>
-                <span class="context-option-subtitle">{{ clusterOptionMeta(c) }}</span>
-              </div>
-            </div>
-          </el-option>
-        </el-select>
+        <div class="K8s-bound-cluster">
+          {{ selectedCluster?.name || '当前业务上下文未绑定 K8S 集群' }}
+        </div>
         <span v-if="selectedCluster" class="K8s-hero-cluster-meta">
           <span class="state-pulse" :class="selectedClusterConnected ? 'running' : 'exited'"></span>
           {{ selectedClusterConnected ? '在线' : '离线' }} · {{ clusterOptionMeta(selectedCluster) }}
@@ -93,7 +71,7 @@
           </div>
         </div>
         <el-table :data="filterRows(clusters, ['name', 'api_server', 'status', 'description'])" stripe v-loading="loading" style="width:100%" class="K8s-cluster-table">
-          <el-table-column prop="name" label="集群名称" min-width="180">
+          <el-table-column prop="name" label="集群名称" min-width="160">
             <template #default="{ row }">
               <div style="display:flex;align-items:center;gap:8px;">
                 <span class="state-pulse" :class="row.status==='connected'?'running':'exited'"></span>
@@ -101,19 +79,19 @@
               </div>
             </template>
           </el-table-column>
-          <el-table-column prop="api_server" label="API Server" min-width="260" show-overflow-tooltip />
-          <el-table-column prop="user_type" label="访问身份" width="120">
+          <el-table-column prop="api_server" label="API Server" min-width="220" show-overflow-tooltip />
+          <el-table-column prop="user_type" label="访问身份" width="100">
             <template #default="{ row }">
               <el-tag :type="row.user_type === 'admin' ? 'warning' : 'info'" size="small">{{ clusterUserTypeText(row.user_type) }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="status" label="状态" width="110">
+          <el-table-column prop="status" label="状态" width="90">
             <template #default="{ row }">
               <el-tag :type="row.status === 'connected' ? 'success' : 'danger'" size="small">{{ row.status === 'connected' ? '运行中' : '未连接' }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="description" label="描述" min-width="220" show-overflow-tooltip />
-          <el-table-column v-if="canManageK8s" label="操作" width="200" fixed="right">
+          <el-table-column prop="description" label="描述" min-width="180" show-overflow-tooltip />
+          <el-table-column v-if="canManageK8s" label="操作" width="180" fixed="right">
             <template #default="{ row }">
               <el-button link type="primary" size="small" @click="testCluster(row)">测试连接</el-button>
               <el-button link type="info" size="small" @click="openClusterDialog(row)">编辑</el-button>
@@ -1011,9 +989,11 @@
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useRouteTabState } from '@/composables/useRouteTabState'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
+import { useBusinessContextStore } from '@/stores/businessContext'
 import { DocumentCopy, Document, Monitor, Bell, Plus, Connection, FolderOpened, Menu, RefreshRight, Box, WarningFilled, Setting } from '@element-plus/icons-vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
@@ -1034,6 +1014,8 @@ import {
 } from '@/api/modules/container'
 
 const authStore = useAuthStore()
+const businessContextStore = useBusinessContextStore()
+const { currentContext, currentContextId } = storeToRefs(businessContextStore)
 const canManageK8s = computed(() => authStore.hasPermission('ops.K8s.manage'))
 const canExecK8s = computed(() => authStore.hasPermission('ops.K8s.exec'))
 const clusterUserTypeOptions = [
@@ -1612,15 +1594,9 @@ async function fetchClusters() {
     const res = await getK8sClusters()
     clusters.value = res.results || res
 
-    const connectedCluster = clusters.value.find(item => item.status === 'connected')
-    const current = clusters.value.find(item => item.id === selectedClusterId.value)
-    if (current) {
-      selectedClusterId.value = current.id
-    } else if (activeTab.value !== 'clusters' && connectedCluster) {
-      selectedClusterId.value = connectedCluster.id
-    } else {
-      selectedClusterId.value = clusters.value[0]?.id || null
-    }
+    const boundClusterId = Number(currentContext.value?.k8s_cluster)
+    const current = clusters.value.find(item => item.id === boundClusterId)
+    selectedClusterId.value = current?.id || null
     if (!selectedClusterId.value) {
       summary.value = createEmptySummary()
     }
@@ -2413,6 +2389,10 @@ watch(activeTab, (tab, prev) => {
   }
 })
 
+watch(currentContextId, () => {
+  void fetchClusters()
+})
+
 watch(workloadSub, (tab, prev) => {
   if (tab !== prev && activeTab.value === 'workloads' && selectedClusterId.value) fetchCurrentTab()
 })
@@ -2434,7 +2414,10 @@ watch(execDialogVisible, (visible) => {
   }
 })
 
-onMounted(() => { fetchClusters() })
+onMounted(async () => {
+  await businessContextStore.loadContexts()
+  await fetchClusters()
+})
 onBeforeUnmount(() => { disposeExecTerminal() })
 </script>
 
@@ -2477,6 +2460,18 @@ onBeforeUnmount(() => { disposeExecTerminal() })
   column-gap: 10px;
   row-gap: 4px;
   min-width: 0;
+}
+
+.K8s-bound-cluster {
+  min-width: 240px;
+  overflow: hidden;
+  padding: 8px 10px;
+  border: 1px solid #dbe4ee;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .K8s-hero-switcher-label {
@@ -3138,6 +3133,21 @@ onBeforeUnmount(() => { disposeExecTerminal() })
 }
 
 @media (max-width: 980px) {
+  .K8s-cluster-table :deep(.el-table__header),
+  .K8s-cluster-table :deep(.el-table__body),
+  .K8s-cluster-table :deep(.el-scrollbar__view) {
+    width: 100% !important;
+  }
+
+  .K8s-cluster-table :deep(col:nth-child(2)),
+  .K8s-cluster-table :deep(col:nth-child(5)),
+  .K8s-cluster-table :deep(th:nth-child(2)),
+  .K8s-cluster-table :deep(th:nth-child(5)),
+  .K8s-cluster-table :deep(td:nth-child(2)),
+  .K8s-cluster-table :deep(td:nth-child(5)) {
+    display: none;
+  }
+
   .K8s-hero {
     flex-direction: column;
     align-items: flex-start;

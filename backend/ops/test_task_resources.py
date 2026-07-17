@@ -4,8 +4,8 @@ from rest_framework.test import APITestCase
 from rbac.models import PermissionDefinition
 from rbac.services import ensure_builtin_rbac
 
-from .host_tasks import resolve_host_source_refs
-from .models import TaskResource, TaskResourceGroup
+from ops.host_tasks import resolve_host_source_refs
+from ops.models import TaskResource, TaskResourceGroup
 
 
 class TaskResourceGroupApiTests(APITestCase):
@@ -47,7 +47,7 @@ class TaskResourceGroupApiTests(APITestCase):
         response = self.client.get('/api/middleware/overview/')
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn('redis', response.data)
+        self.assertEqual(response.data['summary']['by_type']['redis'], 0)
 
     def test_host_resource_resolution_supports_integer_environment_reference(self):
         environment = TaskResourceGroup.objects.create(

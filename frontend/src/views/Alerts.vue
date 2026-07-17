@@ -89,7 +89,7 @@
           </el-select>
         </div>
 
-        <el-table v-if="eventMode === 'list'" :data="alerts" stripe size="small" v-loading="loading" class="data-table" @selection-change="handleSelectionChange">
+        <el-table v-if="eventMode === 'list'" :data="alerts" stripe size="small" v-loading="loading" class="data-table list-data-table" @selection-change="handleSelectionChange">
           <el-table-column type="selection" width="42" />
           <el-table-column prop="id" label="告警ID" width="70">
             <template #default="{ row }">
@@ -142,7 +142,7 @@
           </el-table-column>
         </el-table>
 
-        <el-table v-else :data="groups" stripe size="small" v-loading="loading" class="data-table">
+        <el-table v-else :data="groups" stripe size="small" v-loading="loading" class="data-table group-data-table">
           <el-table-column label="&#x5206;&#x7EC4;" min-width="280">
             <template #default="{ row }">
               <div v-if="groupDimensionEntries(row).length" class="group-dimensions">
@@ -491,9 +491,14 @@
             <template v-else-if="alertAnalysisLatest">
               <el-descriptions class="alert-detail-summary analysis-summary" :column="1" size="small" border>
                 <el-descriptions-item label="置信度">{{ analysisConfidenceText(alertAnalysisLatest.confidence) }}</el-descriptions-item>
+                <el-descriptions-item label="证据覆盖">{{ analysisSourceCoverageText }}</el-descriptions-item>
                 <el-descriptions-item label="根因">{{ alertAnalysisLatest.root_cause || alertAnalysisLatest.summary || '尚未形成明确结论' }}</el-descriptions-item>
                 <el-descriptions-item label="建议">{{ analysisSuggestionText(alertAnalysisLatest) }}</el-descriptions-item>
               </el-descriptions>
+              <div v-if="analysisCandidates.length" class="analysis-evidence">
+                <strong>候选根因</strong>
+                <ol><li v-for="item in analysisCandidates" :key="item.code || item.title">{{ item.title || item.code }}（{{ analysisConfidenceText(item.score) }}）</li></ol>
+              </div>
               <div v-if="analysisEvidenceItems.length" class="analysis-evidence">
                 <strong>关键证据</strong>
                 <ol>
@@ -832,6 +837,7 @@
 
 <script setup>
 import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 import { Bell, Delete, Operation, Plus, Refresh, Search, Setting } from '@element-plus/icons-vue'
 import { ElButton, ElInput, ElMessage, ElMessageBox, ElOption, ElPopconfirm, ElSelect, ElTable, ElTableColumn, ElTag } from 'element-plus'
@@ -893,12 +899,16 @@ import {
   updateAlertRule,
 } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
+import { useBusinessContextStore } from '@/stores/businessContext'
 import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
 import AlertRuleWizard from '@/components/observability/AlertRuleWizard.vue'
 
 const props = defineProps({
   workspace: { type: String, default: 'events' },
 })
+
+const businessContextStore = useBusinessContextStore()
+const { currentContext, currentContextId } = storeToRefs(businessContextStore)
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value || []))
@@ -1234,6 +1244,13 @@ const alertAnalysisLatest = computed(() => {
   return null
 })
 const analysisEvidenceItems = computed(() => normalizeEvidence(alertAnalysisLatest.value?.evidence))
+const analysisCandidates = computed(() => alertAnalysisLatest.value?.candidates || [])
+const analysisSourceCoverageText = computed(() => {
+  const coverage = alertAnalysisLatest.value?.evidence?.source_coverage || {}
+  const labels = { metrics: '指标', k8s: 'K8S', logs: '日志', events: '事件', changes: '变更', topology: '拓扑' }
+  const ready = Object.entries(coverage).filter(([, value]) => value).map(([key]) => labels[key] || key)
+  return ready.length ? ready.join('、') : '暂无有效证据源'
+})
 
 const environmentOptions = computed(() => {
   const values = new Set()
@@ -1345,9 +1362,13 @@ function normalizeEvidence(evidence) {
     const metrics = evidence.metrics || evidence.metric
     const logs = evidence.logs || evidence.log
     const graph = evidence.knowledge_graph || evidence.graph
+    const k8s = evidence.k8s
     if (metrics?.summary || metrics?.message) summaries.push(metrics.summary || metrics.message)
     if (logs && typeof logs === 'object') summaries.push(`关联日志状态 ${logs.status || '未知'}，命中 ${logs.sample_count || logs.count || 0} 条样本`)
     if (graph?.summary || graph?.message) summaries.push(graph.summary || graph.message)
+    if (k8s?.summary) summaries.push(`K8S：${k8s.summary.ready_nodes || 0}/${k8s.summary.node_count || 0} 个节点 Ready，${k8s.summary.pod_count || 0} 个 Pod`)
+    for (const item of evidence.k8s_findings || []) summaries.push(`${item.target || 'K8S'}：${item.message || item.code}`)
+    for (const item of evidence.metric_anomalies || []) summaries.push(`${item.title || item.code}：${item.anomaly?.vote_count || 0} 个算法判定异常`)
     for (const item of evidence.diagnostics || []) {
       const text = typeof item === 'object' ? item.message || item.summary : item
       if (text) summaries.push(text)
@@ -1397,6 +1418,7 @@ function groupMembers(row) {
 
 function buildAlertParams() {
   const params = { page: page.value }
+  if (currentContextId.value) params.knowledge_environment_id = currentContextId.value
   if (filters.search) params.search = filters.search
   if (filters.level) params.level = filters.level
   if (filters.status) params.status = filters.status
@@ -1433,6 +1455,14 @@ async function fetchGroups() {
 }
 
 async function refreshEvents() {
+  if (!currentContextId.value) {
+    alerts.value = []
+    groups.value = []
+    summary.value = {}
+    total.value = 0
+    selectedAlerts.value = []
+    return
+  }
   const tasks = [fetchSummary()]
   if (eventMode.value === 'group') tasks.push(fetchGroups())
   else tasks.push(fetchAlerts())
@@ -1681,6 +1711,7 @@ async function fetchAlertRules() {
   try {
     const params = {}
     if (rulesCategoryFilter.value) params.category = rulesCategoryFilter.value
+    if (currentContext.value?.metric_datasource) params.metric_datasource_id = currentContext.value.metric_datasource
     const [ruleList, presetList] = await Promise.all([getAlertRules(params), getAlertRules({ page_size: 200 })])
     alertRules.value = listOf(ruleList)
     alertRulePresets.value = listOf(presetList).filter((item) => item.source && item.source !== 'custom')
@@ -2155,7 +2186,14 @@ watch(
   },
 )
 
+watch(currentContextId, async () => {
+  page.value = 1
+  selectedAlert.value = null
+  await refreshAll()
+})
+
 onMounted(async () => {
+  await businessContextStore.loadContexts()
   applyRouteFilters()
   users.value = listOf(await getUsers())
   await refreshAll()
@@ -2849,6 +2887,59 @@ onMounted(async () => {
   .alert-top-stats,
   .split-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 900px) {
+  .data-table :deep(.el-table__header),
+  .data-table :deep(.el-table__body),
+  .data-table :deep(.el-scrollbar__view) {
+    width: 100% !important;
+  }
+
+  .group-data-table :deep(col:nth-child(3)),
+  .group-data-table :deep(col:nth-child(4)),
+  .group-data-table :deep(col:nth-child(5)),
+  .group-data-table :deep(col:nth-child(6)),
+  .group-data-table :deep(col:nth-child(7)),
+  .group-data-table :deep(th:nth-child(3)),
+  .group-data-table :deep(th:nth-child(4)),
+  .group-data-table :deep(th:nth-child(5)),
+  .group-data-table :deep(th:nth-child(6)),
+  .group-data-table :deep(th:nth-child(7)),
+  .group-data-table :deep(td:nth-child(3)),
+  .group-data-table :deep(td:nth-child(4)),
+  .group-data-table :deep(td:nth-child(5)),
+  .group-data-table :deep(td:nth-child(6)),
+  .group-data-table :deep(td:nth-child(7)) {
+    display: none;
+  }
+
+  .list-data-table :deep(col:nth-child(1)),
+  .list-data-table :deep(col:nth-child(2)),
+  .list-data-table :deep(col:nth-child(6)),
+  .list-data-table :deep(col:nth-child(7)),
+  .list-data-table :deep(col:nth-child(8)),
+  .list-data-table :deep(col:nth-child(9)),
+  .list-data-table :deep(col:nth-child(10)),
+  .list-data-table :deep(col:nth-child(11)),
+  .list-data-table :deep(th:nth-child(1)),
+  .list-data-table :deep(th:nth-child(2)),
+  .list-data-table :deep(th:nth-child(6)),
+  .list-data-table :deep(th:nth-child(7)),
+  .list-data-table :deep(th:nth-child(8)),
+  .list-data-table :deep(th:nth-child(9)),
+  .list-data-table :deep(th:nth-child(10)),
+  .list-data-table :deep(th:nth-child(11)),
+  .list-data-table :deep(td:nth-child(1)),
+  .list-data-table :deep(td:nth-child(2)),
+  .list-data-table :deep(td:nth-child(6)),
+  .list-data-table :deep(td:nth-child(7)),
+  .list-data-table :deep(td:nth-child(8)),
+  .list-data-table :deep(td:nth-child(9)),
+  .list-data-table :deep(td:nth-child(10)),
+  .list-data-table :deep(td:nth-child(11)) {
+    display: none;
   }
 }
 

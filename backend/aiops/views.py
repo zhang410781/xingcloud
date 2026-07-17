@@ -32,6 +32,7 @@ from .models import (
     AIOpsToolInvocation,
 )
 from .action_handlers import normalize_page_context
+from .business_context import context_payload, discover_context_bindings, resolve_business_context, validate_context_bindings
 from .serializers import (
     AIOpsAgentConfigSerializer,
     AIOpsAuditSessionSerializer,
@@ -614,7 +615,12 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
     rbac_permissions = {
         'list': ['aiops.knowledge.view'],
         'retrieve': ['aiops.knowledge.view'],
+        'context_options': [],
         'catalog': ['aiops.knowledge.view'],
+        'discover_bindings': ['aiops.knowledge.view'],
+        'validate_bindings': ['aiops.knowledge.view'],
+        'inspect': ['aiops.knowledge.view'],
+        'unassigned_alerts': ['aiops.knowledge.view'],
         'create': ['aiops.knowledge.manage'],
         'update': ['aiops.knowledge.manage'],
         'partial_update': ['aiops.knowledge.manage'],
@@ -628,8 +634,51 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
         if instance.is_default:
             AIOpsKnowledgeEnvironment.objects.exclude(id=instance.id).filter(is_default=True).update(is_default=False)
 
+    @action(detail=False, methods=['get'], url_path='context-options')
+    def context_options(self, request):
+        queryset = self.get_queryset().filter(is_enabled=True).select_related(
+            'metric_datasource', 'log_datasource', 'k8s_cluster', 'task_resource_environment',
+        )
+        return Response([
+            {
+                'id': item.id,
+                'name': item.name,
+                'code': item.code,
+                'business_line': item.business_line,
+                'environment_type': item.environment_type,
+                'is_default': item.is_default,
+                'metric_datasource': item.metric_datasource_id,
+                'metric_datasource_name': getattr(item.metric_datasource, 'name', ''),
+                'log_datasource': item.log_datasource_id,
+                'log_datasource_name': getattr(item.log_datasource, 'name', ''),
+                'k8s_cluster': item.k8s_cluster_id,
+                'k8s_cluster_name': getattr(item.k8s_cluster, 'name', ''),
+                'task_resource_environment': item.task_resource_environment_id,
+                'task_resource_environment_name': getattr(item.task_resource_environment, 'name', ''),
+            }
+            for item in queryset
+        ])
+
     @action(detail=False, methods=['get'])
     def catalog(self, request):
+        binding_rows = list(
+            AIOpsKnowledgeEnvironment.objects.values(
+                'id', 'name', 'code',
+                'metric_datasource_id', 'log_datasource_id', 'k8s_cluster_id', 'task_resource_environment_id',
+            )
+        )
+
+        def binding_map(field):
+            return {
+                item[field]: {'id': item['id'], 'name': item['name'], 'code': item['code']}
+                for item in binding_rows
+                if item.get(field)
+            }
+
+        metric_bindings = binding_map('metric_datasource_id')
+        log_bindings = binding_map('log_datasource_id')
+        cluster_bindings = binding_map('k8s_cluster_id')
+        asset_bindings = binding_map('task_resource_environment_id')
         alert_environments = list(
             Alert.objects
             .exclude(environment='')
@@ -644,9 +693,10 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
                 'provider': item.provider,
                 'provider_display': item.get_provider_display(),
                 'description': item.description,
+                'is_enabled': item.is_enabled,
+                'bound_context': log_bindings.get(item.id),
             }
-            for item in LogDataSource.objects.filter(is_enabled=True).order_by('provider', 'name')
-            if not _is_demoish_catalog_item(item.name, item.description, item.provider)
+            for item in LogDataSource.objects.order_by('provider', 'name')
         ]
         metric_datasources = [
             {
@@ -659,9 +709,10 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
                 'cluster_name': item.cluster_name,
                 'tsdb_type': item.tsdb_type,
                 'is_default': item.is_default,
+                'is_enabled': item.is_enabled,
+                'bound_context': metric_bindings.get(item.id),
             }
-            for item in MetricDataSource.objects.filter(is_enabled=True).order_by('environment', '-is_default', 'name')
-            if not _is_demoish_catalog_item(item.name, item.description, item.provider)
+            for item in MetricDataSource.objects.order_by('environment', '-is_default', 'name')
         ]
         k8s_clusters = [
             {
@@ -671,9 +722,9 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
                 'status': item.status,
                 'description': item.description,
                 'namespaces': _k8s_namespace_options(item),
+                'bound_context': cluster_bindings.get(item.id),
             }
             for item in K8sCluster.objects.order_by('name', 'id')
-            if not _is_demoish_catalog_item(item.name, item.description, item.api_server)
         ]
         resource_counts = TaskResource.objects.values('environment_id').annotate(total=Count('id'))
         env_counts = {}
@@ -686,6 +737,7 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
                 'code': item.code,
                 'description': item.description,
                 'resource_count': env_counts.get(item.id, 0),
+                'bound_context': asset_bindings.get(item.id),
             }
             for item in TaskResourceGroup.objects.filter(group_type=TaskResourceGroup.GROUP_ENVIRONMENT).order_by('sort_order', 'name', 'id')
         ]
@@ -696,6 +748,57 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
             'alert_environments': [_clean_catalog_value(item) for item in alert_environments if _clean_catalog_value(item)],
             'k8s_clusters': k8s_clusters,
             'task_resource_environments': task_resource_environments,
+        })
+
+    @action(detail=False, methods=['post'], url_path='discover-bindings')
+    def discover_bindings(self, request):
+        code = str(request.data.get('code') or '').strip()
+        if not code:
+            return Response({'code': ['请填写业务上下文编码']}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(discover_context_bindings(code))
+
+    @action(detail=True, methods=['get', 'post'], url_path='validate-bindings')
+    def validate_bindings(self, request, pk=None):
+        context = self.get_object()
+        live = str(request.query_params.get('live') or request.data.get('live') or '').lower() in {'1', 'true', 'yes'}
+        return Response(validate_context_bindings(context, live=live))
+
+    @action(detail=True, methods=['post'])
+    def inspect(self, request, pk=None):
+        from ops.observability_evidence import collect_observability_evidence, inspection_result
+
+        context = self.get_object()
+        profile = str(request.data.get('profile') or 'inspection').strip()
+        depth = str(request.data.get('depth') or 'full').strip()
+        target = str(request.data.get('target') or '').strip()
+        try:
+            window_minutes = max(15, min(int(request.data.get('window_minutes') or 60), 360))
+        except (TypeError, ValueError):
+            return Response({'window_minutes': ['必须为15到360之间的整数']}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            evidence = collect_observability_evidence(
+                context, profile=profile, depth=depth, target=target, window_minutes=window_minutes,
+            )
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(inspection_result(evidence))
+
+    @action(detail=False, methods=['get'], url_path='unassigned-alerts')
+    def unassigned_alerts(self, request):
+        queryset = Alert.objects.filter(knowledge_environment__isnull=True).order_by('-last_received_at', '-id')[:100]
+        return Response({
+            'count': Alert.objects.filter(knowledge_environment__isnull=True).count(),
+            'results': [
+                {
+                    'id': item.id,
+                    'title': item.title,
+                    'environment': item.environment,
+                    'level': item.level,
+                    'status': item.status,
+                    'last_received_at': item.last_received_at,
+                }
+                for item in queryset
+            ],
         })
 
     def perform_create(self, serializer):
@@ -757,7 +860,7 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
     serializer_class = AIOpsChatSessionSerializer
     http_method_names = ['get', 'post', 'delete', 'head', 'options']
     session_not_found_message = '会话不存在或已被删除，请刷新会话列表后重新选择会话，或新建会话后再提问。'
-    demo_account_allowed_actions = {'create', 'send_message', 'send_message_async'}
+    demo_account_allowed_actions = {'create', 'send_message', 'send_message_async', 'set_environment'}
     rbac_permissions = {
         'list': ['aiops.chat.view'],
         'retrieve': ['aiops.chat.view'],
@@ -765,6 +868,7 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'destroy': ['aiops.chat.view'],
         'delete_session': ['aiops.chat.view'],
         'messages': ['aiops.chat.view'],
+        'set_environment': ['aiops.chat.view'],
         'send_message': ['aiops.chat.view'],
         'send_message_async': ['aiops.chat.view'],
     }
@@ -822,6 +926,17 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         session = self.get_object()
         messages = session.messages.order_by('created_at', 'id')
         return Response(AIOpsChatMessageSerializer(messages, many=True).data)
+
+    @action(detail=True, methods=['post'], url_path='set-environment')
+    def set_environment(self, request, pk=None):
+        session = self.get_object()
+        context = resolve_business_context(request.data.get('knowledge_environment_id') or request.data.get('environment'))
+        if not context:
+            return Response({'detail': '业务上下文不存在或已停用'}, status=status.HTTP_400_BAD_REQUEST)
+        payload = session.context if isinstance(session.context, dict) else {}
+        session.context = {**payload, 'current_environment': context_payload(context)}
+        session.save(update_fields=['context', 'updated_at'])
+        return Response({'current_environment': context_payload(context)})
 
     @action(detail=True, methods=['post'])
     def send_message(self, request, pk=None):

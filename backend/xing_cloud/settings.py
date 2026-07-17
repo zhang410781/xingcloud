@@ -434,9 +434,9 @@ LOG_PROVIDER_CONFIGS = {
         'message_fields': os.getenv('ELK_MESSAGE_FIELDS', 'message,log,msg'),
     },
     'clickhouse': {
-        'endpoint': os.getenv('CLICKHOUSE_URL', 'http://10.132.46.52:30812'),
-        'username': os.getenv('CLICKHOUSE_USERNAME', 'xinghai'),
-        'password': os.getenv('CLICKHOUSE_PASSWORD', 'Aws_kkk'),
+        'endpoint': os.getenv('CLICKHOUSE_URL', ''),
+        'username': os.getenv('CLICKHOUSE_USERNAME', ''),
+        'password': os.getenv('CLICKHOUSE_PASSWORD', ''),
         'timezone': os.getenv('CLICKHOUSE_TIMEZONE', 'Asia/Shanghai'),
         'collections': [
             {
@@ -478,8 +478,8 @@ LOG_PROVIDER_CONFIGS = {
 
 OBSERVABILITY_CONFIG = {
     'prometheus': {
-        'enabled': os.getenv('PROMETHEUS_ENABLED', '1') != '0',
-        'query_url': os.getenv('PROMETHEUS_QUERY_URL', 'http://10.132.46.52:30003'),
+        'enabled': os.getenv('PROMETHEUS_ENABLED', '0') != '0',
+        'query_url': os.getenv('PROMETHEUS_QUERY_URL', ''),
         'bearer_token': os.getenv('PROMETHEUS_BEARER_TOKEN', ''),
         'api_token': os.getenv('PROMETHEUS_API_TOKEN', ''),
         'timeout': os.getenv('PROMETHEUS_QUERY_TIMEOUT', '6'),

@@ -60,6 +60,39 @@
             <el-icon><Fold v-if="!appStore.sidebarCollapsed" /><Expand v-else /></el-icon>
           </button>
           <span class="breadcrumb">{{ currentTitle }}</span>
+          <div class="business-context-switch">
+            <span class="business-context-switch__label">业务上下文</span>
+            <el-select
+              v-model="businessContextStore.currentContextId"
+              class="business-context-switch__select"
+              size="small"
+              filterable
+              :disabled="!businessContextStore.contexts.length"
+              :loading="businessContextStore.loading"
+              placeholder="未配置业务上下文"
+              @change="businessContextStore.selectContext"
+            >
+              <el-option
+                v-for="item in businessContextStore.contexts"
+                :key="item.id"
+                :label="item.name"
+                :value="String(item.id)"
+              >
+                <span>{{ item.name }}</span>
+                <span class="business-context-switch__code">{{ item.code }}</span>
+              </el-option>
+            </el-select>
+            <el-button
+              v-if="businessContextStore.loaded && !businessContextStore.contexts.length && authStore.hasPermission('aiops.knowledge.view')"
+              class="business-context-switch__configure"
+              link
+              type="primary"
+              size="small"
+              @click="router.push('/aiops/knowledge/config')"
+            >
+              去配置
+            </el-button>
+          </div>
         </div>
         <div class="header-right">
           <el-tooltip content="查看 AI Agent 产品介绍" placement="bottom">
@@ -184,6 +217,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
+import { useBusinessContextStore } from '@/stores/businessContext'
 import AIOpsChatWidget from '@/components/aiops/AIOpsChatWidget.vue'
 import { getModuleSettings } from '@/api/modules/rbac'
 import { getDashboardStats, getDeployments, getTransactionTickets } from '@/api/modules/ops'
@@ -192,6 +226,7 @@ const route = useRoute()
 const router = useRouter()
 const appStore = useAppStore()
 const authStore = useAuthStore()
+const businessContextStore = useBusinessContextStore()
 const notificationsLoading = ref(false)
 const notificationItems = ref([])
 const notificationCount = ref(0)
@@ -616,6 +651,7 @@ onMounted(() => {
   window.addEventListener(MODULE_SETTINGS_EVENT, loadModuleSettings)
   void loadModuleSettings()
   void loadNotifications()
+  void businessContextStore.loadContexts()
   notificationTimer = window.setInterval(() => {
     void loadNotifications()
   }, 60000)
@@ -631,10 +667,62 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.business-context-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-left: 10px;
+  padding-left: 14px;
+  border-left: 1px solid #e2e8f0;
+}
+
+.business-context-switch__label,
+.business-context-switch__code {
+  color: #64748b;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.business-context-switch__select {
+  width: 190px;
+}
+
+.business-context-switch__code {
+  float: right;
+  margin-left: 16px;
+}
+
+.business-context-switch__configure {
+  flex: 0 0 auto;
+  padding: 0;
+}
+
 .brand-mark {
   width: 29px;
   height: 29px;
   display: block;
+}
+
+@media (max-width: 1100px) {
+  .business-context-switch__label {
+    display: none;
+  }
+
+  .business-context-switch__select {
+    width: 150px;
+  }
+}
+
+@media (max-width: 820px) {
+  .business-context-switch {
+    margin-left: 4px;
+    padding-left: 8px;
+  }
+
+  .business-context-switch__select {
+    width: 132px;
+  }
 }
 
 .assistant-trigger,

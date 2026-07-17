@@ -25,15 +25,11 @@
     <section class="monitor-toolbar">
       <div v-if="scope !== 'logs'" class="toolbar-field">
         <span>指标数据源</span>
-        <el-select v-model="selectedMetricId" size="small" filterable clearable placeholder="选择 Prometheus" @change="handleMetricSourceChange">
-          <el-option v-for="item in metricDataSources" :key="item.id" :label="item.name" :value="item.id" />
-        </el-select>
+        <div class="bound-resource">{{ boundMetricName || '当前上下文未绑定' }}</div>
       </div>
       <div v-else class="toolbar-field">
         <span>日志数据源</span>
-        <el-select v-model="selectedLogId" size="small" filterable clearable placeholder="选择 Elasticsearch 或 ClickHouse" @change="handleLogSourceChange">
-          <el-option v-for="item in logDataSources" :key="item.id" :label="`${item.name} · ${providerLabel(item.provider)}`" :value="item.id" />
-        </el-select>
+        <div class="bound-resource">{{ boundLogName || '当前上下文未绑定' }}</div>
       </div>
       <div v-if="scope === 'logs'" class="toolbar-field">
         <span>日志集合 / 索引</span>
@@ -67,7 +63,7 @@
     <section v-if="!loadingDashboard && !panels.length" class="empty-dashboard">
       <el-icon><DataAnalysis /></el-icon>
       <strong>暂无可展示的面板数据</strong>
-      <span>请检查数据源、时间范围或筛选条件</span>
+      <span>{{ emptyHint }}</span>
     </section>
 
     <main v-else class="dashboard-canvas">
@@ -97,15 +93,19 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import { Connection, DataAnalysis, DataBoard, Monitor, RefreshRight, Search, SetUp } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
 import NativeDashboardChart from '@/components/observability/NativeDashboardChart.vue'
 import { getDashboardDefinitions, getLogDataSources, getMetricDataSources, queryDashboardDefinition, queryMetrics } from '@/api/modules/ops'
+import { useBusinessContextStore } from '@/stores/businessContext'
 
 const router = useRouter()
+const businessContextStore = useBusinessContextStore()
+const { currentContext, currentContextId } = storeToRefs(businessContextStore)
 const scope = ref('k8s')
 const subtype = ref('mysql')
 const definitions = ref([])
@@ -122,6 +122,7 @@ const nodeOptions = ref([])
 const activeDefinitionId = ref('')
 const loadingDashboard = ref(false)
 let dashboardRequestVersion = 0
+let dashboardMounted = false
 const timeRangeKey = ref('5m')
 const timeRangeOptions = [{ label: '5m', value: '5m' }, { label: '15m', value: '15m' }, { label: '1h', value: '1h' }, { label: '6h', value: '6h' }]
 const scopeItems = [
@@ -135,6 +136,18 @@ const subtypeItems = computed(() => scope.value === 'database' ? [{ key: 'mysql'
 const activeDefinition = computed(() => definitions.value.find((item) => String(item.id) === String(activeDefinitionId.value)))
 const panels = computed(() => Array.isArray(payload.value.panels) ? payload.value.panels : [])
 const scopeLabel = computed(() => ({ k8s: 'Kubernetes 集群监控', server: 'Linux 服务器监控', database: `${subtype.value === 'postgresql' ? 'PostgreSQL' : 'MySQL'} 数据库监控`, middleware: `${subtype.value === 'kafka' ? 'Kafka' : 'Redis'} 中间件监控`, logs: '日志分析看板' }[scope.value]))
+const boundMetricName = computed(() => currentContext.value?.metric_datasource_name || metricDataSources.value.find(item => String(item.id) === String(selectedMetricId.value))?.name || '')
+const boundLogName = computed(() => {
+  const source = logDataSources.value.find(item => String(item.id) === String(selectedLogId.value))
+  const name = currentContext.value?.log_datasource_name || source?.name || ''
+  return name && source ? `${name} · ${providerLabel(source.provider)}` : name
+})
+const emptyHint = computed(() => {
+  if (!currentContext.value) return '请先在顶部选择业务上下文'
+  if (scope.value === 'logs' && !selectedLogId.value) return '当前业务上下文未绑定日志数据源'
+  if (scope.value !== 'logs' && !selectedMetricId.value) return '当前业务上下文未绑定指标数据源'
+  return '请检查时间范围或筛选条件'
+})
 
 function listOf(response) { return Array.isArray(response) ? response : (response?.results || []) }
 function providerLabel(provider) { return { elk: 'Elasticsearch', clickhouse: 'ClickHouse' }[provider] || provider || '日志' }
@@ -175,9 +188,6 @@ function selectedDefinition() { const names = { k8s: 'K8S Cluster Health', serve
 function refreshDefinition() { activeDefinitionId.value = selectedDefinition()?.id || '' }
 async function changeScope(value) { dashboardRequestVersion += 1; payload.value = {}; scope.value = value; if (value === 'database') subtype.value = 'mysql'; if (value === 'middleware') subtype.value = 'redis'; namespaceFilter.value = ''; nodeFilter.value = ''; refreshDefinition(); if (value === 'k8s' || value === 'server') await loadFilterOptions(); await loadDashboard() }
 async function selectSubtype() { refreshDefinition(); await loadDashboard() }
-async function handleMetricSourceChange() { dashboardRequestVersion += 1; payload.value = {}; namespaceFilter.value = ''; nodeFilter.value = ''; namespaceOptions.value = []; nodeOptions.value = []; await loadFilterOptions(); await loadDashboard() }
-async function handleLogSourceChange() { dashboardRequestVersion += 1; payload.value = {}; logSourceName.value = ''; await loadDashboard() }
-
 async function loadFilterOptions() {
   if (!selectedMetricId.value) return
   const [nodes, namespaces] = await Promise.allSettled([
@@ -191,12 +201,16 @@ async function loadSources() {
   const [metrics, logs] = await Promise.allSettled([getMetricDataSources({ is_enabled: true }, { skipErrorMessage: true }), getLogDataSources({ is_enabled: true }, { skipErrorMessage: true })])
   metricDataSources.value = metrics.status === 'fulfilled' ? listOf(metrics.value) : []
   logDataSources.value = logs.status === 'fulfilled' ? listOf(logs.value).filter((item) => ['elk', 'clickhouse'].includes(item.provider)) : []
-  selectedMetricId.value ||= metricDataSources.value.find((item) => item.is_default)?.id || metricDataSources.value[0]?.id || ''
-  selectedLogId.value ||= logDataSources.value.find((item) => item.is_default)?.id || logDataSources.value[0]?.id || ''
+  selectedMetricId.value = currentContext.value?.metric_datasource || ''
+  selectedLogId.value = currentContext.value?.log_datasource || ''
   await loadFilterOptions()
 }
 async function loadDashboard() {
   if (!activeDefinitionId.value) return
+  if ((scope.value === 'logs' && !selectedLogId.value) || (scope.value !== 'logs' && !selectedMetricId.value)) {
+    payload.value = {}
+    return
+  }
   const requestVersion = ++dashboardRequestVersion
   loadingDashboard.value = true
   try {
@@ -207,7 +221,29 @@ async function loadDashboard() {
 }
 function openLogRow(row) { if (scope.value !== 'logs') return; router.push({ path: '/observability/logs', query: { datasource: selectedLogId.value || '', q: row.message || '', from: timeRange()[0], to: timeRange()[1] } }) }
 
-onMounted(async () => { await Promise.all([loadSources(), getDashboardDefinitions({ is_enabled: true }).then((response) => { definitions.value = listOf(response); refreshDefinition() })]); await loadDashboard() })
+async function applyBusinessContext() {
+  dashboardRequestVersion += 1
+  payload.value = {}
+  selectedMetricId.value = currentContext.value?.metric_datasource || ''
+  selectedLogId.value = currentContext.value?.log_datasource || ''
+  namespaceFilter.value = ''
+  nodeFilter.value = ''
+  namespaceOptions.value = []
+  nodeOptions.value = []
+  logSourceName.value = ''
+  if (!dashboardMounted) return
+  await loadFilterOptions()
+  await loadDashboard()
+}
+
+watch(currentContextId, applyBusinessContext)
+
+onMounted(async () => {
+  await businessContextStore.loadContexts()
+  await Promise.all([loadSources(), getDashboardDefinitions({ is_enabled: true }).then((response) => { definitions.value = listOf(response); refreshDefinition() })])
+  dashboardMounted = true
+  await loadDashboard()
+})
 </script>
 
 <style scoped>
@@ -220,10 +256,11 @@ h1 { margin: 5px 0 0; color: #1b3047; font-size: 24px; font-weight: 700; } .dash
 .header-actions { display: flex; align-items: center; gap: 10px; } .live-state { display: inline-flex; align-items: center; gap: 6px; color: #647b94; font-size: 12px; } .live-state i { width: 7px; height: 7px; border-radius: 50%; background: #20b486; box-shadow: 0 0 0 3px rgba(32,180,134,.13); }
 .scope-switch { display: flex; gap: 4px; overflow-x: auto; padding: 4px; border: 1px solid #d8e2ed; background: #fff; box-shadow: 0 4px 14px rgba(42,68,98,.05); } .scope-switch button { display: inline-flex; align-items: center; gap: 7px; min-width: 126px; justify-content: center; padding: 9px 14px; border: 0; color: #667d96; background: transparent; cursor: pointer; white-space: nowrap; } .scope-switch button.active { color: #fff; background: #3478d4; box-shadow: 0 4px 12px rgba(52,120,212,.22); }
 .monitor-toolbar { display: grid; grid-template-columns: minmax(170px,1.2fr) minmax(150px,1fr) minmax(150px,1fr) minmax(180px,1.2fr) auto; align-items: end; gap: 10px; padding: 11px; border: 1px solid #d8e2ed; background: #fff; box-shadow: 0 4px 14px rgba(42,68,98,.05); } .toolbar-field { display: grid; gap: 5px; min-width: 0; } .toolbar-field > span { color: #617891; font-size: 11px; } .monitor-toolbar :deep(.el-input__wrapper), .monitor-toolbar :deep(.el-select__wrapper) { background: #f8fafc; box-shadow: 0 0 0 1px #d5e0eb inset; } .monitor-toolbar :deep(.el-input__inner), .monitor-toolbar :deep(.el-select__selected-item) { color: #30465d; }
+.bound-resource { min-height: 32px; overflow: hidden; padding: 7px 10px; border: 1px solid #d5e0eb; background: #f8fafc; color: #30465d; font-size: 12px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
 .dashboard-canvas { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); grid-auto-rows: 26px; gap: 8px; max-width: 1800px; margin: 0 auto; } .dashboard-panel { grid-column: calc(var(--grid-x,0) + 1) / span var(--grid-w, 24); grid-row: calc(var(--grid-y,0) + 1) / span var(--grid-h, 8); min-width: 0; min-height: 0; overflow: hidden; padding: 11px 13px 9px; border: 1px solid #d7e2ed; border-top: 2px solid #6fa6e8; background: #fff; box-shadow: 0 5px 16px rgba(42,68,98,.07); } .dashboard-panel.panel-type-stat { padding-bottom: 9px; }
 .panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; min-height: 27px; } .panel-heading h2 { margin: 0; color: #253c54; font-size: 13px; font-weight: 600; } .panel-heading p { margin: 3px 0 0; color: #8497aa; font-size: 10px; } .panel-tools { display: flex; align-items: center; color: #7890aa; } .panel-tools :deep(.el-button) { color: #7890aa; } .panel-status { max-width: 180px; overflow: hidden; color: #d85260; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .stat-value { display: flex; align-items: baseline; gap: 6px; margin-top: 7px; color: #253c54; font-size: 28px; font-weight: 700; } .stat-value small { color: #8194a8; font-size: 11px; font-weight: 400; } .stat-value.normal { color: #2878cf; } .stat-value.warning { color: #c98719; } .stat-value.danger { color: #d84f5d; } .stat-value.muted { color: #8999aa; }
 .dashboard-panel :deep(.native-chart-canvas) { height: calc(var(--grid-h,8) * 26px - 50px); min-height: 130px; } .dashboard-panel :deep(.native-chart-shell) { min-height: 130px; } .panel-table-wrap { max-height: calc(var(--grid-h,8) * 26px - 48px); overflow: auto; } table { width: 100%; border-collapse: collapse; } th, td { padding: 6px 8px; border-bottom: 1px solid #e6edf4; color: #526a82; font-size: 11px; text-align: left; white-space: nowrap; } th { position: sticky; top: 0; color: #304962; background: #f1f5f9; } .cell-success { color: #158765; font-weight: 600; } .cell-warning { color: #c98719; } .cell-danger { color: #d84f5d; font-weight: 600; } .panel-empty, .empty-dashboard { display: grid; place-items: center; gap: 8px; color: #8295a9; font-size: 12px; } .panel-empty { min-height: 70px; } .empty-dashboard { min-height: 300px; } .empty-dashboard strong { color: #526a82; font-size: 15px; }
-@media (max-width: 1100px) { .monitor-toolbar { grid-template-columns: repeat(3,minmax(0,1fr)); } .dashboard-canvas { grid-template-columns: repeat(12,minmax(0,1fr)); } .dashboard-panel { grid-column: 1 / span 12; grid-row: auto; min-height: 260px; } }
+@media (max-width: 1100px) { .monitor-toolbar { grid-template-columns: repeat(3,minmax(0,1fr)); } .scope-switch { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); overflow: visible; } .scope-switch button { min-width: 0; padding-left: 6px; padding-right: 6px; } .dashboard-canvas { grid-template-columns: repeat(12,minmax(0,1fr)); } .dashboard-panel { grid-column: 1 / span 12; grid-row: auto; min-height: 260px; } }
 @media (max-width: 700px) { .monitor-dashboard { padding: 12px; } .dashboard-header { flex-direction: column; } .monitor-toolbar { grid-template-columns: 1fr; } .scope-switch button { min-width: 108px; } .dashboard-canvas { display: grid; grid-template-columns: 1fr; grid-auto-rows: auto; padding: 0; } .dashboard-panel { grid-column: 1; grid-row: auto; min-height: 230px; } .dashboard-panel :deep(.native-chart-canvas) { height: 220px; } }
 </style>

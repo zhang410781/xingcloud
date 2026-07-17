@@ -86,9 +86,9 @@
                   <div class="session-indicator">
                     <span class="session-indicator-label">{{ currentSession?.title || '新会话' }}</span>
                   </div>
-                  <span class="environment-chip" :class="{ empty: !currentEnvironmentName }">
-                    {{ currentEnvironmentName ? `环境：${currentEnvironmentName}` : '未指定环境' }}
-                  </span>
+                  <el-select v-model="selectedContextId" class="context-select" size="small" placeholder="选择业务上下文" @change="handleContextChange">
+                    <el-option v-for="item in businessContexts" :key="item.id" :label="item.name" :value="String(item.id)"><span>{{ item.name }}</span><small>{{ item.code }}</small></el-option>
+                  </el-select>
                   <label class="analysis-toggle">
                     <span>只分析</span>
                     <el-switch v-model="analysisSwitchValue" size="small" :disabled="forcedAnalysisOnly" />
@@ -561,6 +561,7 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { CircleCheck, CopyDocument, Delete, Fold, Plus, Promotion, TopRight } from '@element-plus/icons-vue'
@@ -572,10 +573,12 @@ import {
   getAIOpsBootstrap,
   getAIOpsMessages,
   getAIOpsSessions,
+  setAIOpsSessionEnvironment,
   sendAIOpsMessageAsync,
 } from '@/api/modules/aiops'
 import botAvatar from '@/assets/aiops-bot.svg'
 import { useAuthStore } from '@/stores/auth'
+import { useBusinessContextStore } from '@/stores/businessContext'
 
 const props = defineProps({
   embedded: {
@@ -594,6 +597,8 @@ const AIOPS_SESSION_MISSING_MESSAGE = '会话不存在或已被删除，请刷�
 const router = useRouter()
 const route = useRoute()
 const authStore = useAuthStore()
+const businessContextStore = useBusinessContextStore()
+const { contexts: businessContexts, currentContextId: selectedContextId } = storeToRefs(businessContextStore)
 
 const embedded = computed(() => props.embedded)
 const visible = ref(props.embedded || localStorage.getItem(STORAGE_VISIBLE_KEY) === '1')
@@ -653,6 +658,27 @@ const currentEnvironmentName = computed(() => {
   if (!value) return ''
   return typeof value === 'string' ? value : (value.name || '')
 })
+
+async function fetchBusinessContexts() {
+  await businessContextStore.loadContexts()
+}
+
+async function handleContextChange(contextId) {
+  businessContextStore.selectContext(contextId)
+}
+
+let contextSyncPromise = null
+async function syncCurrentSessionContext() {
+  const contextId = selectedContextId.value
+  if (!currentSessionId.value || !contextId) return
+  const activeId = currentSession.value?.context?.current_environment?.id
+  if (String(activeId || '') === String(contextId)) return
+  if (contextSyncPromise) return contextSyncPromise
+  contextSyncPromise = setAIOpsSessionEnvironment(currentSessionId.value, contextId)
+  const payload = await contextSyncPromise.finally(() => { contextSyncPromise = null })
+  const session = sessions.value.find(item => item.id === currentSessionId.value)
+  if (session) session.context = { ...(session.context || {}), current_environment: payload.current_environment }
+}
 const fabStyle = computed(() => {
   if (!fabPosition.value || visible.value) return null
   return {
@@ -2147,12 +2173,17 @@ onMounted(async () => {
   }
   await fetchBootstrap()
   if ((embedded.value || visible.value) && bootstrap.value.enabled) {
+    await fetchBusinessContexts()
     await fetchSessions()
     await nextTick()
     scrollToBottom(true)
     focusComposer()
   }
 })
+
+watch([currentSession, selectedContextId], () => {
+  void syncCurrentSessionContext()
+}, { immediate: true })
 
 onBeforeUnmount(() => {
   stopMessagePolling()

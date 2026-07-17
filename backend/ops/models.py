@@ -187,6 +187,14 @@ class MiddlewareAsset(models.Model):
 
     name = models.CharField('资产名称', max_length=128)
     asset_type = models.CharField('资产类型', max_length=32, choices=TYPE_CHOICES)
+    task_resource_environment = models.ForeignKey(
+        'TaskResourceGroup',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='middleware_assets',
+        verbose_name='资产环境分组',
+    )
     environment = models.CharField('环境', max_length=32, blank=True, default='prod')
     endpoint = models.CharField('访问地址', max_length=255)
     username = models.CharField('访问用户名', max_length=128, blank=True, default='')
@@ -212,6 +220,10 @@ class MiddlewareAsset(models.Model):
         ]
         indexes = [
             models.Index(fields=['asset_type', 'environment', 'status']),
+            models.Index(
+                fields=['task_resource_environment', 'asset_type', 'status'],
+                name='ops_middle_task_re_5d0b70_idx',
+            ),
         ]
 
     def __str__(self):
@@ -848,6 +860,14 @@ class Alert(models.Model):
     claimed_by = models.CharField('认领人', max_length=64, blank=True, default='')
     claimed_at = models.DateTimeField('认领时间', null=True, blank=True)
     host = models.ForeignKey(Host, on_delete=models.SET_NULL, null=True, blank=True, verbose_name='关联主机')
+    knowledge_environment = models.ForeignKey(
+        'aiops.AIOpsKnowledgeEnvironment',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='alerts',
+        verbose_name='业务上下文',
+    )
     service = models.CharField('服务', max_length=128, blank=True, default='')
     environment = models.CharField('环境', max_length=64, blank=True, default='')
     cluster = models.CharField('集群', max_length=128, blank=True, default='')
@@ -885,6 +905,7 @@ class Alert(models.Model):
         verbose_name_plural = '告警'
         ordering = ['-created_at']
         indexes = [
+            models.Index(fields=['knowledge_environment', 'status', 'level'], name='ops_alert_ctx_status_level_idx'),
             models.Index(fields=['status', 'level']),
             models.Index(fields=['source_type', 'source']),
             models.Index(fields=['service', 'environment']),

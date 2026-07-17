@@ -1,4 +1,7 @@
+from django.db import transaction
 from rest_framework import serializers
+
+from ops.models import AlertRule, TaskResourceGroup
 
 from .models import (
     AIOpsAgentConfig,
@@ -157,75 +160,48 @@ class AIOpsSkillSerializer(serializers.ModelSerializer):
 
 
 class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
+    binding_status = serializers.SerializerMethodField()
+    transfer_bindings = serializers.BooleanField(write_only=True, required=False, default=False)
+
+    BINDING_FIELDS = (
+        'metric_datasource',
+        'log_datasource',
+        'k8s_cluster',
+        'task_resource_environment',
+    )
+
     class Meta:
         model = AIOpsKnowledgeEnvironment
         fields = [
-            'id', 'name', 'aliases', 'description',
-            'metric_datasource', 'log_datasource',
-            'metric_datasource_ids', 'log_datasource_ids', 'alert_environments',
-            'k8s_cluster_ids', 'k8s_namespaces',
-            'task_resource_environment_ids',
+            'id', 'name', 'code', 'business_line', 'environment_type', 'owner', 'description',
+            'metric_datasource', 'log_datasource', 'k8s_cluster', 'task_resource_environment',
+            'k8s_namespaces', 'binding_status',
+            'transfer_bindings',
             'is_default', 'is_enabled', 'created_by', 'updated_by', 'created_at', 'updated_at',
         ]
-        read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
+        read_only_fields = ['binding_status', 'created_by', 'updated_by', 'created_at', 'updated_at']
+        extra_kwargs = {
+            'metric_datasource': {'validators': []},
+            'log_datasource': {'validators': []},
+            'k8s_cluster': {'validators': []},
+            'task_resource_environment': {'validators': []},
+        }
 
     def validate_name(self, value):
         value = (value or '').strip()
         if not value:
-            raise serializers.ValidationError('请填写知识图谱环境名')
+            raise serializers.ValidationError('请填写业务上下文名称')
+        return value
+
+    def validate_code(self, value):
+        value = (value or '').strip().lower()
+        if not value:
+            raise serializers.ValidationError('请填写业务上下文编码')
+        if self.instance and self.instance.code and value != self.instance.code:
+            raise serializers.ValidationError('业务上下文编码创建后不可修改')
         return value
 
     def validate(self, attrs):
-        list_fields = [
-            'aliases',
-            'metric_datasource_ids',
-            'log_datasource_ids',
-            'alert_environments',
-            'k8s_cluster_ids',
-            'task_resource_environment_ids',
-        ]
-        for field in list_fields:
-            if field not in attrs:
-                continue
-            value = attrs.get(field)
-            if value in (None, ''):
-                attrs[field] = []
-                continue
-            if not isinstance(value, list):
-                raise serializers.ValidationError({field: '必须为数组'})
-            normalized = []
-            for item in value:
-                if field.endswith('_ids'):
-                    try:
-                        normalized_item = int(item)
-                    except (TypeError, ValueError):
-                        continue
-                else:
-                    normalized_item = str(item or '').strip()
-                if normalized_item and normalized_item not in normalized:
-                    normalized.append(normalized_item)
-            attrs[field] = normalized
-
-        datasource_fields = (
-            ('metric_datasource', 'metric_datasource_ids'),
-            ('log_datasource', 'log_datasource_ids'),
-        )
-        for relation_field, legacy_field in datasource_fields:
-            legacy_ids = attrs.get(legacy_field)
-            if legacy_ids is not None and len(legacy_ids) > 1:
-                raise serializers.ValidationError({legacy_field: '每个知识环境只能绑定一个数据源'})
-            if relation_field in attrs:
-                datasource = attrs.get(relation_field)
-                attrs[legacy_field] = [datasource.pk] if datasource else []
-                continue
-            if legacy_field in attrs:
-                datasource_id = legacy_ids[0] if legacy_ids else None
-                model = self.Meta.model._meta.get_field(relation_field).remote_field.model
-                datasource = model.objects.filter(pk=datasource_id).first() if datasource_id else None
-                if datasource_id and datasource is None:
-                    raise serializers.ValidationError({legacy_field: '数据源不存在'})
-                attrs[relation_field] = datasource
-
         if 'k8s_namespaces' in attrs:
             value = attrs.get('k8s_namespaces')
             if value in (None, ''):
@@ -233,52 +209,120 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
             elif not isinstance(value, dict):
                 raise serializers.ValidationError({'k8s_namespaces': '必须为对象'})
             else:
-                normalized = {}
-                for cluster_id, namespaces in value.items():
-                    try:
-                        normalized_cluster_id = str(int(cluster_id))
-                    except (TypeError, ValueError):
-                        continue
-                    if not isinstance(namespaces, list):
-                        continue
-                    normalized_namespaces = []
-                    for namespace in namespaces:
-                        namespace = str(namespace or '').strip()
-                        if namespace and namespace not in normalized_namespaces:
-                            normalized_namespaces.append(namespace)
-                    if normalized_namespaces:
-                        normalized[normalized_cluster_id] = normalized_namespaces
-                attrs['k8s_namespaces'] = normalized
+                cluster = attrs.get('k8s_cluster', getattr(self.instance, 'k8s_cluster', None))
+                namespaces = value.get('namespaces', value.get(str(getattr(cluster, 'id', '')), []))
+                if not isinstance(namespaces, list):
+                    raise serializers.ValidationError({'k8s_namespaces': '命名空间必须为数组'})
+                attrs['k8s_namespaces'] = {
+                    'namespaces': list(dict.fromkeys(str(item).strip() for item in namespaces if str(item).strip()))
+                }
+
+        asset_environment = attrs.get('task_resource_environment', getattr(self.instance, 'task_resource_environment', None))
+        if asset_environment and asset_environment.group_type != TaskResourceGroup.GROUP_ENVIRONMENT:
+            raise serializers.ValidationError({'task_resource_environment': '只能绑定资产登记中的环境分组'})
 
         instance = self.instance
-        association_fields = [field for field in list_fields if field != 'aliases']
         has_association = any(
-            attrs.get(field, getattr(instance, field, [])) for field in association_fields
-        )
-        has_association = has_association or any(
             attrs.get(field, getattr(instance, field, None))
-            for field in ('metric_datasource', 'log_datasource')
+            for field in ('metric_datasource', 'log_datasource', 'k8s_cluster', 'task_resource_environment')
         )
         if not has_association:
-            raise serializers.ValidationError('请至少选择一个指标、日志、告警、K8S 集群或资产登记来源')
+            raise serializers.ValidationError('请至少绑定一个指标源、日志源、K8S 集群或资产环境')
         is_default = attrs.get('is_default', getattr(instance, 'is_default', False))
         is_enabled = attrs.get('is_enabled', getattr(instance, 'is_enabled', True))
         if is_default and not is_enabled:
-            raise serializers.ValidationError({'is_default': '停用图谱不能设为默认'})
+            raise serializers.ValidationError({'is_default': '停用业务上下文不能设为默认'})
+
+        conflicts = self._binding_conflicts(attrs)
+        if conflicts and not attrs.get('transfer_bindings'):
+            raise serializers.ValidationError({
+                'binding_conflicts': conflicts,
+                'transfer_bindings': '所选资源已绑定其他业务上下文，请确认后转移归属',
+            })
         return attrs
 
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        for relation_field, legacy_field in (
-            ('metric_datasource', 'metric_datasource_ids'),
-            ('log_datasource', 'log_datasource_ids'),
-        ):
-            datasource_id = data.get(relation_field)
-            if datasource_id is None:
-                legacy_ids = data.get(legacy_field) if isinstance(data.get(legacy_field), list) else []
-                datasource_id = legacy_ids[0] if legacy_ids else None
-            data[legacy_field] = [datasource_id] if datasource_id else []
-        return data
+    def _binding_conflicts(self, attrs):
+        conflicts = []
+        for field in self.BINDING_FIELDS:
+            if field not in attrs:
+                continue
+            resource = attrs.get(field)
+            if not resource:
+                continue
+            owner = (
+                AIOpsKnowledgeEnvironment.objects
+                .filter(**{field: resource})
+                .exclude(pk=getattr(self.instance, 'pk', None))
+                .only('id', 'name', 'code')
+                .first()
+            )
+            if owner:
+                conflicts.append({
+                    'field': field,
+                    'resource_id': resource.pk,
+                    'resource_name': str(resource),
+                    'context_id': owner.id,
+                    'context_name': owner.name,
+                    'context_code': owner.code,
+                })
+        return conflicts
+
+    def _release_binding_conflicts(self, bindings):
+        for field, resource in bindings.items():
+            if not resource:
+                continue
+            (
+                AIOpsKnowledgeEnvironment.objects
+                .filter(**{field: resource})
+                .exclude(pk=getattr(self.instance, 'pk', None))
+                .update(**{field: None})
+            )
+
+    @staticmethod
+    def _synchronize_metric_environment(instance):
+        metric = instance.metric_datasource
+        if not metric or metric.environment == instance.code:
+            return
+        metric.environment = instance.code
+        metric.save(update_fields=['environment', 'updated_at'])
+        for rule in AlertRule.objects.filter(metric_datasource=metric).only('id', 'labels'):
+            labels = dict(rule.labels or {})
+            if labels.get('environment') == instance.code:
+                continue
+            labels['environment'] = instance.code
+            rule.labels = labels
+            rule.save(update_fields=['labels', 'updated_at'])
+
+    @transaction.atomic
+    def create(self, validated_data):
+        transfer_bindings = validated_data.pop('transfer_bindings', False)
+        bindings = {field: validated_data.get(field) for field in self.BINDING_FIELDS if field in validated_data}
+        if transfer_bindings:
+            self._release_binding_conflicts(bindings)
+        instance = super().create(validated_data)
+        self._synchronize_metric_environment(instance)
+        return instance
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        transfer_bindings = validated_data.pop('transfer_bindings', False)
+        bindings = {field: validated_data.get(field) for field in self.BINDING_FIELDS if field in validated_data}
+        if transfer_bindings:
+            self._release_binding_conflicts(bindings)
+        instance = super().update(instance, validated_data)
+        self._synchronize_metric_environment(instance)
+        return instance
+
+    def get_binding_status(self, instance):
+        checks = {
+            'metric_datasource': bool(instance.metric_datasource_id and instance.metric_datasource.is_enabled),
+            'log_datasource': bool(instance.log_datasource_id and instance.log_datasource.is_enabled),
+            'k8s_cluster': bool(instance.k8s_cluster_id),
+            'asset_environment': bool(instance.task_resource_environment_id),
+            'alert_environment': not instance.alerts.exclude(environment=instance.code).exists(),
+        }
+        missing = [key for key, ready in checks.items() if not ready]
+        return {'ready': not missing, 'checks': checks, 'missing': missing}
 
 
 class AIOpsPendingActionSerializer(serializers.ModelSerializer):

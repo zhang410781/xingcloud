@@ -18,7 +18,7 @@ from .eventwall_stub import EventRecord
 from .eventwall_stub import record_event
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from rbac.services import user_has_permissions
-from .alert_rule_presets import ensure_builtin_alert_rule_templates, ensure_datasource_rule_instances, install_rules_from_templates
+from .alert_rule_presets import ensure_datasource_rule_instances, install_rules_from_templates
 from .dashboard_presets import ensure_builtin_dashboards
 from .datasource_health import datasource_health_payload
 from .models import Alert, AlertRule, Deployment, LogDataSource, LogEntry, MetricDataSource, ObservabilityDashboard
@@ -466,7 +466,6 @@ def execute_promql_query(query, *, range_query=False, start_time=None, end_time=
 
 
 def _native_dashboard_summary():
-    ensure_builtin_dashboards()
     dashboards = ObservabilityDashboard.objects.filter(is_enabled=True).prefetch_related('panels').order_by('-is_builtin', 'title')
     items = [
         {
@@ -976,7 +975,6 @@ class ObservabilityDashboardViewSet(EventWallModelViewSetMixin, RBACPermissionMi
     }
 
     def get_queryset(self):
-        ensure_builtin_dashboards()
         queryset = ObservabilityDashboard.objects.prefetch_related('panels').all()
         is_enabled = self.request.query_params.get('is_enabled')
         if is_enabled in ('true', 'false'):
@@ -1002,7 +1000,6 @@ class ObservabilityDashboardViewSet(EventWallModelViewSetMixin, RBACPermissionMi
 
 
 def _integration_status(integration):
-    ensure_builtin_alert_rule_templates()
     template_count = AlertRule.objects.filter(code__in=integration.template_codes, is_template=True).count()
     rule_count = AlertRule.objects.filter(source__in=integration.template_codes, is_template=False, is_enabled=True).count()
     dashboard_count = ObservabilityDashboard.objects.filter(title__in=integration.dashboard_titles, is_enabled=True).count()
@@ -1027,8 +1024,6 @@ def _integration_status(integration):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, build_rbac_permission('ops.monitor.dashboard.view')])
 def observability_integrations(request):
-    ensure_builtin_dashboards()
-    ensure_builtin_alert_rule_templates()
     items = []
     for integration in list_integrations():
         template_count, rule_count, dashboard_count, status_value = _integration_status(integration)
@@ -1265,8 +1260,6 @@ def observability_overview(request):
     if denied:
         return denied
 
-    if access['monitor_dashboard']:
-        ensure_builtin_dashboards()
     dashboards = _native_dashboard_summary() if access['monitor_dashboard'] else None
     logs = _log_module_summary() if (access['log_query'] or access['log_datasource']) else None
     alerts = _alert_module_summary() if access['alerts'] else None

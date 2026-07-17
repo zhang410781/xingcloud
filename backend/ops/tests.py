@@ -33,6 +33,7 @@ from ops.models import (
     MiddlewareAsset,
     ObservabilityDashboard,
     ObservabilityDashboardPanel,
+    TaskResourceGroup,
     TransactionTicket,
 )
 from ops.k8s_views import (
@@ -966,6 +967,9 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(payload['navigation'][0]['path'], '/logs/query')
 
     def test_observability_overview_ignores_grafana_config_for_native_dashboards(self):
+        from ops.dashboard_presets import ensure_builtin_dashboards
+
+        ensure_builtin_dashboards()
         with override_settings(
             OBSERVABILITY_CONFIG={
                 **TEST_OBSERVABILITY_CONFIG,
@@ -1088,6 +1092,11 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(response.status_code, 404)
 
     def test_observability_integrations_returns_catalog_and_status(self):
+        from ops.alert_rule_presets import ensure_builtin_alert_rule_templates
+        from ops.dashboard_presets import ensure_builtin_dashboards
+
+        ensure_builtin_dashboards()
+        ensure_builtin_alert_rule_templates()
         MetricDataSource.objects.create(
             name='Default Prometheus',
             provider='prometheus',
@@ -1145,12 +1154,36 @@ class ObservabilityViewsTests(TestCase):
         self.assertTrue(ObservabilityDashboard.objects.filter(title='Redis Overview', is_builtin=True, is_enabled=True).exists())
 
     def test_observability_overview_dashboard_summary_uses_json_definitions(self):
+        from ops.dashboard_presets import ensure_builtin_dashboards
+
+        ensure_builtin_dashboards()
         response = self.client.get('/api/observability/overview/')
 
         self.assertEqual(response.status_code, 200)
         dashboards = response.json()['modules']['dashboards']
         self.assertEqual(dashboards['source'], 'json')
         self.assertIn('Redis Overview', [item['title'] for item in dashboards['dashboards']])
+
+    def test_dashboard_read_endpoints_do_not_seed_presets(self):
+        ObservabilityDashboard.objects.all().delete()
+
+        list_response = self.client.get('/api/observability/dashboard-definitions/')
+        overview_response = self.client.get('/api/observability/overview/')
+
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(overview_response.status_code, 200)
+        self.assertEqual(ObservabilityDashboard.objects.count(), 0)
+
+    def test_seed_observability_presets_command_initializes_catalog(self):
+        from django.core.management import call_command
+
+        ObservabilityDashboard.objects.all().delete()
+        AlertRule.objects.filter(is_template=True).delete()
+
+        call_command('seed_observability_presets')
+
+        self.assertTrue(ObservabilityDashboard.objects.filter(is_builtin=True).exists())
+        self.assertTrue(AlertRule.objects.filter(is_template=True).exists())
 
     def test_builtin_dashboards_update_log_and_k8s_panels(self):
         from ops.dashboard_presets import ensure_builtin_dashboards
@@ -1952,6 +1985,9 @@ class MiddlewareViewsTests(TestCase):
         self.client = APIClient()
         self.user = get_user_model().objects.create_superuser('middleware-admin', 'middleware@example.com', 'Admin@123456')
         self.client.force_authenticate(user=self.user)
+        self.asset_environment = TaskResourceGroup.objects.create(
+            name='生产资产', code='prod', group_type=TaskResourceGroup.GROUP_ENVIRONMENT,
+        )
 
     def test_middleware_overview_is_empty_without_registered_assets(self):
         response = self.client.get('/api/middleware/overview/')
@@ -1987,6 +2023,26 @@ class MiddlewareViewsTests(TestCase):
         self.assertEqual(item['endpoint'], 'redis.example.internal:6379')
         self.assertNotIn('qps', item)
         self.assertNotIn('memory_usage', item)
+
+    def test_overview_filters_assets_by_business_context_environment(self):
+        other_environment = TaskResourceGroup.objects.create(
+            name='测试资产', code='test', group_type=TaskResourceGroup.GROUP_ENVIRONMENT,
+        )
+        MiddlewareAsset.objects.create(
+            name='prod-cache', asset_type='redis', environment='prod', endpoint='redis-prod:6379',
+            task_resource_environment=self.asset_environment,
+        )
+        MiddlewareAsset.objects.create(
+            name='test-cache', asset_type='redis', environment='test', endpoint='redis-test:6379',
+            task_resource_environment=other_environment,
+        )
+
+        response = self.client.get('/api/middleware/overview/', {
+            'task_resource_environment_id': self.asset_environment.id,
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item['name'] for item in response.json()['assets']], ['prod-cache'])
 
     def test_update_asset(self):
         asset = MiddlewareAsset.objects.create(

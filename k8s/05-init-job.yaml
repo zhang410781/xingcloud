@@ -18,7 +18,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: xing-cloud-init
-          image: registry.cn-hangzhou.aliyuncs.com/xinghaik8s/ops-agent:a1.02
+          image: registry.cn-hangzhou.aliyuncs.com/xinghaik8s/ops-agent:context-catalog-20260717-1209
           imagePullPolicy: Always
           envFrom:
             - configMapRef:
@@ -73,7 +73,7 @@ spec:
               conn.close()
               PY
               python manage.py migrate --noinput
-              python manage.py shell -c "from ops.alert_rule_presets import ensure_builtin_alert_rule_templates; ensure_builtin_alert_rule_templates()"
+              python manage.py seed_observability_presets
           resources:
             requests:
               cpu: 250m
