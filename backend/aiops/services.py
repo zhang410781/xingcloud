@@ -6328,6 +6328,13 @@ def _build_direct_tool_result(
         )),
         citations,
     )
+    if isinstance(tool_result.get('inspection'), dict):
+        inspection = tool_result['inspection']
+        final_content = (
+            f"📋 **巡检报告**\n\n"
+            f"> {inspection.get('conclusion') or '巡检已完成'} · 健康分 {inspection.get('health_score', '-')} 分\n\n"
+            '完整指标、节点、Pod、工作负载、日志与事件请查看下方巡检报告。'
+        )
     formatter_result = None
     formatter_error = ''
     if prefer_llm and provider:
@@ -9712,7 +9719,7 @@ def _replace_response_block(blocks, next_block):
 
 def _build_response_blocks(sections=None, tool_names=None, collected_tool_outputs=None, pending_action_draft=None):
     blocks = []
-    report_block = _build_observability_report_block(collected_tool_outputs)
+    report_block = _build_inspection_report_block(collected_tool_outputs) or _build_observability_report_block(collected_tool_outputs)
     if report_block:
         blocks.append(report_block)
     trace_block = _build_tool_trace_response_block(tool_names, collected_tool_outputs)
@@ -9723,6 +9730,79 @@ def _build_response_blocks(sections=None, tool_names=None, collected_tool_output
     if pending_block:
         blocks.append(pending_block)
     return blocks[:8]
+
+
+def _inspection_status_label(status):
+    value = str(status or '').lower()
+    if value in {'critical', 'error', 'failed'}:
+        return '❌ 异常'
+    if value in {'warning', 'warn'}:
+        return '⚠️ 警告'
+    if value in {'unknown', 'partial', 'unavailable'}:
+        return '⚪ 数据缺失'
+    return '✅ 正常'
+
+
+def _build_inspection_report_block(collected_tool_outputs):
+    """Render deterministic K8s inspection evidence as native web report tables."""
+    for entry in collected_tool_outputs or []:
+        payload = entry.get('tool_output') if isinstance(entry, dict) else None
+        inspection = payload.get('inspection') if isinstance(payload, dict) else None
+        if not isinstance(inspection, dict):
+            continue
+        evidence = inspection.get('evidence') or {}
+        k8s = evidence.get('k8s') or {}
+        resources = k8s.get('resources') or {}
+        nodes = k8s.get('nodes') or []
+        pods = sorted(k8s.get('pods') or [], key=lambda item: int(item.get('restarts') or 0), reverse=True)
+        metrics = evidence.get('metrics') or []
+        profile = str(inspection.get('profile') or 'cluster')
+        profile_title = {'cluster': '集群综合巡检', 'server': '服务器巡检', 'node': '节点巡检', 'workload': '工作负载巡检', 'service': '服务巡检', 'control_plane': '控制面巡检'}.get(profile, '巡检')
+        metric_rows = []
+        for item in metrics[:20]:
+            anomaly = (item.get('anomaly') or {}).get('is_anomaly')
+            status = 'warning' if anomaly else ('normal' if item.get('status') == 'ok' and item.get('latest') is not None else 'unknown')
+            metric_rows.append([
+                item.get('title') or item.get('code') or '-',
+                item.get('latest') if item.get('latest') is not None else '未获取',
+                _inspection_status_label(status),
+                '偏离历史基线' if anomaly else ('采样正常' if status == 'normal' else '指标不存在、无数据或查询失败'),
+            ])
+        workload_rows = []
+        for kind, label, desired_key, ready_key in [
+            ('deployments', 'Deployment', 'replicas', 'ready_replicas'),
+            ('statefulsets', 'StatefulSet', 'replicas', 'ready_replicas'),
+            ('daemonsets', 'DaemonSet', 'desired', 'ready'),
+        ]:
+            items = resources.get(kind) or []
+            unhealthy = [item for item in items if item.get(desired_key) != item.get(ready_key)]
+            workload_rows.append([label, len(items), len(unhealthy), _inspection_status_label('warning' if unhealthy else 'normal')])
+        pvcs = resources.get('pvcs') or []
+        unbound_pvcs = [item for item in pvcs if item.get('status') != 'Bound']
+        workload_rows.append(['PVC', len(pvcs), len(unbound_pvcs), _inspection_status_label('warning' if unbound_pvcs else 'normal')])
+        logs = evidence.get('logs') or {}
+        tables = [
+            {'title': '📈 指标采样（Prometheus）', 'columns': ['指标', '当前值', '状态', '说明'], 'rows': metric_rows},
+            {'title': '🖥️ 节点状态（K8s API）', 'columns': ['节点', '状态'], 'rows': [[item.get('name') or '未命名节点', _inspection_status_label('normal' if item.get('status') == 'Ready' else 'critical')] for item in nodes[:20]]},
+            {'title': '📦 Pod 重启排行（K8s API）', 'columns': ['命名空间', 'Pod', '状态', '重启次数', '巡检状态'], 'rows': [[item.get('namespace') or 'default', item.get('name') or '未命名 Pod', item.get('status') or 'Unknown', item.get('restarts') or 0, _inspection_status_label('warning' if int(item.get('restarts') or 0) > 5 else ('normal' if item.get('status') in {'Running', 'Succeeded'} else 'warning'))] for item in pods[:10]]},
+            {'title': '🧩 工作负载与存储（K8s API）', 'columns': ['资源类型', '总数', '异常/未就绪', '状态'], 'rows': workload_rows},
+            {'title': '🔍 日志与事件', 'columns': ['项目', '数量', '状态'], 'rows': [['日志样本', f'{len(logs.get("samples") or [])} 条', _inspection_status_label('normal' if evidence.get('source_coverage', {}).get('logs') else 'unknown')], ['异常日志', f'{len(evidence.get("log_findings") or [])} 项', _inspection_status_label('warning' if evidence.get('log_findings') else 'normal')], ['Warning Event', f'{len(evidence.get("event_findings") or [])} 项', _inspection_status_label('warning' if evidence.get('event_findings') else 'normal')]]},
+            {'title': '⚠️ 巡检发现', 'columns': ['级别', '对象', '发现'], 'rows': [[_inspection_status_label(item.get('severity')), item.get('target') or item.get('namespace') or '集群', item.get('message') or item.get('code') or '异常'] for item in inspection.get('findings') or []]},
+        ]
+        return {
+            'id': 'inspection-report', 'type': 'inspection_report',
+            'title': f'📋 {profile_title}',
+            'summary': f'{inspection.get("conclusion") or "巡检已完成"} · 健康分 {inspection.get("health_score", "-")} 分',
+            'metrics': [
+                {'label': '健康分', 'value': f'{inspection.get("health_score", "-")} 分'},
+                {'label': 'Ready 节点', 'value': f'{(inspection.get("cluster_summary") or {}).get("ready_nodes", 0)}/{(inspection.get("cluster_summary") or {}).get("node_count", 0)}'},
+                {'label': 'Pod 数量', 'value': str((inspection.get("cluster_summary") or {}).get('pod_count', 0))},
+                {'label': '风险项', 'value': str(len(inspection.get('findings') or []))},
+            ],
+            'tables': [table for table in tables if table.get('rows')],
+            'items': [{'text': '建议操作', 'detail': item, 'status': 'warning'} for item in (inspection.get('suggestions') or [])],
+        }
+    return None
 
 
 def _build_observability_report_block(collected_tool_outputs):

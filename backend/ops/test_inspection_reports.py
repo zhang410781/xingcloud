@@ -223,7 +223,7 @@ class InspectionReportScheduleTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = send.call_args.kwargs['body']
-        self.assertIn('数据源覆盖', body)
+        self.assertNotIn('数据源覆盖', body)
         self.assertIn('节点状态', body)
         self.assertIn('Pod 状态与重启排行', body)
         self.assertIn('指标巡检（来源：Prometheus）', body)

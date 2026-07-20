@@ -366,13 +366,6 @@ def _format_skill_style_report(schedule, result):
         lines.append(_report_table(['健康分', '结论状态', 'Ready 节点', 'Pod 数', '有效指标', '指标缺失'], summary_rows))
     lines.extend(['', f'> {result.get("conclusion") or "巡检已完成"}'])
 
-    lines.extend(['', '## 📡 数据源覆盖'])
-    coverage_table = _report_table(['来源', '状态', '说明'], [
-        [name, '✅ 已获取' if enabled else '⚪ 未获取', '可用于本次巡检' if enabled else '该来源未参与健康结论']
-        for name, enabled in coverage.items()
-    ])
-    lines.append(coverage_table or '⚪ 未登记数据源覆盖信息')
-
     if schedule.profile == 'server':
         lines.extend(['', '## 🖥️ 服务器资源（来源：Prometheus）'])
         lines.append(_report_table(['指标', '当前值', '状态'], [

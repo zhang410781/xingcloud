@@ -289,7 +289,30 @@
                           </div>
 
                           <div v-show="isResponseBlockExpanded(message, responseBlock, responseBlockIndex)" class="response-block-content">
-                            <div v-if="responseBlock.type === 'report'" class="response-block-report">
+                            <div v-if="responseBlock.type === 'inspection_report'" class="response-block-inspection-report">
+                              <div v-if="getBlockMetrics(responseBlock).length" class="response-block-metric-grid">
+                                <div v-for="metric in getBlockMetrics(responseBlock)" :key="`${responseBlock._key}-metric-${metric.label}`" class="response-block-metric">
+                                  <span>{{ metric.label }}</span>
+                                  <strong>{{ metric.value }}</strong>
+                                </div>
+                              </div>
+                              <section v-for="(table, tableIndex) in responseBlock.tables || []" :key="`${responseBlock._key}-table-${tableIndex}`" class="inspection-table-section">
+                                <div class="inspection-table-title">{{ table.title }}</div>
+                                <div class="inspection-table-scroll">
+                                  <table class="inspection-report-table">
+                                    <thead><tr><th v-for="column in table.columns || []" :key="column">{{ column }}</th></tr></thead>
+                                    <tbody><tr v-for="(row, rowIndex) in table.rows || []" :key="rowIndex"><td v-for="(cell, cellIndex) in row" :key="cellIndex">{{ cell }}</td></tr></tbody>
+                                  </table>
+                                </div>
+                              </section>
+                              <div v-if="getBlockItems(responseBlock).length" class="response-block-item-list">
+                                <div v-for="item in getBlockItems(responseBlock)" :key="`${responseBlock._key}-inspection-${getBlockItemText(item)}`" class="response-block-item">
+                                  <span class="response-block-item-dot" :class="getBlockItemStatus(item)" />
+                                  <div class="response-block-item-body"><div class="response-block-item-text">{{ getBlockItemText(item) }}</div><div v-if="getBlockItemDetail(item)" class="response-block-item-detail">{{ getBlockItemDetail(item) }}</div></div>
+                                </div>
+                              </div>
+                            </div>
+                            <div v-else-if="responseBlock.type === 'report'" class="response-block-report">
                               <div v-if="getBlockMetrics(responseBlock).length" class="response-block-metric-grid">
                                 <div v-for="metric in getBlockMetrics(responseBlock)" :key="`${responseBlock._key}-metric-${metric.label}`" class="response-block-metric">
                                   <span>{{ metric.label }}</span>
@@ -915,6 +938,7 @@ function getEnvironmentCandidates(message) {
 }
 
 const RESPONSE_BLOCK_TYPE_LABELS = {
+  inspection_report: '巡检报告',
   context_summary: '上下文',
   context_form: '预检',
   incident_card: '摘要',
@@ -1141,6 +1165,7 @@ function getMessageBlocks(message) {
         items: normalizedItems,
         actions: Array.isArray(block?.actions) ? block.actions.filter(Boolean) : [],
         metrics: Array.isArray(block?.metrics) ? block.metrics.filter(Boolean) : [],
+        tables: Array.isArray(block?.tables) ? block.tables.filter(Boolean) : [],
         fields: normalizeResponseBlockFields(block?.fields),
         _key: String(block?.id || block?.key || `${type}-${index}`),
       }
@@ -2345,6 +2370,7 @@ onBeforeUnmount(() => {
 .response-block-card.type-tool_trace{background:#f8fafc;border-color:#e2e8f0}
 .response-block-card.type-context_summary{background:linear-gradient(180deg,#f8fbff 0%,#fff 100%);border-color:#dbeafe}
 .response-block-card.type-report{background:linear-gradient(180deg,#f5faff 0%,#fff 100%);border-color:#bfdbfe}
+.response-block-card.type-inspection_report{background:linear-gradient(180deg,#f5faff 0%,#fff 100%);border-color:#93c5fd}
 .response-block-card.type-context_form{background:linear-gradient(180deg,#fffaf5 0%,#fff 100%);border-color:#fed7aa}
 .response-block-card.type-query_suggestion{background:linear-gradient(180deg,#f8fbff 0%,#fff 100%);border-color:#bfdbfe}
 .response-block-card.type-risk_notice,.response-block-card.type-approval_form{background:linear-gradient(180deg,#fffaf5 0%,#fff 100%);border-color:#fed7aa}
@@ -2384,6 +2410,13 @@ onBeforeUnmount(() => {
 .response-block-chip{border:1px solid #bfdbfe;border-radius:999px;background:#fff;color:#1d4ed8;padding:4px 8px;font-size:11px;font-weight:600;cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .response-block-chip:hover{background:#eff6ff}
 .response-block-item-list{display:flex;flex-direction:column;gap:7px;margin-top:8px}
+.inspection-table-section{margin-top:12px}
+.inspection-table-title{margin-bottom:6px;color:#1e3a5f;font-size:12px;font-weight:700}
+.inspection-table-scroll{overflow:auto;border:1px solid #dbeafe;border-radius:9px;background:#fff}
+.inspection-report-table{width:100%;min-width:520px;border-collapse:collapse;font-size:11px;color:#334155}
+.inspection-report-table th,.inspection-report-table td{padding:7px 8px;border-bottom:1px solid #e5edf7;text-align:left;vertical-align:top;line-height:1.45;white-space:nowrap}
+.inspection-report-table th{background:#f8fbff;color:#475569;font-weight:700}
+.inspection-report-table tr:last-child td{border-bottom:none}
 .response-block-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px;padding-top:7px;border-top:1px dashed #e2e8f0}
 .response-block-action-btn{height:24px;padding:3px 8px;border-radius:8px;color:#334155}
 .response-block-action-btn :deep(.el-icon){margin-right:3px}
