@@ -56,6 +56,28 @@ class BusinessContextTests(TestCase):
         self.assertTrue(result['ready'])
         self.assertEqual(result['context']['k8s_cluster_id'], self.cluster.id)
 
+    def test_binding_health_reads_clickhouse_collection_field_mapping(self):
+        self.logs.provider = 'clickhouse'
+        self.logs.config = {
+            'default_collection': 'container-logs',
+            'collections': [{
+                'key': 'container-logs',
+                'database': 'logs',
+                'table': 'container_logs',
+                'time_field': 'event_time',
+                'message_fields': 'message,log',
+                'level_field': 'level',
+                'source_fields': 'namespace,pod_name,service_name',
+            }],
+        }
+        self.logs.save(update_fields=['provider', 'config', 'updated_at'])
+
+        result = validate_context_bindings(self.context)
+        check = next(item for item in result['checks'] if item['code'] == 'log_field_map')
+
+        self.assertEqual(check['status'], 'ready')
+        self.assertEqual(check['detail'], '已配置')
+
     def test_context_options_are_available_to_authenticated_users(self):
         user = get_user_model().objects.create_user(username='context-viewer', password='test-password')
         self.client.force_login(user)

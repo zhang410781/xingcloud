@@ -92,6 +92,48 @@ def discover_context_bindings(code):
     }
 
 
+def _configured_log_field_map(log):
+    """Return the canonical log fields configured by a datasource.
+
+    Elasticsearch stores its mapping at the datasource level.  ClickHouse uses
+    named collections instead, so reading only ``config.field_map`` made every
+    ClickHouse binding look incomplete even when its collection was usable.
+    """
+    config = log.config if isinstance(log.config, dict) else {}
+    field_map = config.get('field_map') if isinstance(config.get('field_map'), dict) else {}
+    if log.provider != 'clickhouse':
+        return {str(key): value for key, value in field_map.items() if value}
+
+    try:
+        from ops.log_views import _resolve_clickhouse_collection
+
+        collection = _resolve_clickhouse_collection(
+            config,
+            {'collection': config.get('default_collection') or 'container-logs'},
+        )
+    except Exception:
+        return {}
+
+    configured = {
+        'timestamp': collection.get('time_field'),
+        'message': collection.get('message_fields'),
+        # ClickHouse can derive a level from the message when no dedicated
+        # column exists; it remains an explicit, diagnosable mapping.
+        'level': collection.get('level_field') or '__derived__',
+    }
+    source_fields = ','.join(
+        str(collection.get(key) or '')
+        for key in ('source_fields', 'search_fields')
+    ).lower()
+    if 'namespace' in source_fields:
+        configured['namespace'] = 'configured'
+    if 'pod' in source_fields:
+        configured['pod'] = 'configured'
+    if any(token in source_fields for token in ('service', 'app', 'application')):
+        configured['service'] = 'configured'
+    return {key: value for key, value in configured.items() if value}
+
+
 def validate_context_bindings(context, *, live=False):
     from ops.models import AlertRule, MiddlewareAsset, TaskResource
 
@@ -108,7 +150,7 @@ def validate_context_bindings(context, *, live=False):
     add('log_datasource', '日志数据源', bool(log and log.is_enabled), getattr(log, 'name', '') or '未绑定')
     if log:
         log_config = log.config if isinstance(log.config, dict) else {}
-        field_map = log_config.get('field_map') if isinstance(log_config.get('field_map'), dict) else {}
+        field_map = _configured_log_field_map(log)
         required_log_fields = {'timestamp', 'message', 'level', 'service', 'namespace', 'pod'}
         missing_log_fields = sorted(required_log_fields - {key for key, value in field_map.items() if value})
         add(
