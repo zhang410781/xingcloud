@@ -9743,6 +9743,23 @@ def _inspection_status_label(status):
     return '✅ 正常'
 
 
+def _inspection_metric_value(item):
+    value = item.get('latest')
+    if value is None:
+        return '未获取'
+    code = str(item.get('code') or '')
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if code == 'limits_memory':
+        return f'{number / 1024 ** 3:.2f} GiB'
+    if code in {'network_receive', 'network_transmit', 'disk_io'}:
+        return f'{number / 1024 ** 2:.2f} MiB/s'
+    units = {'node_count': '个', 'node_cpu': '%', 'node_memory': '%', 'disk_usage': '%', 'inode_usage': '%', 'network_errors': '/s', 'network_drops': '/s', 'tcp_connections': '个', 'pod_restarts': '次/15分钟', 'pvc_usage': '%', 'apiserver_rate': '请求/s', 'apiserver_errors': '错误/s', 'apiserver_latency': '秒', 'requests_cpu': '核'}
+    return f'{number:.2f}{units.get(code, "")}'
+
+
 def _build_inspection_report_block(collected_tool_outputs):
     """Render deterministic K8s inspection evidence as native web report tables."""
     for entry in collected_tool_outputs or []:
@@ -9764,7 +9781,7 @@ def _build_inspection_report_block(collected_tool_outputs):
             status = 'warning' if anomaly else ('normal' if item.get('status') == 'ok' and item.get('latest') is not None else 'unknown')
             metric_rows.append([
                 item.get('title') or item.get('code') or '-',
-                item.get('latest') if item.get('latest') is not None else '未获取',
+                _inspection_metric_value(item),
                 _inspection_status_label(status),
                 '偏离历史基线' if anomaly else ('采样正常' if status == 'normal' else '指标不存在、无数据或查询失败'),
             ])
@@ -9784,7 +9801,7 @@ def _build_inspection_report_block(collected_tool_outputs):
         tables = [
             {'title': '📈 指标采样（Prometheus）', 'columns': ['指标', '当前值', '状态', '说明'], 'rows': metric_rows},
             {'title': '🖥️ 节点状态（K8s API）', 'columns': ['节点', '状态'], 'rows': [[item.get('name') or '未命名节点', _inspection_status_label('normal' if item.get('status') == 'Ready' else 'critical')] for item in nodes[:20]]},
-            {'title': '📦 Pod 重启排行（K8s API）', 'columns': ['命名空间', 'Pod', '状态', '重启次数', '巡检状态'], 'rows': [[item.get('namespace') or 'default', item.get('name') or '未命名 Pod', item.get('status') or 'Unknown', item.get('restarts') or 0, _inspection_status_label('warning' if int(item.get('restarts') or 0) > 5 else ('normal' if item.get('status') in {'Running', 'Succeeded'} else 'warning'))] for item in pods[:10]]},
+            {'title': '📦 Pod 重启排行（K8s API）', 'columns': ['命名空间', 'Pod', '状态', '累计重启', '当前状态'], 'rows': [[item.get('namespace') or 'default', item.get('name') or '未命名 Pod', item.get('status') or 'Unknown', item.get('restarts') or 0, _inspection_status_label('normal' if item.get('status') in {'Running', 'Succeeded'} else 'warning')] for item in pods[:10]], 'note': '累计重启不代表近期异常；近期重启以 Pod 重启（15分钟）指标为准。'},
             {'title': '🧩 工作负载与存储（K8s API）', 'columns': ['资源类型', '总数', '异常/未就绪', '状态'], 'rows': workload_rows},
             {'title': '🔍 日志与事件', 'columns': ['项目', '数量', '状态'], 'rows': [['日志样本', f'{len(logs.get("samples") or [])} 条', _inspection_status_label('normal' if evidence.get('source_coverage', {}).get('logs') else 'unknown')], ['异常日志', f'{len(evidence.get("log_findings") or [])} 项', _inspection_status_label('warning' if evidence.get('log_findings') else 'normal')], ['Warning Event', f'{len(evidence.get("event_findings") or [])} 项', _inspection_status_label('warning' if evidence.get('event_findings') else 'normal')]]},
             {'title': '⚠️ 巡检发现', 'columns': ['级别', '对象', '发现'], 'rows': [[_inspection_status_label(item.get('severity')), item.get('target') or item.get('namespace') or '集群', item.get('message') or item.get('code') or '异常'] for item in inspection.get('findings') or []]},

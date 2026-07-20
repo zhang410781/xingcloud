@@ -304,6 +304,7 @@
                                     <tbody><tr v-for="(row, rowIndex) in table.rows || []" :key="rowIndex"><td v-for="(cell, cellIndex) in row" :key="cellIndex">{{ cell }}</td></tr></tbody>
                                   </table>
                                 </div>
+                                <div v-if="table.note" class="inspection-table-note">{{ table.note }}</div>
                               </section>
                               <div v-if="getBlockItems(responseBlock).length" class="response-block-item-list">
                                 <div v-for="item in getBlockItems(responseBlock)" :key="`${responseBlock._key}-inspection-${getBlockItemText(item)}`" class="response-block-item">
@@ -2417,6 +2418,7 @@ onBeforeUnmount(() => {
 .inspection-report-table th,.inspection-report-table td{padding:7px 8px;border-bottom:1px solid #e5edf7;text-align:left;vertical-align:top;line-height:1.45;white-space:nowrap}
 .inspection-report-table th{background:#f8fbff;color:#475569;font-weight:700}
 .inspection-report-table tr:last-child td{border-bottom:none}
+.inspection-table-note{margin-top:5px;color:#64748b;font-size:10px;line-height:1.45}
 .response-block-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px;padding-top:7px;border-top:1px dashed #e2e8f0}
 .response-block-action-btn{height:24px;padding:3px 8px;border-radius:8px;color:#334155}
 .response-block-action-btn :deep(.el-icon){margin-right:3px}

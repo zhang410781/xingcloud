@@ -311,6 +311,33 @@ def _report_table(headers, rows):
     return '\n'.join([header, align, *body])
 
 
+_METRIC_UNITS = {
+    'node_count': '个', 'node_cpu': '%', 'node_memory': '%', 'node_load': '',
+    'disk_usage': '%', 'inode_usage': '%', 'network_receive': 'B/s',
+    'network_transmit': 'B/s', 'network_errors': '/s', 'network_drops': '/s',
+    'tcp_connections': '个', 'disk_io': 'B/s', 'pod_restarts': '次/15分钟',
+    'pvc_usage': '%', 'apiserver_rate': '请求/s', 'apiserver_errors': '错误/s',
+    'apiserver_latency': '秒', 'requests_cpu': '核', 'limits_memory': '字节',
+}
+
+
+def _format_metric_value(metric):
+    value = metric.get('latest')
+    if value is None:
+        return '未获取'
+    code = str(metric.get('code') or '')
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if code == 'limits_memory':
+        return f'{number / 1024 ** 3:.2f} GiB'
+    if code in {'network_receive', 'network_transmit', 'disk_io'}:
+        return f'{number / 1024 ** 2:.2f} MiB/s'
+    unit = _METRIC_UNITS.get(code, '')
+    return f'{number:.2f}{unit}'
+
+
 def _format_skill_style_report(schedule, result):
     """Format scheduled inspections as a deterministic Agent-1-style report."""
     evidence = result.get('evidence') or {}
@@ -337,10 +364,7 @@ def _format_skill_style_report(schedule, result):
     title = f'【巡检报告】{context.name} · {schedule.get_profile_display()}'
     scope = schedule.get_profile_display()
     lines = [
-        '━━━━━━━━━━━━━━━━━━━━',
-        f'📋 {scope} · {context.name}',
-        f'时间：{generated_at.strftime("%Y-%m-%d %H:%M:%S")} · 证据窗口：{schedule.window_minutes} 分钟',
-        '━━━━━━━━━━━━━━━━━━━━',
+        f'> 范围：{scope} · 时间：{generated_at.strftime("%Y-%m-%d %H:%M:%S")} · 证据窗口：{schedule.window_minutes} 分钟',
         '',
         '## 📊 巡检摘要',
     ]
@@ -382,13 +406,14 @@ def _format_skill_style_report(schedule, result):
         ]))
         lines.extend(['', '## 📦 Pod 状态与重启排行（来源：K8s API）'])
         restart_pods = sorted(pods, key=lambda item: int(item.get('restarts') or 0), reverse=True)
-        lines.append(_report_table(['命名空间', 'Pod', '状态', '重启次数', '巡检状态'], [
+        lines.append(_report_table(['命名空间', 'Pod', '状态', '累计重启', '当前状态'], [
             [
                 item.get('namespace') or 'default', item.get('name') or '未命名 Pod',
                 item.get('status') or 'Unknown', item.get('restarts') or 0,
-                _report_status_badge('warning' if int(item.get('restarts') or 0) > 5 else ('normal' if item.get('status') in {'Running', 'Succeeded'} else 'warning')),
+                _report_status_badge('normal' if item.get('status') in {'Running', 'Succeeded'} else 'warning'),
             ] for item in restart_pods[:10]
         ]))
+        lines.append('说明：此处为容器生命周期累计重启次数；近期重启以“指标巡检”中的 `Pod 重启（15分钟）` 为准。')
         lines.extend(['', '## 🧩 工作负载与存储（来源：K8s API）'])
         workload_rows = []
         for kind, label, desired_key, ready_key in [
@@ -411,7 +436,7 @@ def _format_skill_style_report(schedule, result):
         status = 'warning' if anomaly else ('normal' if item.get('status') == 'ok' and item.get('latest') is not None else 'unknown')
         metric_rows.append([
             item.get('title') or item.get('code'),
-            _display_report_value(item.get('latest')),
+            _format_metric_value(item),
             _report_status_badge(status),
             '偏离历史基线' if anomaly else ('采样正常' if status == 'normal' else '指标不存在、无数据或查询失败'),
         ])
@@ -424,9 +449,11 @@ def _format_skill_style_report(schedule, result):
         ['异常日志', f'{len(evidence.get("log_findings") or [])} 项', _report_status_badge('warning' if evidence.get('log_findings') else 'normal')],
         ['Warning Event', f'{len(evidence.get("event_findings") or [])} 项', _report_status_badge('warning' if evidence.get('event_findings') else 'normal')],
     ]))
-    if samples:
+    if evidence.get('log_findings'):
         lines.append('最近异常日志样本：')
         lines.extend(f'- {str(item.get("message") or item.get("text") or item)[:240]}' for item in samples[:5])
+    else:
+        lines.append('✅ 本时间窗未发现符合错误规则的日志样本。')
 
     lines.extend(['', '## ⚠️ 巡检发现'])
     lines.append(_report_table(['级别', '对象', '发现'], [
@@ -444,8 +471,11 @@ def _format_skill_style_report(schedule, result):
     lines.append(_report_table(['项目', '说明', '状态'], quality_rows))
 
     lines.extend(['', '## ✅ 建议操作'])
+    highest = next((item.get('severity') for item in findings if item.get('severity') == 'critical'), None)
+    priority = 'P0' if highest else ('P1' if findings else 'P2')
+    purpose = '立即控制严重风险' if priority == 'P0' else ('复核异常趋势并确认是否持续' if priority == 'P1' else '保持日常观察')
     lines.append(_report_table(['优先级', '操作建议', '目的'], [
-        ['P0', item, '恢复关键监控或处理当前异常'] for item in (result.get('suggestions') or ['保持当前监控并按计划复查'])
+        [priority, item, purpose] for item in (result.get('suggestions') or ['保持当前监控并按计划复查'])
     ]))
     lines.extend(['', '━━━━━━━━━━━━━━━━━━━━', '报告仅基于 Prometheus、K8s API、日志源与资产证据生成；数据缺失不作推断。', '━━━━━━━━━━━━━━━━━━━━'])
     result['markdown'] = '\n'.join(lines)
