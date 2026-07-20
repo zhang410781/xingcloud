@@ -154,14 +154,43 @@
           <el-form-item v-if="form.config.auth_type === 'bearer'" label="Bearer Token">
             <el-input v-model="form.config.bearer_token" show-password :placeholder="secretPlaceholder('bearer_token')" />
           </el-form-item>
-          <el-form-item label="索引模式">
-            <el-input v-model="form.config.index_pattern" placeholder="logs-*" />
-          </el-form-item>
-          <el-form-item label="时间字段">
-            <el-input v-model="form.config.time_field" placeholder="@timestamp" />
-          </el-form-item>
-          <el-form-item label="消息字段">
-            <el-input v-model="form.config.message_fields" placeholder="message,log,msg" />
+          <el-form-item label="ES 日志集合">
+            <div class="collection-editor">
+              <div class="collection-toolbar">
+                <span>{{ form.config.collections?.length || 0 }} 个日志集合</span>
+                <div>
+                  <el-button size="small" @click="loadElkIndices" :loading="catalogLoading">加载索引</el-button>
+                  <el-button size="small" @click="addK8sElkCollection">添加 K8S 容器日志</el-button>
+                  <el-button size="small" type="primary" @click="addElkCollection"><el-icon><Plus /></el-icon>新增集合</el-button>
+                </div>
+              </div>
+              <div v-for="(collection, index) in form.config.collections" :key="collection.key || index" class="collection-item">
+                <div class="collection-item__head">
+                  <el-input v-model="collection.name" size="small" placeholder="名称，例如 K8S 容器日志" />
+                  <div>
+                    <el-button size="small" @click="recommendElkFields(index)" :loading="recommendLoadingIndex === index">自动识别字段</el-button>
+                    <el-button size="small" type="danger" plain @click="removeElkCollection(index)">删除</el-button>
+                  </div>
+                </div>
+                <div class="collection-grid">
+                  <el-input v-model="collection.key" size="small" placeholder="唯一标识，如 container-logs" />
+                  <el-select v-model="collection.index_pattern" size="small" filterable allow-create placeholder="ES 索引模式">
+                    <el-option v-for="item in elkIndices" :key="item.name" :label="item.name" :value="item.name" />
+                  </el-select>
+                  <el-input v-model="collection.field_map.timestamp" size="small" placeholder="时间字段，例如 @timestamp" />
+                  <el-input v-model="collection.field_map.message" size="small" placeholder="消息字段，例如 message" />
+                  <el-input v-model="collection.field_map.level" size="small" placeholder="级别字段，例如 log.level" />
+                  <el-input v-model="collection.field_map.service" size="small" placeholder="服务字段，例如 kubernetes.labels.app" />
+                  <el-input v-model="collection.field_map.namespace" size="small" placeholder="命名空间，例如 kubernetes.namespace_name" />
+                  <el-input v-model="collection.field_map.pod" size="small" placeholder="Pod，例如 kubernetes.pod_name" />
+                  <el-input v-model="collection.field_map.container" size="small" placeholder="容器，例如 kubernetes.container_name" />
+                  <el-input v-model="collection.field_map.host" size="small" placeholder="节点，例如 kubernetes.node_name" />
+                </div>
+              </div>
+              <div v-if="!form.config.collections?.length" class="collection-empty">
+                先添加“K8S 容器日志”，再用“自动识别字段”按实际 ES 文档填充映射；事件和 Ingress 请在对应索引存在后单独添加。
+              </div>
+            </div>
           </el-form-item>
         </template>
 
@@ -264,6 +293,7 @@ const catalogLoading = ref(false)
 const recommendLoadingIndex = ref(null)
 const clickhouseDatabases = ref([])
 const clickhouseTables = ref({})
+const elkIndices = ref([])
 const form = ref(createEmptyForm())
 
 function createEmptyForm(provider = 'loki') {
@@ -285,9 +315,12 @@ function getProviderDefaults(provider) {
   })
   if (provider === 'elk') {
     config.auth_type = config.auth_type || 'none'
-    config.index_pattern = config.index_pattern || 'logs-*'
+    config.index_pattern = config.index_pattern || 'k8s-*'
     config.time_field = config.time_field || '@timestamp'
     config.message_fields = config.message_fields || 'message,log,msg'
+    config.collections = Array.isArray(config.collections) && config.collections.length
+      ? config.collections : [createElkCollection({ key: 'container-logs', name: 'K8S 容器日志' })]
+    config.default_collection = config.default_collection || 'container-logs'
   }
   if (provider === 'clickhouse') {
     config.timezone = config.timezone || 'Asia/Shanghai'
@@ -388,6 +421,77 @@ function onProviderChange(provider) {
     delete form.value.config.search_fields
     form.value.config.timezone = form.value.config.timezone || 'Asia/Shanghai'
     form.value.config.collections = Array.isArray(form.value.config.collections) ? form.value.config.collections : []
+  }
+  if (provider === 'elk') {
+    form.value.config.collections = Array.isArray(form.value.config.collections) ? form.value.config.collections : []
+  }
+}
+
+function createElkCollection(seed = {}) {
+  const fieldMap = seed.field_map || {}
+  return {
+    key: seed.key || '', name: seed.name || '', index_pattern: seed.index_pattern || 'k8s-*',
+    field_map: {
+      timestamp: fieldMap.timestamp || '@timestamp', message: fieldMap.message || 'message', level: fieldMap.level || 'log.level',
+      service: fieldMap.service || 'kubernetes.labels.app', namespace: fieldMap.namespace || 'kubernetes.namespace_name',
+      pod: fieldMap.pod || 'kubernetes.pod_name', container: fieldMap.container || 'kubernetes.container_name', host: fieldMap.host || 'kubernetes.node_name',
+    },
+  }
+}
+
+function ensureElkCollections() {
+  if (!Array.isArray(form.value.config.collections)) form.value.config.collections = []
+}
+
+function addElkCollection() {
+  ensureElkCollections()
+  form.value.config.collections.push(createElkCollection())
+}
+
+function addK8sElkCollection() {
+  ensureElkCollections()
+  if (form.value.config.collections.some((item) => item.key === 'container-logs')) return ElMessage.info('K8S 容器日志集合已存在')
+  form.value.config.collections.push(createElkCollection({ key: 'container-logs', name: 'K8S 容器日志' }))
+}
+
+function removeElkCollection(index) {
+  ensureElkCollections()
+  form.value.config.collections.splice(index, 1)
+}
+
+function elkConnectionConfig() {
+  const config = form.value.config || {}
+  return {
+    endpoint: config.endpoint || '', auth_type: config.auth_type || 'none', username: config.username || '', password: config.password || '',
+    api_key: config.api_key || '', bearer_token: config.bearer_token || '',
+  }
+}
+
+async function loadElkIndices() {
+  if (form.value.provider !== 'elk') return
+  catalogLoading.value = true
+  try {
+    const response = await getLogProviderCatalog('elk', { config: elkConnectionConfig(), action: 'sources', index_pattern: '*' })
+    elkIndices.value = response.items || []
+  } finally {
+    catalogLoading.value = false
+  }
+}
+
+async function recommendElkFields(index) {
+  const collection = form.value.config.collections?.[index]
+  if (!collection?.index_pattern) return ElMessage.warning('请先填写或选择 ES 索引模式')
+  recommendLoadingIndex.value = index
+  try {
+    const response = await getLogProviderCatalog('elk', {
+      config: elkConnectionConfig(), action: 'recommend_fields', index_pattern: collection.index_pattern,
+    })
+    collection.field_map = { ...collection.field_map, ...(response.recommendation || {}) }
+    if (!collection.key) collection.key = collection.index_pattern.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase()
+    if (!collection.name) collection.name = collection.index_pattern
+    ElMessage.success('已根据最新日志样本填充字段映射')
+  } finally {
+    recommendLoadingIndex.value = null
   }
 }
 
@@ -508,6 +612,20 @@ function normalizeClickHouseConfigForSave(config) {
   return normalized
 }
 
+function normalizeElkConfigForSave(config) {
+  const collections = (config.collections || []).map((item) => createElkCollection(item)).filter((item) => item.key && item.index_pattern)
+  const defaultCollection = collections.find((item) => item.key === config.default_collection) || collections[0]
+  return {
+    ...config,
+    collections,
+    default_collection: defaultCollection?.key || '',
+    index_pattern: defaultCollection?.index_pattern || config.index_pattern || 'k8s-*',
+    field_map: defaultCollection?.field_map || config.field_map || {},
+    time_field: defaultCollection?.field_map?.timestamp || config.time_field || '@timestamp',
+    message_fields: defaultCollection?.field_map?.message || config.message_fields || 'message,log,msg',
+  }
+}
+
 function openDialog(row) {
   if (row) {
     editingId.value = row.id
@@ -536,6 +654,13 @@ function openDialog(row) {
         collections: (config.collections || []).map((item) => createClickHouseCollection(item)),
       }
     }
+    if (row.provider === 'elk') {
+      const legacyCollection = config.index_pattern ? [{
+        key: config.default_collection || 'container-logs', name: 'K8S 容器日志', index_pattern: config.index_pattern,
+        field_map: config.field_map || {},
+      }] : []
+      form.value.config.collections = (config.collections?.length ? config.collections : legacyCollection).map((item) => createElkCollection(item))
+    }
   } else {
     editingId.value = null
     secretFlags.value = {}
@@ -543,6 +668,7 @@ function openDialog(row) {
   }
   clickhouseDatabases.value = []
   clickhouseTables.value = {}
+  elkIndices.value = []
   dialogVisible.value = true
 }
 
@@ -556,7 +682,9 @@ async function handleSave() {
       description: form.value.description,
       is_enabled: form.value.is_enabled,
       is_default: form.value.is_default,
-      config: form.value.provider === 'clickhouse' ? normalizeClickHouseConfigForSave(form.value.config) : form.value.config,
+      config: form.value.provider === 'clickhouse'
+        ? normalizeClickHouseConfigForSave(form.value.config)
+        : form.value.provider === 'elk' ? normalizeElkConfigForSave(form.value.config) : form.value.config,
     }
     if (editingId.value) {
       await updateLogDataSource(editingId.value, payload)

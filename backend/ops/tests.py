@@ -716,6 +716,31 @@ class LogViewsTests(TestCase):
         self.assertEqual(payload['items'][1]['docs_count'], '6')
 
     @patch('ops.log_views.http_requests.request')
+    def test_elk_catalog_recommends_kubernetes_field_map_from_sample(self, mock_request):
+        mock_request.return_value = MockHttpResponse({
+            'hits': {'hits': [{'_source': {
+                '@timestamp': '2026-07-20T00:00:00Z', 'message': 'container started', 'log': {'level': 'INFO'},
+                'kubernetes': {
+                    'namespace_name': 'xing-cloud', 'pod_name': 'api-7d5f', 'container_name': 'api',
+                    'node_name': 'k8s-master', 'labels': {'app': 'xing-cloud'},
+                },
+            }}]},
+        })
+
+        response = self.client.post(
+            '/api/log/providers/elk/catalog/',
+            {'config': {'endpoint': 'https://es.example.com:9200'}, 'action': 'recommend_fields', 'index_pattern': 'k8s-*'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        recommendation = response.json()['recommendation']
+        self.assertEqual(recommendation['timestamp'], '@timestamp')
+        self.assertEqual(recommendation['namespace'], 'kubernetes.namespace_name')
+        self.assertEqual(recommendation['pod'], 'kubernetes.pod_name')
+        self.assertEqual(recommendation['service'], 'kubernetes.labels.app')
+
+    @patch('ops.log_views.http_requests.request')
     def test_elk_query_accepts_iso_timestamps(self, mock_request):
         mock_request.return_value = MockHttpResponse(
             {

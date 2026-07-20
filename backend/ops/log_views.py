@@ -1489,6 +1489,18 @@ def _catalog_elk(config, payload):
     if not config.get('endpoint'):
         raise ProviderError('ELK endpoint is required')
     pattern = payload.get('index_pattern') or config.get('index_pattern') or '*'
+    if payload.get('action') == 'recommend_fields':
+        sample = _elk_request(
+            'POST', config.get('endpoint', ''), f'/{pattern}/_search', config,
+            body={'size': 1, 'sort': [{'@timestamp': {'order': 'desc', 'unmapped_type': 'date'}}], 'query': {'match_all': {}}},
+        )
+        hit = ((sample.get('hits') or {}).get('hits') or [{}])[0]
+        fields = sorted(_flatten_elk_fields(hit.get('_source') or {}).keys())
+        return {
+            'kind': 'field_recommendation',
+            'items': fields,
+            'recommendation': _recommend_elk_field_map(fields),
+        }
     data = _elk_request('GET', config.get('endpoint', ''), f'/_cat/indices/{pattern}', config, params={'format': 'json'})
     items = []
     for row in data:
@@ -1500,6 +1512,85 @@ def _catalog_elk(config, payload):
                 'store_size': row.get('store.size'),
             })
     return {'kind': 'indices', 'items': items}
+
+
+GENERIC_ELK_FIELD_MAP = {
+    'timestamp': '@timestamp',
+    'message': 'message',
+    'level': 'log.level',
+    'service': 'service.name',
+    'namespace': 'namespace',
+    'pod': 'pod',
+    'container': 'container',
+    'host': 'host.name',
+}
+
+
+K8S_ELK_FIELD_MAP = {
+    'timestamp': '@timestamp',
+    'message': 'message',
+    'level': 'log.level',
+    'service': 'kubernetes.labels.app',
+    'namespace': 'kubernetes.namespace_name',
+    'pod': 'kubernetes.pod_name',
+    'container': 'kubernetes.container_name',
+    'host': 'kubernetes.node_name',
+}
+
+
+def _flatten_elk_fields(value, prefix=''):
+    fields = {}
+    if not isinstance(value, dict):
+        return fields
+    for key, item in value.items():
+        path = f'{prefix}.{key}' if prefix else str(key)
+        if isinstance(item, dict):
+            fields.update(_flatten_elk_fields(item, path))
+        else:
+            fields[path] = True
+    return fields
+
+
+def _recommend_elk_field_map(fields):
+    available = set(fields or [])
+    alternatives = {
+        'timestamp': ['@timestamp', 'timestamp', 'time', 'event.created'],
+        'message': ['message', 'log', 'log.message', 'msg'],
+        'level': ['log.level', 'level', 'severity'],
+        'service': ['service.name', 'kubernetes.labels.app.kubernetes.io/name', 'kubernetes.labels.app', 'kubernetes.container_name'],
+        'namespace': ['kubernetes.namespace_name', 'namespace'],
+        'pod': ['kubernetes.pod_name', 'pod'],
+        'container': ['kubernetes.container_name', 'container'],
+        'host': ['kubernetes.node_name', 'host.name', 'host'],
+    }
+    return {
+        key: next((candidate for candidate in candidates if candidate in available), '')
+        for key, candidates in alternatives.items()
+    }
+
+
+def _elk_field_value(source, field):
+    field = str(field or '').strip()
+    if not field:
+        return None
+    return source.get(field) if field in source else _get_nested(source, field)
+
+
+def _resolve_elk_collection(config, payload):
+    collections = config.get('collections') if isinstance(config.get('collections'), list) else []
+    selected_key = payload.get('collection') or config.get('default_collection')
+    selected = next((item for item in collections if isinstance(item, dict) and item.get('key') == selected_key), None)
+    selected = selected or {}
+    index_pattern = selected.get('index_pattern') or config.get('index_pattern') or 'k8s-*'
+    field_map = dict(K8S_ELK_FIELD_MAP if str(index_pattern).startswith('k8s-') else GENERIC_ELK_FIELD_MAP)
+    if isinstance(config.get('field_map'), dict):
+        field_map.update({key: value for key, value in config['field_map'].items() if value})
+    if isinstance(selected.get('field_map'), dict):
+        field_map.update({key: value for key, value in selected['field_map'].items() if value})
+    return {
+        'index_pattern': index_pattern,
+        'field_map': field_map,
+    }
 
 
 def _query_loki(config, payload):
@@ -1566,9 +1657,11 @@ def _query_loki(config, payload):
 
 
 def _query_elk(config, payload):
-    index_pattern = payload.get('source') or payload.get('index_pattern') or config.get('index_pattern') or '*'
-    time_field = payload.get('time_field') or config.get('time_field') or '@timestamp'
-    message_fields = _split_fields(payload.get('message_fields') or config.get('message_fields'), ['message', 'log', 'msg'])
+    collection = _resolve_elk_collection(config, payload)
+    field_map = collection['field_map']
+    index_pattern = payload.get('source') or payload.get('index_pattern') or collection['index_pattern']
+    time_field = payload.get('time_field') or field_map.get('timestamp') or config.get('time_field') or '@timestamp'
+    message_fields = _split_fields(field_map.get('message') or payload.get('message_fields') or config.get('message_fields'), ['message', 'log', 'msg'])
     query = (payload.get('query') or '').strip()
     start_ms, end_ms = _time_bounds(payload)
 
@@ -1627,16 +1720,13 @@ def _query_elk(config, payload):
         timestamp = _get_nested(source, time_field) or hit.get('sort', [None])[0]
         attributes = dict(source)
         attributes['_index'] = hit.get('_index')
-        namespace = source.get('namespace') or _get_nested(source, 'kubernetes.namespace_name')
-        pod = source.get('pod') or _get_nested(source, 'kubernetes.pod_name')
-        container = source.get('container') or _get_nested(source, 'kubernetes.container_name')
-        host = source.get('host') or _get_nested(source, 'kubernetes.host')
-        raw_service = source.get('service')
+        namespace = _elk_field_value(source, field_map.get('namespace'))
+        pod = _elk_field_value(source, field_map.get('pod'))
+        container = _elk_field_value(source, field_map.get('container'))
+        host = _elk_field_value(source, field_map.get('host'))
+        raw_service = _elk_field_value(source, field_map.get('service'))
         service = (
-            _get_nested(source, 'service.name')
-            or source.get('service.name')
-            or (raw_service if isinstance(raw_service, (str, int, float)) else '')
-            or _get_nested(source, 'kubernetes.labels.app')
+            (raw_service if isinstance(raw_service, (str, int, float)) else '')
             or namespace
             or hit.get('_index')
         )
@@ -1644,7 +1734,7 @@ def _query_elk(config, payload):
         logs.append({
             'timestamp': _iso_from_ms(timestamp) if timestamp else '',
             'message': message,
-            'level': _detect_level(source.get('level') or source.get('log.level') or '', source) if source else 'unknown',
+            'level': _detect_level(_elk_field_value(source, field_map.get('level')) or '', source) if source else 'unknown',
             'source': str(service or hit.get('_index') or 'elasticsearch'),
             'service': str(service or ''),
             'namespace': str(namespace or ''),
