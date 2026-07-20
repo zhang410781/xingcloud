@@ -129,7 +129,7 @@
                     :class="[message.role, { pending: message.pending || isMessageProcessing(message) }]"
                   >
                     <div class="message-meta">
-                      <span class="message-role">{{ message.role === 'user' ? '你' : '智能助手' }}</span>
+                      <span class="message-role">{{ getMessageRoleLabel(message) }}</span>
                       <span class="message-time">{{ formatDateTime(message.created_at) }}</span>
                     </div>
 
@@ -1114,6 +1114,12 @@ function buildApprovalFormBlock(pendingAction) {
 function getPendingActionScriptContent(pendingAction) {
   const payload = pendingAction?.action_payload?.payload || {}
   return payload.command || payload.playbook_content || ''
+}
+
+function getMessageRoleLabel(message) {
+  if (message?.role === 'user') return '你'
+  if (message?.metadata?.report_kind === 'inspection') return '巡检报告'
+  return '智能助手'
 }
 
 function getMessageBlocks(message) {

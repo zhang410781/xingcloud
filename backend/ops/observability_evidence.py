@@ -701,6 +701,10 @@ def inspection_result(evidence):
         if item.get('status') == 'ok' and item.get('latest') is not None
     }
     missing = [item.get('message') for item in evidence.get('diagnostics') or []]
+    core_coverage = evidence.get('source_coverage') or {}
+    required_sources = ('metrics',) if profile == 'server' else ('metrics', 'k8s')
+    missing_required_sources = [name for name in required_sources if not core_coverage.get(name)]
+    evidence_incomplete = bool(missing_required_sources)
     if profile == 'server':
         conclusion = '服务器运行正常' if score >= 90 else ('服务器存在需要关注的问题' if score >= 75 else '服务器存在明显异常')
         suggestions = ['优先处理服务器资源异常，并复核关联日志和资产信息'] if findings else ['保持当前监控并按计划复查服务器资源']
@@ -719,8 +723,14 @@ def inspection_result(evidence):
             {'title': '日志检索', 'path': '/observability/logs'},
             {'title': '资产登记', 'path': '/cmdb/assets'},
         ]
+    if evidence_incomplete:
+        source_names = {'metrics': 'Prometheus 指标', 'k8s': 'K8s API'}
+        missing_text = '、'.join(source_names.get(name, name) for name in missing_required_sources)
+        scope_name = '服务器' if profile == 'server' else '集群'
+        conclusion = f'{scope_name}巡检证据不完整，当前健康分仅基于已获取证据，不能确认整体健康状态'
+        suggestions.insert(0, f'先恢复 {missing_text} 采集，再重新执行巡检')
     return {
-        'status': 'completed' if not missing else 'partial',
+        'status': 'completed' if not missing and not evidence_incomplete else 'partial',
         'profile': profile,
         'health_score': score,
         'conclusion': conclusion,

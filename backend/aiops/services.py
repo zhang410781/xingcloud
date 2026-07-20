@@ -7495,6 +7495,50 @@ def _run_k8s_analysis_evidence(
     ]
     if result.get('missing_evidence'):
         sections.append({'title': '未获取证据', 'items': result['missing_evidence']})
+    evidence_payload = result.get('evidence') or {}
+    k8s_payload = evidence_payload.get('k8s') or {}
+    nodes = k8s_payload.get('nodes') or []
+    pods = k8s_payload.get('pods') or []
+    resources = k8s_payload.get('resources') or {}
+    profile_labels = {
+        'cluster': '集群综合巡检', 'server': '服务器巡检', 'node': '节点巡检',
+        'workload': '工作负载巡检', 'service': '服务巡检', 'control_plane': '控制面巡检',
+    }
+    sections[0] = {'title': '巡检信息', 'items': [
+        f'范围：{profile_labels.get(profile, "巡检")}' + (f'，目标：{target}' if target else ''),
+        f'数据完整性：{result.get("status") or "completed"}',
+    ]}
+    sections.extend([
+        {'title': '数据源覆盖', 'items': [
+            f'{name}：{"已获取" if enabled else "未获取"}'
+            for name, enabled in (evidence_payload.get('source_coverage') or {}).items()
+        ]},
+        {'title': '指标采样', 'items': [
+            f'{item.get("title") or item.get("code")}：'
+            f'{item.get("latest") if item.get("status") == "ok" and item.get("latest") is not None else "未获取"}'
+            + ('（偏离历史基线）' if (item.get('anomaly') or {}).get('is_anomaly') else '')
+            for item in (evidence_payload.get('metrics') or [])[:16]
+        ]},
+        {'title': '节点状态', 'items': [
+            f'{item.get("name") or "未命名节点"}：{item.get("status") or "Unknown"}' for item in nodes[:20]
+        ]},
+        {'title': 'Pod 与重启排行', 'items': [
+            f'{item.get("namespace") or "default"}/{item.get("name") or "未命名 Pod"}：'
+            f'{item.get("status") or "Unknown"}，重启 {item.get("restarts") or 0} 次'
+            for item in sorted(pods, key=lambda row: int(row.get('restarts') or 0), reverse=True)[:10]
+        ]},
+        {'title': '工作负载与存储', 'items': [
+            f'Deployment：{len(resources.get("deployments") or [])} 个',
+            f'StatefulSet：{len(resources.get("statefulsets") or [])} 个',
+            f'DaemonSet：{len(resources.get("daemonsets") or [])} 个',
+            f'PVC：{len(resources.get("pvcs") or [])} 个',
+        ]},
+        {'title': '日志与事件', 'items': [
+            f'日志样本：{len((evidence_payload.get("logs") or {}).get("samples") or [])} 条；'
+            f'异常日志：{len(evidence_payload.get("log_findings") or [])} 项；'
+            f'Warning Event：{len(evidence_payload.get("event_findings") or [])} 项',
+        ]},
+    ])
     tool_result = {
         'summary': {'health_score': result.get('health_score'), **summary},
         'sections': sections,
@@ -7513,6 +7557,7 @@ def _run_k8s_analysis_evidence(
             'inspection_profile': profile,
             'inspection_target': target,
             'k8s_resource_type': _detect_k8s_resource_type(question) or 'cluster',
+            'report_kind': 'inspection',
         },
         provider=provider,
         active_skills=active_skills,

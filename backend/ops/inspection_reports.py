@@ -166,6 +166,127 @@ def _format_report(schedule, result):
     return title, result['markdown']
 
 
+def _display_report_value(value):
+    if value is None or value == '':
+        return '未获取'
+    if isinstance(value, float):
+        return f'{value:.2f}'
+    return str(value)
+
+
+def _append_report_section(lines, title, items, empty_text='未获取到该类数据'):
+    lines.extend(['', f'### {title}'])
+    if items:
+        lines.extend(f'- {item}' for item in items)
+    else:
+        lines.append(f'- {empty_text}')
+
+
+def _format_detailed_report(schedule, result):
+    """Build a complete evidence-backed notification without waiting for an LLM."""
+    evidence = result.get('evidence') or {}
+    summary = result.get('cluster_summary') or {}
+    server_summary = result.get('server_summary') or {}
+    findings = result.get('findings') or []
+    missing = result.get('missing_evidence') or []
+    k8s = evidence.get('k8s') or {}
+    nodes = k8s.get('nodes') or []
+    pods = k8s.get('pods') or []
+    resources = k8s.get('resources') or {}
+    logs = evidence.get('logs') or {}
+    context = schedule.knowledge_environment
+    generated_at = timezone.localtime(timezone.now(), _schedule_timezone(schedule))
+    coverage = evidence.get('source_coverage') or {}
+
+    result['generated_at'] = generated_at.isoformat()
+    result['source_coverage'] = coverage
+    result['blocks'] = _report_blocks(schedule, result, generated_at)
+    title = f'【巡检报告】{context.name} · {schedule.get_profile_display()}'
+    lines = [
+        f'**业务上下文：** {context.name}',
+        f'**巡检范围：** {schedule.get_profile_display()}',
+        f'**巡检时间：** {generated_at.strftime("%Y-%m-%d %H:%M:%S")}',
+        f'**总体结论：** {result.get("conclusion") or "巡检已完成"}',
+        f'**健康分：** {result.get("health_score", "-")} 分',
+    ]
+    _append_report_section(lines, '数据源覆盖', [
+        f'{name}：{"已获取" if enabled else "未获取"}' for name, enabled in coverage.items()
+    ])
+    if schedule.profile == 'server':
+        _append_report_section(lines, '服务器资源指标', [
+            f'主机数量：{_display_report_value(server_summary.get("node_count"))}',
+            f'CPU 使用率：{_display_report_value(server_summary.get("node_cpu"))}',
+            f'内存使用率：{_display_report_value(server_summary.get("node_memory"))}',
+            f'一分钟负载：{_display_report_value(server_summary.get("node_load"))}',
+            f'磁盘使用率：{_display_report_value(server_summary.get("disk_usage"))}',
+        ])
+    else:
+        _append_report_section(lines, '集群概览', [
+            f'集群：{(k8s.get("cluster") or {}).get("name") or "未获取"}',
+            f'节点 Ready：{summary.get("ready_nodes", 0)}/{summary.get("node_count", 0)}',
+            f'Pod 总数：{summary.get("pod_count", 0)}',
+            f'Pod 状态分布：{summary.get("pod_status") or "未获取"}',
+        ])
+        _append_report_section(lines, '节点状态', [
+            f'{node.get("name") or "未命名节点"}：{node.get("status") or "Unknown"}'
+            for node in nodes[:20]
+        ])
+        restart_pods = sorted(pods, key=lambda item: int(item.get('restarts') or 0), reverse=True)
+        _append_report_section(lines, 'Pod 与重启排行', [
+            f'{pod.get("namespace") or "default"}/{pod.get("name") or "未命名 Pod"}：'
+            f'{pod.get("status") or "Unknown"}，重启 {pod.get("restarts") or 0} 次'
+            for pod in restart_pods[:10]
+        ])
+        workload_items = []
+        for kind, label, desired_key, ready_key in [
+            ('deployments', 'Deployment', 'replicas', 'ready_replicas'),
+            ('statefulsets', 'StatefulSet', 'replicas', 'ready_replicas'),
+            ('daemonsets', 'DaemonSet', 'desired', 'ready'),
+        ]:
+            items = resources.get(kind) or []
+            unhealthy = [item for item in items if item.get(desired_key) != item.get(ready_key)]
+            workload_items.append(f'{label}：{len(items)} 个，副本未就绪 {len(unhealthy)} 个')
+        _append_report_section(lines, '工作负载副本', workload_items)
+        pvcs = resources.get('pvcs') or []
+        unbound_pvcs = [item for item in pvcs if item.get('status') != 'Bound']
+        _append_report_section(lines, '存储与 PVC', [
+            f'PVC：{len(pvcs)} 个，未绑定 {len(unbound_pvcs)} 个',
+            *[f'{item.get("namespace") or "default"}/{item.get("name")}：{item.get("status") or "Unknown"}' for item in unbound_pvcs[:10]],
+        ])
+    metric_lines = []
+    for metric in sorted(evidence.get('metrics') or [], key=lambda item: str(item.get('title') or item.get('code') or '')):
+        if metric.get('status') == 'ok' and metric.get('latest') is not None:
+            suffix = '（偏离历史基线）' if (metric.get('anomaly') or {}).get('is_anomaly') else ''
+            metric_lines.append(f'{metric.get("title") or metric.get("code")}：{_display_report_value(metric.get("latest"))}{suffix}')
+        else:
+            metric_lines.append(f'{metric.get("title") or metric.get("code")}：未获取')
+    _append_report_section(lines, '指标采样', metric_lines[:16])
+    samples = logs.get('samples') or []
+    _append_report_section(lines, '日志与事件', [
+        f'日志样本：{len(samples)} 条；异常日志：{len(evidence.get("log_findings") or [])} 项',
+        *[str(item.get('message') or item.get('text') or item)[:240] for item in samples[:5]],
+        *[str(item.get('message') or item.get('reason') or item)[:240] for item in (evidence.get('event_findings') or [])[:5]],
+    ])
+    _append_report_section(lines, '风险项', [
+        f'[{str(item.get("severity") or "info").upper()}] '
+        f'{item.get("target") or item.get("namespace") or "集群"}：'
+        f'{item.get("message") or item.get("code") or "异常"}'
+        for item in findings[:20]
+    ], empty_text='未发现明确异常')
+    change_summary = result.get('change_summary') or {}
+    if change_summary:
+        change = change_summary.get('summary') or {}
+        _append_report_section(lines, '与上次巡检对比', [
+            f'新增：{change.get("added", 0)} 项；恶化：{change.get("worsened", 0)} 项；恢复：{change.get("resolved", 0)} 项'
+        ])
+    _append_report_section(lines, '建议操作', result.get('suggestions') or ['保持当前监控并按计划复查'])
+    if missing:
+        _append_report_section(lines, '未获取证据及原因', missing[:12])
+    lines.extend(['', '请登录 XingCloud 查看对应监控、日志、告警和资产详情。'])
+    result['markdown'] = '\n'.join(lines)
+    return title, result['markdown']
+
+
 def run_inspection_report_schedule(schedule, *, trigger=InspectionReportExecution.TRIGGER_SCHEDULER):
     schedule = InspectionReportSchedule.objects.select_related('knowledge_environment').prefetch_related(
         'channels', 'recipients', 'recipient_groups__recipients', 'recipient_groups__users',
@@ -186,7 +307,7 @@ def run_inspection_report_schedule(schedule, *, trigger=InspectionReportExecutio
             previous_execution.report if previous_execution else {}, report,
         )
         report['change_summary'] = change_summary
-        title, body = _format_report(schedule, report)
+        title, body = _format_detailed_report(schedule, report)
         should_notify = (
             trigger == InspectionReportExecution.TRIGGER_MANUAL
             or not schedule.notify_changes_only
