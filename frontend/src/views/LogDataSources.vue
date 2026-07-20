@@ -62,6 +62,16 @@
             <el-tag :type="providerTagType(row.provider)">{{ providerLabel(row.provider) }}</el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="所属业务环境" min-width="170">
+          <template #default="{ row }">
+            <div v-if="row.business_contexts?.length" class="context-tags">
+              <el-tag v-for="context in row.business_contexts" :key="context.id" size="small" type="info">
+                {{ context.name }}
+              </el-tag>
+            </div>
+            <span v-else class="sub-text">未绑定业务上下文</span>
+          </template>
+        </el-table-column>
         <el-table-column label="连接摘要" min-width="280">
           <template #default="{ row }">
             <div class="summary-text">{{ formatSummary(row) }}</div>
@@ -680,6 +690,12 @@ onMounted(async () => {
 
 .name-text {
   font-weight: 700;
+}
+
+.context-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 
 .disabled {

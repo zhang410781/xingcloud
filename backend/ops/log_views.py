@@ -1710,7 +1710,7 @@ class LogDataSourceViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, view
     }
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = super().get_queryset().prefetch_related('aiops_knowledge_environments')
         provider = self.request.query_params.get('provider')
         is_enabled = self.request.query_params.get('is_enabled')
 

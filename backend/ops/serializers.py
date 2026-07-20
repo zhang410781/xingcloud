@@ -188,6 +188,7 @@ class HostSerializer(serializers.ModelSerializer):
 
 class LogDataSourceSerializer(serializers.ModelSerializer):
     provider_display = serializers.CharField(source='get_provider_display', read_only=True)
+    business_contexts = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = LogDataSource
@@ -197,6 +198,13 @@ class LogDataSourceSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         data['config'] = mask_sensitive_config(data.get('config') or {}, LOG_SENSITIVE_KEYS)
         return data
+
+    def get_business_contexts(self, instance):
+        """Expose the owning business contexts without duplicating an environment field."""
+        return [
+            {'id': item.id, 'name': item.name, 'code': item.code}
+            for item in instance.aiops_knowledge_environments.all()
+        ]
 
 
 class MetricDataSourceSerializer(serializers.ModelSerializer):

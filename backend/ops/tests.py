@@ -44,6 +44,7 @@ from ops.k8s_views import (
     _serialize_service_item,
     _summary_stale_cache_key,
 )
+from ops.datasource_health import check_log_datasource
 
 
 TEST_LOG_PROVIDER_CONFIGS = {
@@ -894,6 +895,25 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(metric_health['last_check_latency_ms'], 21)
         self.assertEqual(log_health['last_check_status'], 'not_configured')
         self.assertIn('not connected', log_health['last_check_message'])
+
+    @patch('ops.log_views._elk_request')
+    def test_elasticsearch_datasource_health_check_uses_cluster_health(self, mock_request):
+        datasource = LogDataSource.objects.create(
+            name='Healthy Elasticsearch',
+            provider='elk',
+            config={'endpoint': 'https://es.example.com:9200', 'index_pattern': 'k8s-*'},
+        )
+        mock_request.return_value = {'status': 'yellow', 'cluster_name': 'logs'}
+
+        checked = check_log_datasource(datasource)
+
+        self.assertEqual(checked.last_check_status, 'ok')
+        self.assertIn('yellow', checked.last_check_message)
+        mock_request.assert_called_once_with(
+            'GET', 'https://es.example.com:9200', '/_cluster/health',
+            {'endpoint': 'https://es.example.com:9200', 'auth_type': 'none', 'index_pattern': 'k8s-*',
+             'time_field': '@timestamp', 'message_fields': 'message,log,msg'},
+        )
 
     def test_sla_summary_api_uses_disaster_alert_duration(self):
         now = timezone.now()

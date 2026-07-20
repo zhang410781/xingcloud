@@ -83,16 +83,33 @@ def check_log_datasource(datasource):
     config = datasource.config if isinstance(datasource.config, dict) else {}
     if not datasource.is_enabled or not _log_endpoint(config):
         return _update_health(datasource, STATUS_NOT_CONFIGURED, 'log datasource is not connected', None)
-    if datasource.provider != 'clickhouse':
-        return _update_health(datasource, STATUS_UNKNOWN, f'{datasource.provider} health check is not managed by alert engine', None)
     try:
-        from .log_views import _clickhouse_request, _merge_config
+        from .log_views import _clickhouse_request, _elk_request, _merge_config
 
-        merged = _merge_config('clickhouse', config)
-        _clickhouse_request(merged, 'SELECT 1')
-        _validate_clickhouse_collections(merged)
+        if datasource.provider == 'clickhouse':
+            merged = _merge_config('clickhouse', config)
+            _clickhouse_request(merged, 'SELECT 1')
+            _validate_clickhouse_collections(merged)
+            message = 'ClickHouse SELECT 1 and collections parsed'
+        elif datasource.provider in ('elk', 'elasticsearch'):
+            merged = _merge_config('elk', config)
+            try:
+                health = _elk_request('GET', merged['endpoint'], '/_cluster/health', merged)
+                cluster_status = str(health.get('status') or 'unknown').lower()
+                if cluster_status == 'red':
+                    latency_ms = int((time.perf_counter() - started) * 1000)
+                    return _update_health(datasource, STATUS_ERROR, 'Elasticsearch cluster status is red', latency_ms)
+                message = f'Elasticsearch cluster status: {cluster_status}'
+            except Exception:
+                # A log reader often has index-read permission but not cluster-monitor permission.
+                # Verify the configured index pattern in that least-privilege case.
+                pattern = merged.get('index_pattern') or '*'
+                _elk_request('POST', merged['endpoint'], f'/{pattern}/_search', merged, body={'size': 0, 'track_total_hits': False})
+                message = f'Elasticsearch index read succeeded: {pattern}'
+        else:
+            return _update_health(datasource, STATUS_UNKNOWN, f'{datasource.provider} health check is not supported', None)
         latency_ms = int((time.perf_counter() - started) * 1000)
-        return _update_health(datasource, STATUS_OK, 'ClickHouse SELECT 1 and collections parsed', latency_ms)
+        return _update_health(datasource, STATUS_OK, message, latency_ms)
     except Exception as exc:
         latency_ms = int((time.perf_counter() - started) * 1000)
         return _update_health(datasource, STATUS_ERROR, str(exc), latency_ms)
@@ -146,10 +163,16 @@ def _metric_payload(datasource):
 
 def _log_payload(datasource):
     status = _health_status(datasource)
+    contexts = [
+        {'id': item.id, 'name': item.name, 'code': item.code}
+        for item in datasource.aiops_knowledge_environments.all()
+    ]
     return {
         'id': datasource.id,
         'name': datasource.name,
         'provider': datasource.provider,
+        'business_contexts': contexts,
+        'environment': ' / '.join(item['name'] for item in contexts),
         'is_enabled': datasource.is_enabled,
         'is_default': datasource.is_default,
         'last_check_at': datasource.last_check_at.isoformat() if datasource.last_check_at else None,
@@ -161,7 +184,7 @@ def _log_payload(datasource):
 
 def datasource_health_payload():
     metrics = [_metric_payload(item) for item in MetricDataSource.objects.all().order_by('environment', '-is_default', 'name')]
-    logs = [_log_payload(item) for item in LogDataSource.objects.all().order_by('provider', '-is_default', 'name')]
+    logs = [_log_payload(item) for item in LogDataSource.objects.all().prefetch_related('aiops_knowledge_environments').order_by('provider', '-is_default', 'name')]
     counts = Counter(item['last_check_status'] for item in metrics + logs)
     for key in [STATUS_OK, STATUS_ERROR, STATUS_NOT_CONFIGURED, STATUS_UNKNOWN]:
         counts.setdefault(key, 0)
