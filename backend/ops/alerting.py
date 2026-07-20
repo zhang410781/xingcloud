@@ -1142,6 +1142,16 @@ def _storm_group_key(alert):
     ])
 
 
+def _storm_threshold_for_alert(alert, fallback=3):
+    rule = _alert_rule(alert)
+    thresholds = [
+        max(1, int(policy.storm_threshold or fallback))
+        for policy in resolve_notification_policies(alert, rule=rule)
+        if policy.is_enabled
+    ]
+    return min(thresholds) if thresholds else fallback
+
+
 def _mark_notification_batch(alert, batch):
     raw_payload = dict(alert.raw_payload or {})
     raw_payload['notification_batch'] = batch
@@ -1162,13 +1172,15 @@ def dispatch_alert_batch_notifications(alerts, action='fire', request=None, forc
         groups[_storm_group_key(alert)].append(alert)
 
     for group_key, group_alerts in groups.items():
-        if len(group_alerts) >= storm_threshold:
+        group_threshold = min(_storm_threshold_for_alert(alert, storm_threshold) for alert in group_alerts)
+        if len(group_alerts) >= group_threshold:
             ordered = sorted(group_alerts, key=lambda item: (LEVEL_RANK.get(item.level, 0), item.created_at or timezone.now()), reverse=True)
             primary = ordered[0]
             batch = {
                 'mode': 'storm',
                 'group_key': group_key,
                 'count': len(group_alerts),
+                'threshold': group_threshold,
                 'primary_alert_id': primary.id,
                 'action': action,
             }

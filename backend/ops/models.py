@@ -1201,6 +1201,7 @@ class AlertNotificationPolicy(models.Model):
     group_wait_seconds = models.PositiveIntegerField('首次聚合等待秒', default=30)
     group_interval_seconds = models.PositiveIntegerField('同组通知间隔秒', default=300)
     repeat_interval_minutes = models.PositiveIntegerField('重复通知间隔分钟', default=30)
+    storm_threshold = models.PositiveIntegerField('告警风暴阈值', default=3)
     mute_schedule = models.JSONField('静默时段', default=dict, blank=True)
     inhibition_matchers = models.JSONField('抑制条件', default=list, blank=True)
     escalation_steps = models.JSONField('升级步骤', default=list, blank=True)
