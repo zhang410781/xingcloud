@@ -38,7 +38,7 @@ class RbacPermissionTests(TestCase):
         self.assertTrue(user.is_superuser)
         self.assertTrue(user.check_password('xinghaik8s'))
 
-    def test_default_admin_is_reset_even_when_other_superuser_exists(self):
+    def test_existing_default_admin_password_is_not_reset(self):
         User.objects.create_superuser(username='legacy-root', password='OldPass@123')
         admin = User.objects.get(username='admin')
         admin.set_password('OldPass@123')
@@ -48,7 +48,22 @@ class RbacPermissionTests(TestCase):
 
         user = User.objects.get(username='admin')
         self.assertTrue(user.is_superuser)
-        self.assertTrue(user.check_password('xinghaik8s'))
+        self.assertTrue(user.check_password('OldPass@123'))
+
+    def test_login_keeps_existing_default_admin_password(self):
+        ensure_default_superuser()
+        admin = User.objects.get(username='admin')
+        admin.set_password('ChangedPass@123')
+        admin.save(update_fields=['password'])
+
+        response = self.client.post('/api/auth/login/', {
+            'username': 'admin',
+            'password': 'ChangedPass@123',
+        })
+
+        self.assertEqual(response.status_code, 200)
+        admin.refresh_from_db()
+        self.assertTrue(admin.check_password('ChangedPass@123'))
 
     def test_view_only_user_cannot_create_users(self):
         role = Role.objects.create(code='user-auditor', name='User Auditor')

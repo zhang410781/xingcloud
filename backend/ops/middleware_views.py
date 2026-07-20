@@ -128,25 +128,6 @@ def _validate_asset_environment(cleaned):
     cleaned['environment'] = 'production'
     return groups, ''
 
-    environment_id = cleaned.get('task_resource_environment_id')
-    if not environment_id:
-        matches = list(TaskResourceGroup.objects.filter(
-            group_type=TaskResourceGroup.GROUP_ENVIRONMENT,
-            code=cleaned.get('environment'),
-        )[:2])
-        if len(matches) != 1:
-            return None, '请选择业务上下文绑定的资产环境分组。'
-        cleaned['task_resource_environment_id'] = matches[0].id
-        return matches[0], ''
-    group = TaskResourceGroup.objects.filter(
-        pk=environment_id,
-        group_type=TaskResourceGroup.GROUP_ENVIRONMENT,
-    ).first()
-    if not group:
-        return None, '资产环境分组不存在或类型不正确。'
-    cleaned['environment'] = group.code
-    return group, ''
-
 
 def _actor_name(user):
     if not user:

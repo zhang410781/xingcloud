@@ -72,21 +72,12 @@ def ensure_default_superuser():
     if created:
         user.set_password(DEFAULT_ADMIN_PASSWORD)
     else:
-        changed = False
         if not user.is_staff:
             user.is_staff = True
-            changed = True
         if not user.is_superuser:
             user.is_superuser = True
-            changed = True
         if user.email != DEFAULT_ADMIN_EMAIL:
             user.email = DEFAULT_ADMIN_EMAIL
-            changed = True
-        if not user.check_password(DEFAULT_ADMIN_PASSWORD):
-            user.set_password(DEFAULT_ADMIN_PASSWORD)
-            changed = True
-        if not changed:
-            pass
     user.save()
     role = Role.objects.filter(code='platform-admin').first()
     if role:
