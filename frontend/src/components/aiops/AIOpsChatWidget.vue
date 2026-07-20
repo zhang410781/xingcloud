@@ -146,6 +146,7 @@
                           </div>
                           <div class="analysis-process-actions">
                             <span class="analysis-process-status" :class="getProcessingStatus(message)">{{ getProcessingStatusLabel(message) }}</span>
+                            <button v-if="isMessageProcessing(message)" type="button" class="analysis-process-stop" @click="handleStopGeneration(message)">停止生成</button>
                             <button type="button" class="analysis-process-toggle" @click="toggleProcessExpanded(message)">
                               {{ isProcessExpanded(message) ? '收起' : '展开' }}
                             </button>
@@ -288,7 +289,24 @@
                           </div>
 
                           <div v-show="isResponseBlockExpanded(message, responseBlock, responseBlockIndex)" class="response-block-content">
-                            <div v-if="responseBlock.type === 'approval_form'" class="response-block-approval">
+                            <div v-if="responseBlock.type === 'report'" class="response-block-report">
+                              <div v-if="getBlockMetrics(responseBlock).length" class="response-block-metric-grid">
+                                <div v-for="metric in getBlockMetrics(responseBlock)" :key="`${responseBlock._key}-metric-${metric.label}`" class="response-block-metric">
+                                  <span>{{ metric.label }}</span>
+                                  <strong>{{ metric.value }}</strong>
+                                </div>
+                              </div>
+                              <div v-if="getBlockItems(responseBlock).length" class="response-block-item-list">
+                                <div v-for="item in getBlockItems(responseBlock)" :key="`${responseBlock._key}-report-${getBlockItemText(item)}`" class="response-block-item">
+                                  <span class="response-block-item-dot" />
+                                  <div class="response-block-item-body">
+                                    <div class="response-block-item-text">{{ getBlockItemText(item) }}</div>
+                                    <div v-if="getBlockItemDetail(item)" class="response-block-item-detail">{{ getBlockItemDetail(item) }}</div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                            <div v-else-if="responseBlock.type === 'approval_form'" class="response-block-approval">
                               <div v-if="getBlockMetrics(responseBlock).length" class="response-block-metric-grid">
                                 <div v-for="metric in getBlockMetrics(responseBlock)" :key="`${responseBlock._key}-metric-${metric.label}`" class="response-block-metric">
                                   <span>{{ metric.label }}</span>
@@ -567,6 +585,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { CircleCheck, CopyDocument, Delete, Fold, Plus, Promotion, TopRight } from '@element-plus/icons-vue'
 import {
   cancelAIOpsAction,
+  cancelAIOpsMessage,
   confirmAIOpsAction,
   createAIOpsSession,
   deleteAIOpsSession,
@@ -911,6 +930,7 @@ const RESPONSE_BLOCK_TYPE_LABELS = {
   approval_form: '待确认',
   tool_trace: '追踪',
   risk_notice: '风险',
+  report: '报告',
 }
 
 function normalizeResponseBlockItems(items) {
@@ -1159,6 +1179,7 @@ function isResponseBlockDefaultExpanded(block, message) {
   const type = String(block?.type || '')
   return Boolean(
     type === 'approval_form'
+    || type === 'report'
     || type === 'alert_rule_draft'
     || type === 'dashboard_draft'
     || (message?.pending_action && type.includes('draft'))
@@ -1327,6 +1348,7 @@ function getProcessingStatusLabel(message) {
   if (status === 'running') return '分析中'
   if (status === 'streaming') return '输出中'
   if (status === 'failed') return '失败'
+  if (status === 'cancelled') return '已停止'
   if (status === 'completed') return '已完成'
   return '处理中'
 }
@@ -1402,7 +1424,7 @@ function syncProcessCardState(list = renderMessages.value) {
     }
     if (
       ['pending', 'running', 'streaming'].includes(previousStatus)
-      && ['completed', 'failed'].includes(status)
+      && ['completed', 'failed', 'cancelled'].includes(status)
     ) {
       nextExpanded[key] = false
     }
@@ -1714,13 +1736,13 @@ function startMessagePolling(sessionId, assistantMessageId) {
         const target = latestMessages.find(item => item.id === assistantMessageId)
         const status = getProcessingStatus(target)
         const signature = getMessageStableSignature(target)
-        if ((!target || ['completed', 'failed'].includes(status)) && signature === previousSignature) {
+        if ((!target || ['completed', 'failed', 'cancelled'].includes(status)) && signature === previousSignature) {
           stableRounds += 1
         } else {
           stableRounds = 0
         }
         previousSignature = signature
-        if ((!target || ['completed', 'failed'].includes(status)) && stableRounds >= FINAL_POLL_STABLE_ROUNDS - 1) {
+        if ((!target || ['completed', 'failed', 'cancelled'].includes(status)) && stableRounds >= FINAL_POLL_STABLE_ROUNDS - 1) {
           break
         }
         await waitFor(attempt === 0 ? 240 : 360)
@@ -1746,7 +1768,7 @@ function startMessagePolling(sessionId, assistantMessageId) {
       await applyLatestMessages(sessionId, latestMessages)
       const target = latestMessages.find(item => item.id === assistantMessageId)
       const status = getProcessingStatus(target)
-      if (!target || ['completed', 'failed'].includes(status)) {
+      if (!target || ['completed', 'failed', 'cancelled'].includes(status)) {
         if (pollingFinalizeAttempts < 1) {
           pollingFinalizeAttempts += 1
           pollingTimer = window.setTimeout(finalizePoll, 240)
@@ -1898,6 +1920,18 @@ async function handleSend() {
   } finally {
     loading.value.send = false
     pendingAssistantMessage.value = null
+  }
+}
+
+async function handleStopGeneration(message) {
+  if (!currentSessionId.value || !message?.id || !isMessageProcessing(message)) return
+  try {
+    const cancelled = await cancelAIOpsMessage(currentSessionId.value, message.id)
+    messages.value = messages.value.map(item => item.id === cancelled.id ? cancelled : item)
+    stopMessagePolling()
+    ElMessage.success('已停止生成')
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || '停止生成失败')
   }
 }
 
@@ -2304,6 +2338,7 @@ onBeforeUnmount(() => {
 .response-block-card{padding:9px 10px;border-radius:12px;border:1px solid #dbe4f0;background:linear-gradient(180deg,#fbfdff 0%,#fff 100%);box-shadow:0 4px 12px rgba(15,23,42,.035)}
 .response-block-card.type-tool_trace{background:#f8fafc;border-color:#e2e8f0}
 .response-block-card.type-context_summary{background:linear-gradient(180deg,#f8fbff 0%,#fff 100%);border-color:#dbeafe}
+.response-block-card.type-report{background:linear-gradient(180deg,#f5faff 0%,#fff 100%);border-color:#bfdbfe}
 .response-block-card.type-context_form{background:linear-gradient(180deg,#fffaf5 0%,#fff 100%);border-color:#fed7aa}
 .response-block-card.type-query_suggestion{background:linear-gradient(180deg,#f8fbff 0%,#fff 100%);border-color:#bfdbfe}
 .response-block-card.type-risk_notice,.response-block-card.type-approval_form{background:linear-gradient(180deg,#fffaf5 0%,#fff 100%);border-color:#fed7aa}
@@ -2384,11 +2419,14 @@ onBeforeUnmount(() => {
 .analysis-process-title{font-size:12px;font-weight:600;color:#334155}
 .analysis-process-inline-summary{font-size:11px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .analysis-process-actions{display:flex;align-items:center;gap:8px}
+.analysis-process-stop{border:1px solid #fecaca;border-radius:7px;background:#fff;color:#b91c1c;padding:3px 7px;font-size:11px;cursor:pointer}
+.analysis-process-stop:hover{background:#fef2f2}
 .analysis-process-status{padding:2px 7px;border-radius:999px;background:#f1f5f9;color:#64748b;font-size:11px}
 .analysis-process-status.pending{background:#fff7ed;color:#9a3412}
 .analysis-process-status.running,.analysis-process-status.streaming{background:#eff6ff;color:#1d4ed8}
 .analysis-process-status.completed{background:#f1f5f9;color:#64748b}
 .analysis-process-status.failed{background:#fef2f2;color:#b91c1c}
+.analysis-process-status.cancelled{background:#f1f5f9;color:#475569}
 .analysis-process-toggle{border:none;padding:2px 0;background:transparent;color:#64748b;font-size:11px;cursor:pointer}
 .analysis-process-toggle:hover{color:#334155}
 .analysis-process-content{margin-top:8px}

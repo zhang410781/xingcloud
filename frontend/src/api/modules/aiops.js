@@ -23,6 +23,7 @@ export const getAIOpsMessages = (id, config = {}) => request.get(`/aiops/session
 export const setAIOpsSessionEnvironment = (id, knowledge_environment_id) => request.post(`/aiops/sessions/${id}/set-environment/`, { knowledge_environment_id })
 export const sendAIOpsMessage = (id, data, config = {}) => request.post(`/aiops/sessions/${id}/send_message/`, data, { timeout: AIOPS_CHAT_TIMEOUT, ...config })
 export const sendAIOpsMessageAsync = (id, data, config = {}) => request.post(`/aiops/sessions/${id}/send_message_async/`, data, { timeout: 20000, ...config })
+export const cancelAIOpsMessage = (sessionId, messageId) => request.post(`/aiops/sessions/${sessionId}/messages/${messageId}/cancel/`)
 
 export const confirmAIOpsAction = (id) => request.post(`/aiops/actions/${id}/confirm/`)
 export const cancelAIOpsAction = (id) => request.post(`/aiops/actions/${id}/cancel/`)

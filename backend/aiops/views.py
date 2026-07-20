@@ -67,6 +67,7 @@ from .services import (
     build_runbook_draft_from_session,
     
     cancel_action,
+    cancel_chat_message_processing,
     cancel_external_task,
     clone_skill_to_team,
     confirm_action,
@@ -905,6 +906,7 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         'set_environment': ['aiops.chat.view'],
         'send_message': ['aiops.chat.view'],
         'send_message_async': ['aiops.chat.view'],
+        'cancel_message': ['aiops.chat.view'],
     }
 
     def get_queryset(self):
@@ -960,6 +962,15 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
         session = self.get_object()
         messages = session.messages.order_by('created_at', 'id')
         return Response(AIOpsChatMessageSerializer(messages, many=True).data)
+
+    @action(detail=True, methods=['post'], url_path=r'messages/(?P<message_id>[^/.]+)/cancel')
+    def cancel_message(self, request, pk=None, message_id=None):
+        session = self.get_object()
+        message = session.messages.filter(pk=message_id, role=AIOpsChatMessage.ROLE_ASSISTANT).first()
+        if not message:
+            return Response({'detail': '未找到助手消息'}, status=status.HTTP_404_NOT_FOUND)
+        cancel_chat_message_processing(message, actor=getattr(request.user, 'username', ''), reason='user_cancelled')
+        return Response(AIOpsChatMessageSerializer(message).data)
 
     @action(detail=True, methods=['post'], url_path='set-environment')
     def set_environment(self, request, pk=None):
@@ -1039,6 +1050,7 @@ class AIOpsChatSessionViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
             metadata={
                 'processing_status': 'pending',
                 'processing_text': '请求已提交，正在排队处理',
+                'processing_started_at': timezone.now().isoformat(),
                 'analysis_only': analysis_only,
                 'page_context': page_context,
                 'processing_steps': [{

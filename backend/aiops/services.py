@@ -274,6 +274,8 @@ PROCESSING_STATUS_RUNNING = 'running'
 PROCESSING_STATUS_STREAMING = 'streaming'
 PROCESSING_STATUS_COMPLETED = 'completed'
 PROCESSING_STATUS_FAILED = 'failed'
+PROCESSING_STATUS_CANCELLED = 'cancelled'
+CHAT_PROCESSING_TIMEOUT_SECONDS = 300
 
 BUILTIN_MCP_SERVERS = [
     {
@@ -4086,6 +4088,35 @@ def _append_limited_event(items, event, max_items=24):
     return entries
 
 
+def _chat_message_is_cancelled(message_id):
+    metadata = AIOpsChatMessage.objects.filter(pk=message_id).values_list('metadata', flat=True).first() or {}
+    return isinstance(metadata, dict) and metadata.get('processing_status') == PROCESSING_STATUS_CANCELLED
+
+
+def cancel_chat_message_processing(message, *, actor='', reason='user_cancelled'):
+    """Persist a terminal cancellation marker without attempting to kill a worker thread."""
+    metadata = dict(message.metadata or {})
+    if metadata.get('processing_status') == PROCESSING_STATUS_CANCELLED:
+        return message
+    metadata.update({
+        'processing_status': PROCESSING_STATUS_CANCELLED,
+        'processing_text': '已停止生成，已保留已完成的分析步骤。',
+        'cancel_reason': reason,
+        'cancelled_by': actor or '',
+        'cancelled_at': timezone.now().isoformat(),
+        'partial_result': bool(metadata.get('processing_steps') or metadata.get('tool_events')),
+    })
+    metadata['processing_steps'] = _append_limited_event(
+        metadata.get('processing_steps'),
+        {'title': '已停止', 'detail': '用户停止生成' if reason == 'user_cancelled' else '处理超过五分钟自动停止', 'status': PROCESSING_STATUS_CANCELLED, 'timestamp': timezone.now().isoformat()},
+        max_items=18,
+    )
+    message.metadata = _json_safe_value(metadata)
+    message.content = '已停止生成。' if not metadata.get('partial_result') else message.content
+    message.save(update_fields=['metadata', 'content'])
+    return message
+
+
 def _update_chat_message_processing(
     message_id,
     *,
@@ -4102,6 +4133,8 @@ def _update_chat_message_processing(
     message = AIOpsChatMessage.objects.filter(pk=message_id).first()
     if not message:
         return None
+    if _chat_message_is_cancelled(message_id) and status_value != PROCESSING_STATUS_CANCELLED:
+        return message
 
     metadata = dict(message.metadata or {})
     changed_fields = []
@@ -9634,6 +9667,9 @@ def _replace_response_block(blocks, next_block):
 
 def _build_response_blocks(sections=None, tool_names=None, collected_tool_outputs=None, pending_action_draft=None):
     blocks = []
+    report_block = _build_observability_report_block(collected_tool_outputs)
+    if report_block:
+        blocks.append(report_block)
     trace_block = _build_tool_trace_response_block(tool_names, collected_tool_outputs)
     if trace_block:
         blocks.append(trace_block)
@@ -9642,6 +9678,47 @@ def _build_response_blocks(sections=None, tool_names=None, collected_tool_output
     if pending_block:
         blocks.append(pending_block)
     return blocks[:8]
+
+
+def _build_observability_report_block(collected_tool_outputs):
+    """Build a compact, evidence-only overview for chat report cards."""
+    outputs = [item for item in (collected_tool_outputs or []) if isinstance(item, dict)]
+    metrics = []
+    items = []
+    sources = []
+    for entry in outputs:
+        name = str(entry.get('tool_name') or '')
+        payload = entry.get('tool_output') if isinstance(entry.get('tool_output'), dict) else {}
+        summary = payload.get('summary') if isinstance(payload.get('summary'), dict) else {}
+        if name == 'query_logs' or payload.get('logs'):
+            count = summary.get('count', len(payload.get('logs') or []))
+            metrics.append({'label': '日志样本', 'value': str(count)})
+            if summary.get('duration_minutes'):
+                metrics.append({'label': '查询时间窗', 'value': f"{summary['duration_minutes']} 分钟"})
+            if summary.get('errors'):
+                items.extend({'text': '日志源异常', 'detail': str(error)[:180]} for error in summary['errors'][:3])
+            sources.append('日志')
+        elif name == 'query_alerts' or payload.get('alerts'):
+            alerts = payload.get('alerts') or []
+            metrics.append({'label': '相关告警', 'value': str(len(alerts))})
+            sources.append('告警')
+        elif name in {'query_k8s_cluster_summary', 'query_k8s_resources'} or payload.get('cluster_summary'):
+            cluster = payload.get('cluster_summary') or payload.get('summary') or {}
+            if cluster.get('node_count') is not None:
+                metrics.append({'label': '集群节点', 'value': str(cluster.get('node_count'))})
+            if cluster.get('pod_count') is not None:
+                metrics.append({'label': 'Pod 数量', 'value': str(cluster.get('pod_count'))})
+            sources.append('K8S')
+    if not metrics and not items:
+        return None
+    return {
+        'id': 'observability-report',
+        'type': 'report',
+        'title': '观测分析报告',
+        'summary': '、'.join(dict.fromkeys(sources)) + '证据已采集' if sources else '已采集可用证据',
+        'metrics': metrics[:6],
+        'items': items[:6],
+    }
 
 
 def _collect_alert_context(collected_tool_outputs, sections):
@@ -15812,6 +15889,8 @@ def _stream_dispatch_result(message_id, payload, progress_callback=None):
 def _apply_dispatch_result_to_message(session, assistant_message, result, user, enable_stream=False, progress_callback=None, question='', analysis_only=False):
     config = get_agent_config()
     assistant_message.refresh_from_db()
+    if _chat_message_is_cancelled(assistant_message.id):
+        return assistant_message, None
     final_content = result.get('content', '')
     merged_metadata = {**(assistant_message.metadata or {}), **(result.get('metadata') or {})}
     session_context = session.context if isinstance(getattr(session, 'context', None), dict) else {}
@@ -15924,11 +16003,28 @@ def _run_async_chat_worker(session_id, user_message_id, user_id, assistant_messa
         session = AIOpsChatSession.objects.select_related('user').get(pk=session_id)
         user_message = AIOpsChatMessage.objects.get(pk=user_message_id)
         assistant_message = AIOpsChatMessage.objects.get(pk=assistant_message_id)
+        if _chat_message_is_cancelled(assistant_message_id):
+            return
         user = session.user if session.user_id == user_id else session.user.__class__.objects.get(pk=user_id)
+        metadata = assistant_message.metadata if isinstance(assistant_message.metadata, dict) else {}
+        started_at = parse_datetime(str(metadata.get('processing_started_at') or ''))
+        if started_at and timezone.now() >= started_at + timedelta(seconds=CHAT_PROCESSING_TIMEOUT_SECONDS):
+            cancel_chat_message_processing(assistant_message, reason='timeout')
+            return
         emit = _make_processing_callback(assistant_message_id)
         result = _build_chat_result(session, user_message, user, question, progress_callback=emit, analysis_only=analysis_only)
+        assistant_message.refresh_from_db()
+        metadata = assistant_message.metadata if isinstance(assistant_message.metadata, dict) else {}
+        started_at = parse_datetime(str(metadata.get('processing_started_at') or ''))
+        if _chat_message_is_cancelled(assistant_message_id):
+            return
+        if started_at and timezone.now() >= started_at + timedelta(seconds=CHAT_PROCESSING_TIMEOUT_SECONDS):
+            cancel_chat_message_processing(assistant_message, reason='timeout')
+            return
         _apply_dispatch_result_to_message(session, assistant_message, result, user, enable_stream=True, progress_callback=emit, question=question, analysis_only=analysis_only)
     except Exception as exc:
+        if _chat_message_is_cancelled(assistant_message_id):
+            return
         _update_chat_message_processing(
             assistant_message_id,
             status_value=PROCESSING_STATUS_FAILED,

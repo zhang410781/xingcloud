@@ -60,6 +60,52 @@ def compute_next_inspection_report_run(schedule, now=None):
     return candidate.astimezone(datetime_timezone.utc)
 
 
+def _report_blocks(schedule, result, generated_at):
+    summary = result.get('cluster_summary') or {}
+    server = result.get('server_summary') or {}
+    findings = result.get('findings') or []
+    metrics = [
+        {'label': '健康分', 'value': f"{result.get('health_score', '-')} 分"},
+        {'label': '发现项', 'value': str(len(findings))},
+    ]
+    if schedule.profile == 'cluster':
+        metrics.extend([
+            {'label': 'Ready 节点', 'value': f"{summary.get('ready_nodes', 0)}/{summary.get('node_count', 0)}"},
+            {'label': 'Pod 数量', 'value': str(summary.get('pod_count', 0))},
+        ])
+    else:
+        for label, key in [('CPU', 'node_cpu'), ('内存', 'node_memory'), ('负载', 'node_load'), ('磁盘', 'disk_usage')]:
+            if server.get(key) is not None:
+                metrics.append({'label': label, 'value': str(server.get(key))})
+    return [
+        {
+            'id': 'inspection-overview',
+            'type': 'report',
+            'title': f'{schedule.get_profile_display()}报告',
+            'summary': result.get('conclusion') or '巡检已完成',
+            'metrics': metrics[:6],
+            'items': [
+                {
+                    'text': f"[{str(item.get('severity') or 'info').upper()}] {item.get('target') or item.get('namespace') or '范围'}",
+                    'detail': item.get('message') or item.get('code') or '异常',
+                    'status': item.get('severity') or 'info',
+                }
+                for item in findings[:12]
+            ],
+        },
+        {
+            'id': 'inspection-evidence',
+            'type': 'evidence_timeline',
+            'title': '证据覆盖',
+            'summary': generated_at.strftime('%Y-%m-%d %H:%M:%S'),
+            'items': [
+                {'text': key, 'detail': '已获取' if value else '未获取', 'status': 'completed' if value else 'failed'}
+                for key, value in (result.get('evidence', {}).get('source_coverage') or {}).items()
+            ],
+        },
+    ]
+
+
 def _format_report(schedule, result):
     summary = result.get('cluster_summary') or {}
     server_summary = result.get('server_summary') or {}
@@ -67,6 +113,9 @@ def _format_report(schedule, result):
     missing = result.get('missing_evidence') or []
     context = schedule.knowledge_environment
     generated_at = timezone.localtime(timezone.now(), _schedule_timezone(schedule))
+    result['generated_at'] = generated_at.isoformat()
+    result['source_coverage'] = (result.get('evidence') or {}).get('source_coverage') or {}
+    result['blocks'] = _report_blocks(schedule, result, generated_at)
     title = f'【巡检报告】{context.name} · {schedule.get_profile_display()}'
     lines = [
         f'**业务上下文：** {context.name}',
@@ -113,7 +162,8 @@ def _format_report(schedule, result):
         lines.extend(['', '### 未获取证据'])
         lines.extend(f'- {item}' for item in missing[:8])
     lines.extend(['', '请登录 XingCloud，在可观测、日志、告警和资产页面查看完整证据。'])
-    return title, '\n'.join(lines)
+    result['markdown'] = '\n'.join(lines)
+    return title, result['markdown']
 
 
 def run_inspection_report_schedule(schedule, *, trigger=InspectionReportExecution.TRIGGER_SCHEDULER):
