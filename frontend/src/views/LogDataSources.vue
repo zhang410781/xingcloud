@@ -471,7 +471,10 @@ async function loadElkIndices() {
   if (form.value.provider !== 'elk') return
   catalogLoading.value = true
   try {
-    const response = await getLogProviderCatalog('elk', { config: elkConnectionConfig(), action: 'sources', index_pattern: '*' })
+    const response = await getLogProviderCatalog('elk', {
+      datasource_id: editingId.value || undefined,
+      config: elkConnectionConfig(), action: 'sources', index_pattern: '*',
+    })
     elkIndices.value = response.items || []
   } finally {
     catalogLoading.value = false
@@ -484,6 +487,7 @@ async function recommendElkFields(index) {
   recommendLoadingIndex.value = index
   try {
     const response = await getLogProviderCatalog('elk', {
+      datasource_id: editingId.value || undefined,
       config: elkConnectionConfig(), action: 'recommend_fields', index_pattern: collection.index_pattern,
     })
     const detected = Object.fromEntries(Object.entries(response.recommendation || {}).filter(([, value]) => value))
