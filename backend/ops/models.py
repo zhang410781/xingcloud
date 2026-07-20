@@ -124,6 +124,12 @@ class TaskResource(models.Model):
         related_name='environment_resources',
         verbose_name='环境',
     )
+    business_groups = models.ManyToManyField(
+        TaskResourceGroup,
+        blank=True,
+        related_name='task_resources',
+        verbose_name='一级资产业务分组',
+    )
     system = models.ForeignKey(
         TaskResourceGroup,
         on_delete=models.PROTECT,
@@ -163,6 +169,13 @@ class TaskResource(models.Model):
 
 
 class MiddlewareAsset(models.Model):
+    business_groups = models.ManyToManyField(
+        'TaskResourceGroup',
+        blank=True,
+        related_name='shared_middleware_assets',
+        verbose_name='一级资产业务分组',
+    )
+
     TYPE_REDIS = 'redis'
     TYPE_KAFKA = 'kafka'
     TYPE_ROCKETMQ = 'rocketmq'
@@ -1068,8 +1081,24 @@ class AlertRuleState(models.Model):
 
 
 class AlertRecipient(models.Model):
+    CHANNEL_EMAIL = 'email'
+    CHANNEL_SMS = 'sms'
+    CHANNEL_VOICE = 'voice'
+    CHANNEL_DINGTALK = 'dingtalk'
+    CHANNEL_FEISHU = 'feishu'
+    CHANNEL_WECOM = 'wecom'
+    CHANNEL_CHOICES = [
+        (CHANNEL_EMAIL, '邮件'),
+        (CHANNEL_SMS, '短信'),
+        (CHANNEL_VOICE, '语音'),
+        (CHANNEL_DINGTALK, '钉钉'),
+        (CHANNEL_FEISHU, '飞书'),
+        (CHANNEL_WECOM, '企微'),
+    ]
+
     name = models.CharField('姓名', max_length=64)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='alert_recipients', verbose_name='平台用户')
+    preferred_channels = models.JSONField('接收渠道', default=list, blank=True)
     phone = models.CharField('手机号', max_length=32, blank=True, default='')
     email = models.EmailField('邮箱', blank=True, default='')
     dingtalk_user_id = models.CharField('钉钉用户 ID', max_length=128, blank=True, default='')
@@ -1180,6 +1209,113 @@ class AlertNotificationPolicy(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class InspectionReportSchedule(models.Model):
+    FREQUENCY_DAILY = 'daily'
+    FREQUENCY_WEEKLY = 'weekly'
+    FREQUENCY_CHOICES = [
+        (FREQUENCY_DAILY, '每天'),
+        (FREQUENCY_WEEKLY, '每周'),
+    ]
+    PROFILE_CHOICES = [
+        ('cluster', '集群综合巡检'),
+        ('server', '服务器巡检'),
+    ]
+    STATUS_NEVER = 'never'
+    STATUS_SUCCESS = 'success'
+    STATUS_PARTIAL = 'partial'
+    STATUS_FAILED = 'failed'
+    STATUS_CHOICES = [
+        (STATUS_NEVER, '未执行'),
+        (STATUS_SUCCESS, '成功'),
+        (STATUS_PARTIAL, '部分成功'),
+        (STATUS_FAILED, '失败'),
+    ]
+
+    name = models.CharField('计划名称', max_length=128)
+    knowledge_environment = models.ForeignKey(
+        'aiops.AIOpsKnowledgeEnvironment', on_delete=models.CASCADE,
+        related_name='inspection_report_schedules', verbose_name='业务上下文',
+    )
+    frequency = models.CharField('发送周期', max_length=16, choices=FREQUENCY_CHOICES, default=FREQUENCY_WEEKLY)
+    weekday = models.PositiveSmallIntegerField('星期', default=1, help_text='1=周一，7=周日')
+    send_time = models.TimeField('发送时间', default='09:00')
+    timezone = models.CharField('时区', max_length=64, default='Asia/Shanghai')
+    profile = models.CharField('巡检范围', max_length=32, choices=PROFILE_CHOICES, default='cluster')
+    depth = models.CharField('巡检深度', max_length=16, default='full')
+    window_minutes = models.PositiveIntegerField('证据时间窗分钟', default=60)
+    channels = models.ManyToManyField(
+        AlertNotificationChannel, related_name='inspection_report_schedules', verbose_name='通知渠道',
+    )
+    recipients = models.ManyToManyField(
+        AlertRecipient, blank=True, related_name='inspection_report_schedules', verbose_name='接收人',
+    )
+    recipient_groups = models.ManyToManyField(
+        AlertRecipientGroup, blank=True, related_name='inspection_report_schedules', verbose_name='接收组',
+    )
+    is_enabled = models.BooleanField('启用', default=True)
+    next_run_at = models.DateTimeField('下次执行时间', null=True, blank=True, db_index=True)
+    last_run_at = models.DateTimeField('最近执行时间', null=True, blank=True)
+    last_status = models.CharField('最近状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_NEVER)
+    last_error = models.TextField('最近错误', blank=True, default='')
+    last_report = models.JSONField('最近报告', default=dict, blank=True)
+    created_by = models.CharField('创建人', max_length=128, blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '巡检报告计划'
+        verbose_name_plural = '巡检报告计划'
+        ordering = ['name', 'id']
+        indexes = [
+            models.Index(fields=['is_enabled', 'next_run_at'], name='ops_irs_enabled_next_idx'),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class InspectionReportExecution(models.Model):
+    TRIGGER_SCHEDULER = 'scheduler'
+    TRIGGER_MANUAL = 'manual'
+    TRIGGER_CHOICES = [
+        (TRIGGER_SCHEDULER, '自动调度'),
+        (TRIGGER_MANUAL, '手动执行'),
+    ]
+    STATUS_RUNNING = 'running'
+    STATUS_SUCCESS = 'success'
+    STATUS_PARTIAL = 'partial'
+    STATUS_FAILED = 'failed'
+    STATUS_CHOICES = [
+        (STATUS_RUNNING, '执行中'),
+        (STATUS_SUCCESS, '成功'),
+        (STATUS_PARTIAL, '部分成功'),
+        (STATUS_FAILED, '失败'),
+    ]
+
+    schedule = models.ForeignKey(
+        InspectionReportSchedule, on_delete=models.CASCADE,
+        related_name='executions', verbose_name='巡检报告计划',
+    )
+    trigger = models.CharField('触发方式', max_length=16, choices=TRIGGER_CHOICES, default=TRIGGER_SCHEDULER)
+    status = models.CharField('执行状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_RUNNING)
+    report = models.JSONField('巡检报告', default=dict, blank=True)
+    delivery_results = models.JSONField('发送结果', default=list, blank=True)
+    error_message = models.TextField('错误信息', blank=True, default='')
+    started_at = models.DateTimeField('开始时间', auto_now_add=True)
+    completed_at = models.DateTimeField('完成时间', null=True, blank=True)
+
+    class Meta:
+        verbose_name = '巡检报告执行记录'
+        verbose_name_plural = '巡检报告执行记录'
+        ordering = ['-started_at', '-id']
+        indexes = [
+            models.Index(fields=['schedule', 'started_at'], name='ops_ire_schedule_time_idx'),
+        ]
+
+    def __str__(self):
+        return f'{self.schedule_id}:{self.trigger}:{self.status}'
 
 
 class AlertAnalysis(models.Model):

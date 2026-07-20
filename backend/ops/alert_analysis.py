@@ -382,7 +382,7 @@ def execute_alert_analysis(analysis):
     ])
     _project_compatibility(analysis)
     analysis.alert.refresh_from_db(fields=['status'])
-    if analysis.alert.status == Alert.STATUS_ACTIVE:
+    if analysis.alert.status in {Alert.STATUS_ACTIVE, Alert.STATUS_RESOLVED}:
         try:
             from .alerting import dispatch_alert_notifications
             dispatch_alert_notifications(analysis.alert, action='analysis')

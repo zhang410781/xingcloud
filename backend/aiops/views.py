@@ -12,7 +12,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from ops.eventwall_stub import record_event
-from ops.models import Alert, K8sCluster, LogDataSource, MetricDataSource, TaskResource, TaskResourceGroup
+from ops.models import Alert, K8sCluster, LogDataSource, MetricDataSource, MiddlewareAsset, TaskResource, TaskResourceGroup
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from rbac.services import is_demo_account, user_has_permissions
 
@@ -639,8 +639,16 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
         queryset = self.get_queryset().filter(is_enabled=True).select_related(
             'metric_datasource', 'log_datasource', 'k8s_cluster', 'task_resource_environment',
         )
-        return Response([
-            {
+        options = []
+        for item in queryset:
+            cluster_rows = list(TaskResource.objects.filter(
+                business_groups__id=item.task_resource_environment_id,
+                resource_type=TaskResource.RESOURCE_K8S,
+                cluster__isnull=False,
+            ).select_related('cluster').order_by('cluster__name', 'cluster_id').distinct()) if item.task_resource_environment_id else []
+            cluster_ids = list(dict.fromkeys(row.cluster_id for row in cluster_rows))
+            cluster_names = list(dict.fromkeys(row.cluster.name for row in cluster_rows))
+            options.append({
                 'id': item.id,
                 'name': item.name,
                 'code': item.code,
@@ -651,13 +659,14 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
                 'metric_datasource_name': getattr(item.metric_datasource, 'name', ''),
                 'log_datasource': item.log_datasource_id,
                 'log_datasource_name': getattr(item.log_datasource, 'name', ''),
-                'k8s_cluster': item.k8s_cluster_id,
-                'k8s_cluster_name': getattr(item.k8s_cluster, 'name', ''),
+                'k8s_cluster': cluster_ids[0] if cluster_ids else item.k8s_cluster_id,
+                'k8s_cluster_name': cluster_names[0] if cluster_names else getattr(item.k8s_cluster, 'name', ''),
+                'k8s_cluster_ids': cluster_ids,
+                'k8s_cluster_names': cluster_names,
                 'task_resource_environment': item.task_resource_environment_id,
                 'task_resource_environment_name': getattr(item.task_resource_environment, 'name', ''),
-            }
-            for item in queryset
-        ])
+            })
+        return Response(options)
 
     @action(detail=False, methods=['get'])
     def catalog(self, request):
@@ -669,11 +678,15 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
         )
 
         def binding_map(field):
-            return {
-                item[field]: {'id': item['id'], 'name': item['name'], 'code': item['code']}
-                for item in binding_rows
-                if item.get(field)
-            }
+            result = {}
+            for item in binding_rows:
+                resource_id = item.get(field)
+                if not resource_id:
+                    continue
+                result.setdefault(resource_id, []).append({
+                    'id': item['id'], 'name': item['name'], 'code': item['code'],
+                })
+            return result
 
         metric_bindings = binding_map('metric_datasource_id')
         log_bindings = binding_map('log_datasource_id')
@@ -694,7 +707,8 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
                 'provider_display': item.get_provider_display(),
                 'description': item.description,
                 'is_enabled': item.is_enabled,
-                'bound_context': log_bindings.get(item.id),
+                'bound_contexts': log_bindings.get(item.id, []),
+                'bound_context': (log_bindings.get(item.id) or [None])[0],
             }
             for item in LogDataSource.objects.order_by('provider', 'name')
         ]
@@ -710,7 +724,8 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
                 'tsdb_type': item.tsdb_type,
                 'is_default': item.is_default,
                 'is_enabled': item.is_enabled,
-                'bound_context': metric_bindings.get(item.id),
+                'bound_contexts': metric_bindings.get(item.id, []),
+                'bound_context': (metric_bindings.get(item.id) or [None])[0],
             }
             for item in MetricDataSource.objects.order_by('environment', '-is_default', 'name')
         ]
@@ -722,14 +737,27 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
                 'status': item.status,
                 'description': item.description,
                 'namespaces': _k8s_namespace_options(item),
-                'bound_context': cluster_bindings.get(item.id),
+                'bound_contexts': cluster_bindings.get(item.id, []),
+                'bound_context': (cluster_bindings.get(item.id) or [None])[0],
             }
             for item in K8sCluster.objects.order_by('name', 'id')
         ]
-        resource_counts = TaskResource.objects.values('environment_id').annotate(total=Count('id'))
+        resource_counts = TaskResource.objects.exclude(business_groups=None).values('business_groups__id').annotate(total=Count('id'))
         env_counts = {}
         for item in resource_counts:
-            env_counts[item['environment_id']] = env_counts.get(item['environment_id'], 0) + item['total']
+            group_id = item['business_groups__id']
+            env_counts[group_id] = env_counts.get(group_id, 0) + item['total']
+        k8s_by_group = {}
+        for group_id, cluster_name in TaskResource.objects.filter(
+            resource_type=TaskResource.RESOURCE_K8S,
+            cluster__isnull=False,
+        ).values_list('business_groups__id', 'cluster__name').distinct():
+            if group_id:
+                k8s_by_group.setdefault(group_id, []).append(cluster_name)
+        middleware_by_group = {}
+        for group_id, asset_name in MiddlewareAsset.objects.values_list('business_groups__id', 'name').distinct():
+            if group_id:
+                middleware_by_group.setdefault(group_id, []).append(asset_name)
         task_resource_environments = [
             {
                 'id': item.id,
@@ -737,7 +765,10 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
                 'code': item.code,
                 'description': item.description,
                 'resource_count': env_counts.get(item.id, 0),
-                'bound_context': asset_bindings.get(item.id),
+                'k8s_clusters': sorted(k8s_by_group.get(item.id, [])),
+                'middleware_assets': sorted(middleware_by_group.get(item.id, [])),
+                'bound_contexts': asset_bindings.get(item.id, []),
+                'bound_context': (asset_bindings.get(item.id) or [None])[0],
             }
             for item in TaskResourceGroup.objects.filter(group_type=TaskResourceGroup.GROUP_ENVIRONMENT).order_by('sort_order', 'name', 'id')
         ]
@@ -769,12 +800,15 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
 
         context = self.get_object()
         profile = str(request.data.get('profile') or 'inspection').strip()
+        allowed_profiles = {'inspection', 'cluster', 'node', 'workload', 'service', 'control_plane'}
+        if profile not in allowed_profiles:
+            return Response({'profile': ['必须是 cluster、node、workload、service 或 control_plane']}, status=status.HTTP_400_BAD_REQUEST)
         depth = str(request.data.get('depth') or 'full').strip()
         target = str(request.data.get('target') or '').strip()
         try:
-            window_minutes = max(15, min(int(request.data.get('window_minutes') or 60), 360))
+            window_minutes = max(5, min(int(request.data.get('window_minutes') or 60), 360))
         except (TypeError, ValueError):
-            return Response({'window_minutes': ['必须为15到360之间的整数']}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'window_minutes': ['必须为5到360之间的整数']}, status=status.HTTP_400_BAD_REQUEST)
         try:
             evidence = collect_observability_evidence(
                 context, profile=profile, depth=depth, target=target, window_minutes=window_minutes,

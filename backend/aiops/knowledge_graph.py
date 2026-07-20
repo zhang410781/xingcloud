@@ -515,8 +515,17 @@ def resolve_knowledge_environment(name):
         return None
     metric_datasource_id = getattr(config, 'metric_datasource_id', None)
     log_datasource_id = getattr(config, 'log_datasource_id', None)
-    k8s_cluster_id = getattr(config, 'k8s_cluster_id', None)
     task_resource_environment_id = getattr(config, 'task_resource_environment_id', None)
+    k8s_cluster_ids = list(
+        TaskResource.objects.filter(
+            business_groups__id=task_resource_environment_id,
+            resource_type=TaskResource.RESOURCE_K8S,
+            cluster__isnull=False,
+        ).order_by('cluster_id').values_list('cluster_id', flat=True).distinct()
+    ) if task_resource_environment_id else []
+    k8s_cluster_id = k8s_cluster_ids[0] if k8s_cluster_ids else getattr(config, 'k8s_cluster_id', None)
+    if k8s_cluster_id and k8s_cluster_id not in k8s_cluster_ids:
+        k8s_cluster_ids.append(k8s_cluster_id)
     return {
         'id': config.id,
         'name': config.name,
@@ -531,7 +540,7 @@ def resolve_knowledge_environment(name):
         'log_datasource_ids': [log_datasource_id] if log_datasource_id else [],
         'alert_environments': [config.code],
         'k8s_cluster_id': k8s_cluster_id,
-        'k8s_cluster_ids': [k8s_cluster_id] if k8s_cluster_id else [],
+        'k8s_cluster_ids': k8s_cluster_ids,
         'k8s_namespaces': config.k8s_namespaces if isinstance(config.k8s_namespaces, dict) else {},
         'docker_host_ids': [],
         'task_resource_environment_id': task_resource_environment_id,
@@ -1547,6 +1556,14 @@ def build_knowledge_graph(params=None):
             task_resource_environment_id = getattr(config, 'task_resource_environment_id', None)
             if task_resource_environment_id:
                 selected_task_resource_environment_ids.add(task_resource_environment_id)
+                cmdb_cluster_ids = TaskResource.objects.filter(
+                    business_groups__id=task_resource_environment_id,
+                    resource_type=TaskResource.RESOURCE_K8S,
+                    cluster__isnull=False,
+                ).values_list('cluster_id', flat=True).distinct()
+                for cmdb_cluster_id in cmdb_cluster_ids:
+                    selected_k8s_cluster_ids.add(cmdb_cluster_id)
+                    selected_k8s_namespaces[cmdb_cluster_id].update(_namespaces_for_cluster(config, cmdb_cluster_id))
 
     def graph_environment(source_environment, kind=''):
         environment = _clean(source_environment, UNKNOWN_ENV)

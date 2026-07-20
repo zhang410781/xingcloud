@@ -12,8 +12,16 @@ from ops.alert_analysis import (
     execute_alert_analysis,
     run_due_alert_analyses,
 )
-from ops.alerting import _default_body
-from ops.models import Alert, AlertAnalysis, AlertNotificationPolicy, LogDataSource, MetricDataSource
+from ops.alerting import _default_body, dispatch_alert_notifications
+from ops.models import (
+    Alert,
+    AlertAnalysis,
+    AlertNotificationChannel,
+    AlertNotificationPolicy,
+    AlertRule,
+    LogDataSource,
+    MetricDataSource,
+)
 
 
 class AlertAnalysisTests(TestCase):
@@ -141,6 +149,43 @@ class AlertAnalysisTests(TestCase):
         self.assertEqual(self.alert.raw_payload['ai_analysis']['status'], AlertAnalysis.STATUS_PARTIAL)
         dispatch.assert_called_once_with(analysis.alert, action='analysis')
 
+    @patch('ops.alerting.dispatch_alert_notifications')
+    @patch('ops.alert_analysis._llm_synthesis')
+    @patch('ops.observability_evidence._run_query')
+    def test_completed_analysis_dispatches_after_alert_recovers(self, run_query, llm_synthesis, dispatch):
+        run_query.return_value = {'total': 0, 'logs': []}
+        llm_synthesis.side_effect = RuntimeError('provider unavailable')
+        self.alert.status = Alert.STATUS_RESOLVED
+        self.alert.save(update_fields=['status'])
+        analysis = AlertAnalysis.objects.create(alert=self.alert, trigger=AlertAnalysis.TRIGGER_MANUAL)
+
+        execute_alert_analysis(analysis)
+
+        dispatch.assert_called_once_with(analysis.alert, action='analysis')
+
+    @patch('ops.alerting.send_alert_notification', return_value='sent')
+    def test_notification_dispatch_allows_resolved_analysis(self, send_notification):
+        rule = AlertRule.objects.create(
+            name='analysis rule', source_type='prometheus', category='k8s',
+            metric_datasource=self.metric, is_template=False, notify_enabled=True,
+        )
+        channel = AlertNotificationChannel.objects.create(
+            name='analysis feishu', channel_type='feishu',
+            config={'webhook_url': 'https://open.feishu.cn/test', 'secret': 'secret'},
+        )
+        policy = AlertNotificationPolicy.objects.create(
+            name='analysis policy', metric_datasource=self.metric, notify_on_analysis=True,
+        )
+        policy.channels.add(channel)
+        self.alert.status = Alert.STATUS_RESOLVED
+        self.alert.labels = {**self.alert.labels, 'alert_rule_id': str(rule.id)}
+        self.alert.save(update_fields=['status', 'labels'])
+
+        logs = dispatch_alert_notifications(self.alert, action='analysis')
+
+        self.assertEqual(logs, ['sent'])
+        send_notification.assert_called_once()
+
     @patch('ops.alert_analysis.execute_alert_analysis')
     def test_scheduler_retries_processing_failure_twice(self, execute):
         execute.side_effect = RuntimeError('unexpected worker failure')
@@ -164,6 +209,13 @@ class AlertAnalysisTests(TestCase):
         self.assertIn('> 3次', body)
         self.assertIn('Pod 15 分钟内重启超过阈值', body)
         self.assertNotIn('increase(restarts[15m])', body)
+
+    def test_analysis_notification_includes_current_alert_status(self):
+        self.alert.status = Alert.STATUS_RESOLVED
+
+        body = _default_body(self.alert, action='analysis')
+
+        self.assertIn('告警状态：** 已恢复', body)
 
 
 class AlertAnalysisApiTests(TestCase):

@@ -661,11 +661,14 @@
     <el-dialog v-model="recipientDialog.visible" title="&#x63A5;&#x6536;&#x4EBA;" width="620px">
       <el-form :model="recipientDialog.form" label-width="120px">
         <el-form-item label="&#x59D3;&#x540D;"><el-input v-model="recipientDialog.form.name" /></el-form-item>
-        <el-form-item label="&#x624B;&#x673A;&#x53F7;"><el-input v-model="recipientDialog.form.phone" /></el-form-item>
-        <el-form-item label="&#x90AE;&#x7BB1;"><el-input v-model="recipientDialog.form.email" /></el-form-item>
-        <el-form-item label="&#x9489;&#x9489; ID"><el-input v-model="recipientDialog.form.dingtalk_user_id" /></el-form-item>
-        <el-form-item label="&#x98DE;&#x4E66; ID"><el-input v-model="recipientDialog.form.feishu_user_id" /></el-form-item>
-        <el-form-item label="&#x4F01;&#x5FAE; ID"><el-input v-model="recipientDialog.form.wecom_user_id" /></el-form-item>
+        <el-form-item label="接收渠道">
+          <el-select v-model="recipientDialog.form.preferred_channels" multiple filterable placeholder="选择通知方式">
+            <el-option v-for="item in channelOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="recipientDialog.form.preferred_channels.includes('sms') || recipientDialog.form.preferred_channels.includes('voice')" label="&#x624B;&#x673A;&#x53F7;"><el-input v-model="recipientDialog.form.phone" /></el-form-item>
+        <el-form-item v-if="recipientDialog.form.preferred_channels.includes('email')" label="&#x90AE;&#x7BB1;"><el-input v-model="recipientDialog.form.email" /></el-form-item>
+        <el-alert type="info" :closable="false" title="飞书、钉钉和企微使用已配置的机器人渠道，无需填写个人标识。" />
         <el-form-item label="&#x542F;&#x7528;"><el-switch v-model="recipientDialog.form.is_enabled" /></el-form-item>
       </el-form>
       <template #footer>
@@ -1978,16 +1981,22 @@ async function testChannel(row) {
 }
 
 function emptyRecipient() {
-  return { id: null, name: '', phone: '', email: '', dingtalk_user_id: '', feishu_user_id: '', wecom_user_id: '', is_enabled: true }
+  return { id: null, name: '', preferred_channels: [], phone: '', email: '', is_enabled: true }
 }
 
 function openRecipient(row = null) {
-  recipientDialog.form = row ? { ...emptyRecipient(), ...row } : emptyRecipient()
+  recipientDialog.form = row
+    ? { ...emptyRecipient(), ...row, preferred_channels: row.preferred_channels?.length ? [...row.preferred_channels] : [...(row.contact_channels || [])] }
+    : emptyRecipient()
   recipientDialog.visible = true
 }
 
 async function saveRecipient() {
   const data = { ...recipientDialog.form }
+  if (!data.name?.trim()) return ElMessage.warning('请输入接收人姓名')
+  if (!data.preferred_channels?.length) return ElMessage.warning('请选择至少一个接收渠道')
+  if (data.preferred_channels.includes('email') && !data.email?.trim()) return ElMessage.warning('邮件渠道需要填写邮箱')
+  if ((data.preferred_channels.includes('sms') || data.preferred_channels.includes('voice')) && !data.phone?.trim()) return ElMessage.warning('短信或语音渠道需要填写手机号')
   if (data.id) await updateAlertRecipient(data.id, data)
   else await createAlertRecipient(data)
   recipientDialog.visible = false

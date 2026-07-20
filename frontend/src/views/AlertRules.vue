@@ -175,6 +175,7 @@
           <button :class="{ active: resourceTab === 'channels' }" @click="resourceTab = 'channels'">通知渠道</button>
           <button :class="{ active: resourceTab === 'recipients' }" @click="resourceTab = 'recipients'">接收人</button>
           <button :class="{ active: resourceTab === 'groups' }" @click="resourceTab = 'groups'">接收组</button>
+          <button :class="{ active: resourceTab === 'reports' }" @click="resourceTab = 'reports'">巡检报告</button>
         </nav>
 
         <div v-if="resourceTab === 'channels'" class="panel table-panel resource-panel">
@@ -194,7 +195,7 @@
 
         <div v-else-if="resourceTab === 'recipients'" class="panel table-panel resource-panel">
           <div class="section-head">
-            <div><h2>接收人</h2><p>统一维护手机号、邮箱及钉钉、飞书、企微身份，接收组从这里选择成员。</p></div>
+            <div><h2>接收人</h2><p>统一维护接收渠道及必要联系方式；飞书、钉钉和企微复用机器人渠道。</p></div>
             <div class="resource-actions"><el-input v-model="resourceSearch" clearable :prefix-icon="Search" placeholder="搜索姓名、联系方式或所属组" /><el-button type="primary" :icon="Plus" @click="openRecipient()">新增接收人</el-button></div>
           </div>
           <el-table :data="filteredRecipients" stripe empty-text="暂无接收人">
@@ -206,7 +207,7 @@
           </el-table>
         </div>
 
-        <div v-else class="panel table-panel resource-panel">
+        <div v-else-if="resourceTab === 'groups'" class="panel table-panel resource-panel">
           <div class="section-head">
             <div><h2>接收组</h2><p>静态成员组由通知策略引用；列表直接展示成员健康度、联系方式覆盖和策略引用。</p></div>
             <div class="resource-actions"><el-input v-model="resourceSearch" clearable :prefix-icon="Search" placeholder="搜索组名、成员或策略" /><el-button type="primary" :icon="Plus" @click="openRecipientGroup()">新增接收组</el-button></div>
@@ -215,10 +216,28 @@
             <el-table-column label="接收组" min-width="210"><template #default="{ row }"><div class="primary-cell"><strong>{{ row.name }}</strong><small>{{ row.description || '未填写说明' }}</small></div></template></el-table-column>
             <el-table-column label="成员" width="150"><template #default="{ row }"><span>{{ row.active_member_count || 0 }} / {{ row.member_count || 0 }} 可用</span></template></el-table-column>
             <el-table-column label="联系方式覆盖" min-width="300"><template #default="{ row }"><div class="tag-list"><el-tag v-for="item in coverageTags(row)" :key="item.key" size="small" effect="plain">{{ item.label }} {{ item.count }}</el-tag><span v-if="!coverageTags(row).length" class="warning-text">无可用联系方式</span></div></template></el-table-column>
-            <el-table-column label="策略引用" min-width="220"><template #default="{ row }">{{ (row.policy_refs || []).map((item) => item.name).join('、') || '未引用' }}</template></el-table-column>
+            <el-table-column label="资源引用" min-width="240"><template #default="{ row }">{{ recipientGroupReferences(row) }}</template></el-table-column>
             <el-table-column label="健康度" width="110"><template #default="{ row }"><el-tag :type="groupHealth(row).type">{{ groupHealth(row).label }}</el-tag></template></el-table-column>
             <el-table-column label="状态" width="90"><template #default="{ row }"><el-tag :type="row.is_enabled ? 'success' : 'info'">{{ row.is_enabled ? '启用' : '停用' }}</el-tag></template></el-table-column>
-            <el-table-column label="操作" width="150" fixed="right"><template #default="{ row }"><el-button link @click="openRecipientGroup(row)">编辑</el-button><el-button link type="danger" :disabled="Boolean(row.policy_count)" @click="removeRecipientGroup(row)">删除</el-button></template></el-table-column>
+            <el-table-column label="操作" width="150" fixed="right"><template #default="{ row }"><el-button link @click="openRecipientGroup(row)">编辑</el-button><el-button link type="danger" :disabled="Boolean(row.policy_count || row.report_schedule_count)" @click="removeRecipientGroup(row)">删除</el-button></template></el-table-column>
+          </el-table>
+        </div>
+
+        <div v-else class="panel table-panel resource-panel">
+          <div class="section-head">
+            <div><h2>巡检报告</h2><p>按每天或每周自动执行确定性巡检，并发送到选定渠道、接收人或接收组。</p></div>
+            <el-button type="primary" :icon="Plus" @click="openInspectionReport()">新增巡检报告</el-button>
+          </div>
+          <el-table :data="inspectionReports" stripe empty-text="暂无巡检报告计划">
+            <el-table-column label="计划" min-width="210"><template #default="{ row }"><div class="primary-cell"><strong>{{ row.name }}</strong><small>{{ row.knowledge_environment_detail?.name || '-' }}</small></div></template></el-table-column>
+            <el-table-column label="发送周期" min-width="150"><template #default="{ row }">{{ inspectionReportScheduleText(row) }}</template></el-table-column>
+            <el-table-column label="巡检范围" min-width="150"><template #default="{ row }">{{ row.profile_display || inspectionProfileText(row.profile) }}</template></el-table-column>
+            <el-table-column label="通知渠道" min-width="180"><template #default="{ row }">{{ (row.channels || []).map((item) => item.name).join('、') || '-' }}</template></el-table-column>
+            <el-table-column label="接收对象" min-width="240"><template #default="{ row }">{{ inspectionReportRecipients(row) }}</template></el-table-column>
+            <el-table-column label="下次发送" width="180"><template #default="{ row }">{{ formatTime(row.next_run_at) }}</template></el-table-column>
+            <el-table-column label="最近状态" width="110"><template #default="{ row }"><el-tag :type="inspectionStatusType(row.last_status)">{{ row.last_status_display || inspectionStatusText(row.last_status) }}</el-tag></template></el-table-column>
+            <el-table-column label="状态" width="90"><template #default="{ row }"><el-tag :type="row.is_enabled ? 'success' : 'info'">{{ row.is_enabled ? '启用' : '停用' }}</el-tag></template></el-table-column>
+            <el-table-column label="操作" width="190" fixed="right"><template #default="{ row }"><el-button link type="success" @click="runInspectionReport(row)">立即发送</el-button><el-button link @click="openInspectionReport(row)">编辑</el-button><el-popconfirm title="删除该巡检报告计划？" @confirm="removeInspectionReport(row)"><template #reference><el-button link type="danger">删除</el-button></template></el-popconfirm></template></el-table-column>
           </el-table>
         </div>
       </section>
@@ -325,14 +344,17 @@
       <el-form label-width="110px">
         <el-form-item label="姓名" required><el-input v-model="recipientForm.name" /></el-form-item>
         <el-form-item label="平台用户"><el-select v-model="recipientForm.user" clearable filterable placeholder="可选，关联平台账号"><el-option v-for="item in users" :key="item.id" :label="item.display_name || item.username" :value="item.id" /></el-select></el-form-item>
+        <el-form-item label="接收渠道" required>
+          <el-select v-model="recipientForm.preferred_channels" multiple filterable collapse-tags collapse-tags-tooltip placeholder="选择该接收人可用的通知方式">
+            <el-option v-for="item in recipientChannelOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+        </el-form-item>
         <div class="form-grid">
-          <el-form-item label="手机号"><el-input v-model="recipientForm.phone" /></el-form-item>
-          <el-form-item label="邮箱"><el-input v-model="recipientForm.email" /></el-form-item>
-          <el-form-item label="钉钉用户 ID"><el-input v-model="recipientForm.dingtalk_user_id" /></el-form-item>
-          <el-form-item label="飞书用户 ID"><el-input v-model="recipientForm.feishu_user_id" /></el-form-item>
-          <el-form-item label="企微用户 ID"><el-input v-model="recipientForm.wecom_user_id" /></el-form-item>
+          <el-form-item v-if="recipientForm.preferred_channels.includes('sms') || recipientForm.preferred_channels.includes('voice')" label="手机号" required><el-input v-model="recipientForm.phone" placeholder="短信和语音通知使用" /></el-form-item>
+          <el-form-item v-if="recipientForm.preferred_channels.includes('email')" label="邮箱" required><el-input v-model="recipientForm.email" placeholder="邮件通知使用" /></el-form-item>
           <el-form-item label="启用"><el-switch v-model="recipientForm.is_enabled" /></el-form-item>
         </div>
+        <el-alert type="info" :closable="false" title="飞书、钉钉和企微使用通知渠道中配置的机器人发送，无需填写个人标识。" />
         <el-form-item label="说明"><el-input v-model="recipientForm.description" type="textarea" :rows="2" /></el-form-item>
       </el-form>
       <template #footer><el-button @click="recipientDialog = false">取消</el-button><el-button type="primary" :loading="saving" @click="saveRecipient">保存接收人</el-button></template>
@@ -365,6 +387,30 @@
       <template #footer><el-button @click="recipientGroupDialog = false">取消</el-button><el-button type="primary" :loading="saving" @click="saveRecipientGroup">保存接收组</el-button></template>
     </el-dialog>
 
+    <el-dialog v-model="inspectionReportDialog" :title="inspectionReportForm.id ? '编辑巡检报告' : '新增巡检报告'" width="760px">
+      <el-form label-width="120px">
+        <el-form-item label="计划名称" required><el-input v-model="inspectionReportForm.name" placeholder="例如：生产集群每周巡检报告" /></el-form-item>
+        <el-form-item label="业务上下文" required>
+          <el-select v-model="inspectionReportForm.knowledge_environment" filterable placeholder="选择业务上下文">
+            <el-option v-for="item in contexts" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
+        </el-form-item>
+        <div class="form-grid">
+          <el-form-item label="发送周期" required><el-radio-group v-model="inspectionReportForm.frequency"><el-radio-button value="daily">每天</el-radio-button><el-radio-button value="weekly">每周</el-radio-button></el-radio-group></el-form-item>
+          <el-form-item v-if="inspectionReportForm.frequency === 'weekly'" label="发送星期" required><el-select v-model="inspectionReportForm.weekday"><el-option v-for="item in weekdayOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item>
+          <el-form-item label="发送时间" required><el-time-picker v-model="inspectionReportForm.send_time" format="HH:mm" value-format="HH:mm:ss" placeholder="选择时间" /></el-form-item>
+          <el-form-item label="巡检范围" required><el-select v-model="inspectionReportForm.profile"><el-option v-for="item in inspectionProfileOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item>
+          <el-form-item label="证据时间窗"><el-input-number v-model="inspectionReportForm.window_minutes" :min="5" :max="360" :step="5" /><span class="suffix">分钟</span></el-form-item>
+        </div>
+        <el-form-item label="通知渠道" required><el-select v-model="inspectionReportForm.channel_ids" multiple filterable collapse-tags collapse-tags-tooltip placeholder="选择通知渠道"><el-option v-for="item in channels.filter((channel) => channel.is_enabled)" :key="item.id" :label="`${item.name} · ${channelTypeText(item.channel_type)}`" :value="item.id" /></el-select></el-form-item>
+        <el-form-item label="接收人"><el-select v-model="inspectionReportForm.recipient_ids" multiple filterable collapse-tags collapse-tags-tooltip placeholder="按姓名选择接收人"><el-option v-for="item in recipients.filter((recipient) => recipient.is_enabled)" :key="item.id" :label="recipientOptionLabel(item)" :value="item.id" /></el-select><span class="form-help">菜单只显示姓名和联系方式，无需填写内部编号。</span></el-form-item>
+        <el-form-item label="接收组"><el-select v-model="inspectionReportForm.recipient_group_ids" multiple filterable collapse-tags collapse-tags-tooltip placeholder="也可以选择接收组"><el-option v-for="item in recipientGroups.filter((group) => group.is_enabled)" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item>
+        <el-form-item label="启用"><el-switch v-model="inspectionReportForm.is_enabled" /></el-form-item>
+        <el-alert type="info" :closable="false" title="报告由平台确定性巡检管线生成；模型不可用时仍会发送已获取的指标、K8S、日志和资产证据。" />
+      </el-form>
+      <template #footer><el-button @click="inspectionReportDialog = false">取消</el-button><el-button type="primary" :loading="saving" @click="saveInspectionReport">保存计划</el-button></template>
+    </el-dialog>
+
     <el-dialog v-model="resultDialog" title="规则试运行结果" width="760px"><pre class="result-json">{{ runResult }}</pre></el-dialog>
   </div>
 </template>
@@ -382,10 +428,12 @@ import {
   createAlertRecipient,
   createAlertRecipientGroup,
   createAlertRule,
+  createInspectionReportSchedule,
   deleteAlertNotificationPolicy,
   deleteAlertRecipient,
   deleteAlertRecipientGroup,
   deleteAlertRule,
+  deleteInspectionReportSchedule,
   evaluateAlertRule,
   getAlertNotificationChannels,
   getAlertNotificationPolicies,
@@ -393,20 +441,23 @@ import {
   getAlertRecipientGroups,
   getAlertRuleTemplates,
   getAlertRules,
+  getInspectionReportSchedules,
   getMetricDataSources,
   getUsers,
   instantiateAlertRule,
   patchAlertRule,
   previewAlertNotificationPolicy,
+  runInspectionReportSchedule,
   testAlertNotificationChannel,
   updateAlertNotificationChannel,
   updateAlertNotificationPolicy,
   updateAlertRecipient,
   updateAlertRecipientGroup,
+  updateInspectionReportSchedule,
 } from '@/api/modules/ops'
 
 const businessContextStore = useBusinessContextStore()
-const { currentContext, currentContextId } = storeToRefs(businessContextStore)
+const { contexts, currentContext, currentContextId } = storeToRefs(businessContextStore)
 const activeTab = ref('rules')
 const loading = ref(false)
 const saving = ref(false)
@@ -427,6 +478,7 @@ const policies = ref([])
 const channels = ref([])
 const recipients = ref([])
 const recipientGroups = ref([])
+const inspectionReports = ref([])
 const users = ref([])
 const instantiateDialog = ref(false)
 const ruleDialog = ref(false)
@@ -435,6 +487,7 @@ const previewDialog = ref(false)
 const channelDialog = ref(false)
 const recipientDialog = ref(false)
 const recipientGroupDialog = ref(false)
+const inspectionReportDialog = ref(false)
 const resultDialog = ref(false)
 const runResult = ref('')
 const templateGroup = ref('')
@@ -449,9 +502,27 @@ const previewForm = reactive({ metric_datasource_id: '', level: 'warning', label
 const channelForm = reactive(emptyChannelForm())
 const recipientForm = reactive(emptyRecipientForm())
 const recipientGroupForm = reactive(emptyRecipientGroupForm())
+const inspectionReportForm = reactive(emptyInspectionReportForm())
 const addRecipientToOpenGroup = ref(false)
 const previewResult = ref(null)
 const contextReady = ref(false)
+const weekdayOptions = [
+  { label: '星期一', value: 1 }, { label: '星期二', value: 2 }, { label: '星期三', value: 3 },
+  { label: '星期四', value: 4 }, { label: '星期五', value: 5 }, { label: '星期六', value: 6 },
+  { label: '星期日', value: 7 },
+]
+const inspectionProfileOptions = [
+  { label: '集群综合巡检', value: 'cluster' },
+  { label: '服务器巡检', value: 'server' },
+]
+const recipientChannelOptions = [
+  { label: '邮件', value: 'email' },
+  { label: '短信', value: 'sms' },
+  { label: '语音', value: 'voice' },
+  { label: '钉钉', value: 'dingtalk' },
+  { label: '飞书', value: 'feishu' },
+  { label: '企微', value: 'wecom' },
+]
 
 const k8sTemplates = computed(() => templates.value.filter((item) => item.category === 'k8s' && item.source_type === 'prometheus'))
 const templateGroupOptions = computed(() => {
@@ -501,8 +572,8 @@ const filteredChannels = computed(() => channels.value.filter((item) => {
 const filteredRecipients = computed(() => recipients.value.filter((item) => {
   const text = normalizedResourceSearch.value
   return !text || [
-    item.name, item.phone, item.email, item.dingtalk_user_id, item.feishu_user_id,
-    item.wecom_user_id, item.user_detail?.display_name, item.user_detail?.username,
+    item.name, item.phone, item.email, item.user_detail?.display_name, item.user_detail?.username,
+    ...(item.contact_channels || []).map(channelTypeText),
     ...(item.group_refs || []).map((group) => group.name),
   ].some((value) => String(value || '').toLowerCase().includes(text))
 }))
@@ -511,6 +582,7 @@ const filteredRecipientGroups = computed(() => recipientGroups.value.filter((ite
   return !text || [
     item.name, item.description, recipientGroupMembers(item),
     ...(item.policy_refs || []).map((policy) => policy.name),
+    ...(item.report_schedule_refs || []).map((report) => report.name),
   ].some((value) => String(value || '').toLowerCase().includes(text))
 }))
 const recipientGroupDraft = computed(() => {
@@ -536,19 +608,23 @@ function cloneMatchers(value) { return Array.isArray(value) ? value.map((item) =
 function emptyRuleForm() { return { id: null, metric_datasource: '', name: '', promql: '', operator: '>', threshold: 80, level: 'warning', duration_seconds: 300, interval_seconds: 60, auto_analyze: true, description: '' } }
 function emptyPolicyForm() { return { id: null, name: '', metric_datasource: '', min_level: '', priority: 100, continue_matching: false, matchers: [], channel_ids: [], recipient_group_ids: [], group_by: ['cluster', 'namespace', 'service'], group_wait_seconds: 30, group_interval_seconds: 300, repeat_interval_minutes: 30, mute_enabled: false, mute_range: [], escalation_after_minutes: 0, notify_on_fire: true, notify_on_resolved: true, notify_on_analysis: true, is_enabled: true, description: '' } }
 function emptyChannelForm() { return { id: null, name: '', channel_type: 'email', destination: '', secret: '', send_resolved: true, is_enabled: true, config: {} } }
-function emptyRecipientForm() { return { id: null, name: '', user: null, phone: '', email: '', dingtalk_user_id: '', feishu_user_id: '', wecom_user_id: '', is_enabled: true, description: '' } }
+function emptyRecipientForm() { return { id: null, name: '', user: null, preferred_channels: [], phone: '', email: '', is_enabled: true, description: '' } }
 function emptyRecipientGroupForm() { return { id: null, name: '', recipient_ids: [], user_ids: [], policy_refs: [], is_enabled: true, description: '' } }
+function emptyInspectionReportForm() { return { id: null, name: '', knowledge_environment: '', frequency: 'weekly', weekday: 1, send_time: '09:00:00', profile: 'cluster', window_minutes: 60, channel_ids: [], recipient_ids: [], recipient_group_ids: [], is_enabled: true } }
 
 async function loadAll() {
   loading.value = true
   try {
-    const [sourceResult, templateResult, channelResult, recipientResult, groupResult, userResult] = await Promise.all([
+    const [sourceResult, templateResult, channelResult, recipientResult, groupResult, userResult, reportResult] = await Promise.all([
       getMetricDataSources({ is_enabled: true, page_size: 200 }),
       getAlertRuleTemplates({ page_size: 200 }),
       getAlertNotificationChannels({ page_size: 200 }),
       getAlertRecipients({ page_size: 200 }),
       getAlertRecipientGroups({ page_size: 200 }),
       getUsers({ page_size: 500 }),
+      currentContextId.value
+        ? getInspectionReportSchedules({ knowledge_environment: currentContextId.value, page_size: 200 })
+        : Promise.resolve([]),
     ])
     const boundDatasourceId = String(currentContext.value?.metric_datasource || '')
     metricSources.value = listOf(sourceResult).filter((item) => boundDatasourceId && String(item.id) === boundDatasourceId)
@@ -557,6 +633,7 @@ async function loadAll() {
     recipients.value = listOf(recipientResult)
     recipientGroups.value = listOf(groupResult)
     users.value = listOf(userResult)
+    inspectionReports.value = listOf(reportResult)
     selectedSourceId.value = metricSources.value[0]?.id || ''
     await Promise.all([loadRules(), loadPolicies()])
   } catch (error) {
@@ -651,6 +728,13 @@ function openChannel(row = null) { const base = emptyChannelForm(); if (row) Obj
 async function saveChannel() { if (!channelForm.name.trim()) return ElMessage.warning('请输入渠道名称'); if (channelForm.channel_type === 'feishu' && !channelForm.secret) return ElMessage.warning('飞书渠道必须填写签名密钥'); const config = channelForm.channel_type === 'email' ? { ...(channelForm.config || {}), to: channelForm.destination.split(',').map((item) => item.trim()).filter(Boolean) } : { ...(channelForm.config || {}), webhook_url: channelForm.destination.trim(), ...(channelForm.channel_type === 'feishu' ? { secret: channelForm.secret } : {}) }; const payload = { name: channelForm.name.trim(), channel_type: channelForm.channel_type, config, send_resolved: channelForm.send_resolved, is_enabled: channelForm.is_enabled }; saving.value = true; try { if (channelForm.id) await updateAlertNotificationChannel(channelForm.id, payload); else await createAlertNotificationChannel(payload); channelDialog.value = false; channels.value = listOf(await getAlertNotificationChannels()); ElMessage.success('通知渠道已保存') } catch (error) { ElMessage.error(error.response?.data?.detail || '渠道保存失败') } finally { saving.value = false } }
 async function testChannel(row) { try { await testAlertNotificationChannel(row.id); ElMessage.success('渠道测试已执行，请在通知记录中查看结果') } catch (error) { ElMessage.error(error.response?.data?.detail || '渠道测试失败') } }
 function recipientGroupMembers(row) { return [...(row.recipients || []).map((item) => item.name), ...(row.users || []).map((item) => item.display_name || item.username)].join('、') || '-' }
+function recipientGroupReferences(row) {
+  const values = [
+    ...(row.policy_refs || []).map((item) => `${item.name}（策略）`),
+    ...(row.report_schedule_refs || []).map((item) => `${item.name}（巡检）`),
+  ]
+  return values.join('、') || '未引用'
+}
 
 function channelTypeText(value) {
   return { email: '邮件', sms: '短信', voice: '语音', dingtalk: '钉钉', feishu: '飞书', wecom: '企微' }[value] || value
@@ -676,10 +760,10 @@ function groupHealth(row) {
 function contactCoverage(selectedRecipients, selectedUsers) {
   return {
     email: selectedRecipients.filter((item) => item.contact_channels?.includes('email')).length + selectedUsers.filter((item) => item.email).length,
-    phone: selectedRecipients.filter((item) => item.phone).length,
-    dingtalk: selectedRecipients.filter((item) => item.dingtalk_user_id).length,
-    feishu: selectedRecipients.filter((item) => item.feishu_user_id).length,
-    wecom: selectedRecipients.filter((item) => item.wecom_user_id).length,
+    phone: selectedRecipients.filter((item) => item.contact_channels?.includes('sms') || item.contact_channels?.includes('voice')).length,
+    dingtalk: selectedRecipients.filter((item) => item.contact_channels?.includes('dingtalk')).length,
+    feishu: selectedRecipients.filter((item) => item.contact_channels?.includes('feishu')).length,
+    wecom: selectedRecipients.filter((item) => item.contact_channels?.includes('wecom')).length,
   }
 }
 function recipientOptionLabel(item) {
@@ -701,11 +785,9 @@ function openRecipient(row = null, addToGroup = false) {
     id: row.id,
     name: row.name,
     user: row.user || null,
+    preferred_channels: row.preferred_channels?.length ? [...row.preferred_channels] : [...(row.contact_channels || [])],
     phone: row.phone || '',
     email: row.email || '',
-    dingtalk_user_id: row.dingtalk_user_id || '',
-    feishu_user_id: row.feishu_user_id || '',
-    wecom_user_id: row.wecom_user_id || '',
     is_enabled: row.is_enabled,
     description: row.description || '',
   } : {})
@@ -714,11 +796,14 @@ function openRecipient(row = null, addToGroup = false) {
 }
 async function saveRecipient() {
   if (!recipientForm.name.trim()) return ElMessage.warning('请输入接收人姓名')
+  if (!recipientForm.preferred_channels.length) return ElMessage.warning('请选择至少一个接收渠道')
+  if (recipientForm.preferred_channels.includes('email') && !recipientForm.email.trim()) return ElMessage.warning('邮件渠道需要填写邮箱')
+  if ((recipientForm.preferred_channels.includes('sms') || recipientForm.preferred_channels.includes('voice')) && !recipientForm.phone.trim()) return ElMessage.warning('短信或语音渠道需要填写手机号')
   const payload = {
     name: recipientForm.name.trim(), user: recipientForm.user || null,
+    preferred_channels: recipientForm.preferred_channels,
     phone: recipientForm.phone.trim(), email: recipientForm.email.trim(),
-    dingtalk_user_id: recipientForm.dingtalk_user_id.trim(), feishu_user_id: recipientForm.feishu_user_id.trim(),
-    wecom_user_id: recipientForm.wecom_user_id.trim(), is_enabled: recipientForm.is_enabled,
+    is_enabled: recipientForm.is_enabled,
     description: recipientForm.description.trim(),
   }
   saving.value = true
@@ -783,12 +868,109 @@ async function saveRecipientGroup() {
 }
 async function removeRecipientGroup(row) {
   if (row.policy_count) return ElMessage.warning(`接收组正在被 ${row.policy_count} 条通知策略引用，请先解除引用`)
+  if (row.report_schedule_count) return ElMessage.warning(`接收组正在被 ${row.report_schedule_count} 个巡检报告计划引用，请先解除引用`)
   try {
     await deleteAlertRecipientGroup(row.id)
     await refreshRecipientResources()
     ElMessage.success('接收组已删除')
   } catch (error) {
     ElMessage.error(error.response?.data?.detail || '接收组删除失败')
+  }
+}
+
+function inspectionProfileText(value) {
+  return inspectionProfileOptions.find((item) => item.value === value)?.label || value
+}
+function inspectionStatusText(value) {
+  return { never: '未执行', success: '成功', partial: '部分成功', failed: '失败' }[value] || value
+}
+function inspectionStatusType(value) {
+  return { success: 'success', partial: 'warning', failed: 'danger', never: 'info' }[value] || 'info'
+}
+function inspectionReportScheduleText(row) {
+  const time = String(row.send_time || '09:00').slice(0, 5)
+  if (row.frequency === 'daily') return `每天 ${time}`
+  const weekday = weekdayOptions.find((item) => item.value === Number(row.weekday))?.label || '星期一'
+  return `每周${weekday.replace('星期', '周')} ${time}`
+}
+function inspectionReportRecipients(row) {
+  const names = [
+    ...(row.recipients || []).map((item) => item.name),
+    ...(row.recipient_groups || []).map((item) => `${item.name}（组）`),
+  ]
+  return names.join('、') || '-'
+}
+function openInspectionReport(row = null) {
+  Object.assign(inspectionReportForm, emptyInspectionReportForm(), row ? {
+    id: row.id,
+    name: row.name,
+    knowledge_environment: row.knowledge_environment,
+    frequency: row.frequency,
+    weekday: Number(row.weekday || 1),
+    send_time: row.send_time || '09:00:00',
+    profile: row.profile || 'cluster',
+    window_minutes: Number(row.window_minutes || 60),
+    channel_ids: (row.channels || []).map((item) => item.id),
+    recipient_ids: (row.recipients || []).map((item) => item.id),
+    recipient_group_ids: (row.recipient_groups || []).map((item) => item.id),
+    is_enabled: row.is_enabled,
+  } : {
+    knowledge_environment: Number(currentContextId.value) || '',
+  })
+  inspectionReportDialog.value = true
+}
+async function saveInspectionReport() {
+  if (!inspectionReportForm.name.trim()) return ElMessage.warning('请输入计划名称')
+  if (!inspectionReportForm.knowledge_environment) return ElMessage.warning('请选择业务上下文')
+  if (inspectionReportForm.is_enabled && !inspectionReportForm.channel_ids.length) return ElMessage.warning('请选择至少一个通知渠道')
+  if (inspectionReportForm.is_enabled && !inspectionReportForm.recipient_ids.length && !inspectionReportForm.recipient_group_ids.length) return ElMessage.warning('请选择至少一个接收人或接收组')
+  const payload = {
+    name: inspectionReportForm.name.trim(),
+    knowledge_environment: inspectionReportForm.knowledge_environment,
+    frequency: inspectionReportForm.frequency,
+    weekday: inspectionReportForm.frequency === 'weekly' ? inspectionReportForm.weekday : 1,
+    send_time: inspectionReportForm.send_time,
+    timezone: 'Asia/Shanghai',
+    profile: inspectionReportForm.profile,
+    depth: 'full',
+    window_minutes: inspectionReportForm.window_minutes,
+    channel_ids: inspectionReportForm.channel_ids,
+    recipient_ids: inspectionReportForm.recipient_ids,
+    recipient_group_ids: inspectionReportForm.recipient_group_ids,
+    is_enabled: inspectionReportForm.is_enabled,
+  }
+  saving.value = true
+  try {
+    if (inspectionReportForm.id) await updateInspectionReportSchedule(inspectionReportForm.id, payload)
+    else await createInspectionReportSchedule(payload)
+    inspectionReportDialog.value = false
+    inspectionReports.value = listOf(await getInspectionReportSchedules({ knowledge_environment: currentContextId.value, page_size: 200 }))
+    await refreshRecipientResources()
+    ElMessage.success('巡检报告计划已保存')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.response?.data?.recipient_ids?.[0] || error.response?.data?.channel_ids?.[0] || '巡检报告计划保存失败')
+  } finally {
+    saving.value = false
+  }
+}
+async function runInspectionReport(row) {
+  try {
+    const result = await runInspectionReportSchedule(row.id)
+    await loadAll()
+    if (result.status === 'success') ElMessage.success('巡检报告已生成并发送')
+    else ElMessage.warning(result.error_message || '巡检完成，但部分渠道发送失败')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error_message || error.response?.data?.detail || '巡检报告发送失败')
+  }
+}
+async function removeInspectionReport(row) {
+  try {
+    await deleteInspectionReportSchedule(row.id)
+    inspectionReports.value = listOf(await getInspectionReportSchedules({ knowledge_environment: currentContextId.value, page_size: 200 }))
+    await refreshRecipientResources()
+    ElMessage.success('巡检报告计划已删除')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || '巡检报告计划删除失败')
   }
 }
 

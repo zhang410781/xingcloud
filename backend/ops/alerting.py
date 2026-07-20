@@ -612,6 +612,7 @@ def _default_body(alert, action='fire'):
     if action == 'analysis':
         confidence, root_cause, evidence_text, suggestion = _analysis_content(alert, raw)
         return '\n'.join([
+            f'**告警状态：** {alert.get_status_display()}',
             f'**告警对象：** {alert.resource or (alert.host.hostname if alert.host else "-")}',
             f'**研判置信度：** {confidence}',
             f'**根因结论：** {root_cause}',
@@ -652,38 +653,50 @@ def _default_body(alert, action='fire'):
     return '\n'.join(lines)
 
 
-def _recipient_contacts(rule=None, policy=None):
-    config = (rule.notify_config or {}) if rule else {}
+def build_recipient_contacts(*, groups=None, recipients=None):
     result = defaultdict(set)
     names = set()
-    if policy is not None:
-        groups = policy.recipient_groups.filter(is_enabled=True).prefetch_related('recipients', 'users')
-    else:
-        group_ids = _list(config.get('recipient_group_ids'))
-        groups = AlertRecipientGroup.objects.filter(id__in=group_ids, is_enabled=True).prefetch_related('recipients', 'users')
-    recipients = set()
-    for group in groups:
-        recipients.update(group.recipients.filter(is_enabled=True))
+    selected_recipients = set(recipients or [])
+    for group in groups or []:
+        selected_recipients.update(group.recipients.filter(is_enabled=True))
         for user in group.users.filter(is_active=True):
             names.add(user.get_full_name() or user.username)
             if user.email:
                 result['emails'].add(user.email)
-    for recipient in recipients:
+    for recipient in selected_recipients:
+        if not recipient.is_enabled:
+            continue
         names.add(recipient.name)
-        if recipient.email:
+        preferred = set(recipient.preferred_channels or [])
+        legacy_mode = not preferred
+        if recipient.email and (legacy_mode or 'email' in preferred):
             result['emails'].add(recipient.email)
-        if recipient.phone:
+        if recipient.phone and (legacy_mode or {'sms', 'voice'} & preferred):
             result['phones'].add(recipient.phone)
+        if recipient.phone and (legacy_mode or 'sms' in preferred):
+            result['sms_phones'].add(recipient.phone)
+        if recipient.phone and (legacy_mode or 'voice' in preferred):
+            result['voice_phones'].add(recipient.phone)
         if recipient.dingtalk_user_id:
             result['dingtalk_user_ids'].add(recipient.dingtalk_user_id)
         if recipient.feishu_user_id:
             result['feishu_user_ids'].add(recipient.feishu_user_id)
         if recipient.wecom_user_id:
             result['wecom_user_ids'].add(recipient.wecom_user_id)
-        if recipient.user and recipient.user.email:
+        if recipient.user and recipient.user.email and (legacy_mode or 'email' in preferred):
             result['emails'].add(recipient.user.email)
     result['names'] = names
     return {key: sorted(value) for key, value in result.items()}
+
+
+def _recipient_contacts(rule=None, policy=None):
+    config = (rule.notify_config or {}) if rule else {}
+    if policy is not None:
+        groups = policy.recipient_groups.filter(is_enabled=True).prefetch_related('recipients', 'users')
+    else:
+        group_ids = _list(config.get('recipient_group_ids'))
+        groups = AlertRecipientGroup.objects.filter(id__in=group_ids, is_enabled=True).prefetch_related('recipients', 'users')
+    return build_recipient_contacts(groups=groups)
 
 
 def _post_json(url, payload, timeout=8, headers=None):
@@ -740,6 +753,101 @@ def _card_buttons(alert, provider, request=None):
         if url:
             buttons.append({'action': action, 'title': labels[action], 'url': url})
     return buttons
+
+
+def send_plain_notification(channel, recipients, *, title, body, action='inspection_report'):
+    config = channel.config or {}
+    status = AlertNotificationLog.STATUS_SUCCESS
+    response_body = ''
+    error_message = ''
+    request_summary = {'channel_type': channel.channel_type, 'title': title, 'action': action}
+    try:
+        if channel.channel_type == AlertNotificationChannel.CHANNEL_EMAIL:
+            emails = sorted(set(_list(config.get('to')) + recipients.get('emails', [])))
+            if not emails:
+                status = AlertNotificationLog.STATUS_SKIPPED
+                response_body = '没有可用邮箱接收人'
+            else:
+                EmailMessage(title, body, getattr(settings, 'DEFAULT_FROM_EMAIL', None), emails).send(fail_silently=False)
+                response_body = f'sent email to {len(emails)} recipients'
+                request_summary['recipient_count'] = len(emails)
+        elif channel.channel_type in {AlertNotificationChannel.CHANNEL_SMS, AlertNotificationChannel.CHANNEL_VOICE}:
+            preferred_key = 'sms_phones' if channel.channel_type == AlertNotificationChannel.CHANNEL_SMS else 'voice_phones'
+            phones = sorted(set(_list(config.get('phones')) + recipients.get(preferred_key, recipients.get('phones', []))))
+            url = _channel_url(channel)
+            if not phones or not url:
+                status = AlertNotificationLog.STATUS_SKIPPED
+                response_body = '没有手机号或渠道 webhook_url'
+            else:
+                payload = {
+                    'phones': phones, 'title': title, 'content': body,
+                    'config': {key: value for key, value in config.items() if key not in {'token', 'access_token', 'secret'}},
+                }
+                request_summary['recipient_count'] = len(phones)
+                response_body = _post_json(url, payload, timeout=channel.timeout_seconds)
+        elif channel.channel_type == AlertNotificationChannel.CHANNEL_DINGTALK:
+            url = _channel_url(channel)
+            if not url:
+                status = AlertNotificationLog.STATUS_SKIPPED
+                response_body = '未配置钉钉 webhook_url 或 access_token'
+            else:
+                payload = {'msgtype': 'markdown', 'markdown': {'title': title, 'text': body}}
+                response_body = _post_json(url, payload, timeout=channel.timeout_seconds)
+        elif channel.channel_type == AlertNotificationChannel.CHANNEL_FEISHU:
+            url = _channel_url(channel)
+            secret = _text(config.get('secret') or config.get('sign_secret'))
+            if not url:
+                status = AlertNotificationLog.STATUS_SKIPPED
+                response_body = '未配置飞书 webhook_url'
+            elif not secret:
+                status = AlertNotificationLog.STATUS_SKIPPED
+                response_body = '飞书渠道未配置签名密钥，已拒绝发送未签名通知'
+            else:
+                payload = {
+                    'msg_type': 'interactive',
+                    'card': {
+                        'config': {'wide_screen_mode': True, 'enable_forward': True},
+                        'header': {
+                            'template': 'green',
+                            'title': {'tag': 'plain_text', 'content': title},
+                        },
+                        'elements': [{'tag': 'markdown', 'content': body}],
+                    },
+                }
+                timestamp, sign = _feishu_sign(secret)
+                payload['timestamp'] = timestamp
+                payload['sign'] = sign
+                request_summary['signing'] = 'enabled'
+                response_body = _post_feishu_json(url, payload, timeout=channel.timeout_seconds)
+        elif channel.channel_type == AlertNotificationChannel.CHANNEL_WECOM:
+            url = _channel_url(channel)
+            if not url:
+                status = AlertNotificationLog.STATUS_SKIPPED
+                response_body = '未配置企微 webhook_url 或 key'
+            else:
+                payload = {'msgtype': 'markdown', 'markdown': {'content': f'**{title}**\n\n{body}'}}
+                response_body = _post_json(url, payload, timeout=channel.timeout_seconds)
+        else:
+            status = AlertNotificationLog.STATUS_SKIPPED
+            response_body = '未知通知渠道'
+    except NotificationDeliveryError as exc:
+        status = AlertNotificationLog.STATUS_ERROR
+        response_body = exc.response_body
+        error_message = str(exc)
+    except Exception as exc:
+        status = AlertNotificationLog.STATUS_ERROR
+        error_message = str(exc)
+    return {
+        'channel_id': channel.id,
+        'channel_name': channel.name,
+        'channel_type': channel.channel_type,
+        'status': status,
+        'recipient_summary': ', '.join(recipients.get('names', [])[:20]),
+        'request': request_summary,
+        'response_body': response_body,
+        'error_message': error_message,
+        'sent_at': timezone.now().isoformat() if status == AlertNotificationLog.STATUS_SUCCESS else None,
+    }
 
 
 def send_alert_notification(channel, alert, recipients, action='fire', rule=None, policy=None, request=None):
@@ -938,7 +1046,7 @@ def resolve_notification_policies(alert, rule=None, metric_datasource_id=None):
 
 
 def dispatch_alert_notifications(alert, action='fire', request=None, force=False):
-    if action == 'analysis' and alert.status != Alert.STATUS_ACTIVE:
+    if action == 'analysis' and alert.status not in {Alert.STATUS_ACTIVE, Alert.STATUS_RESOLVED}:
         return []
     if not force and (alert.is_suppressed or alert.status == Alert.STATUS_MUTED):
         return []

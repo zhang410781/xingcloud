@@ -7,10 +7,10 @@
           title="点击查看全部"
           @click="clearTreeFilter"
         >
-          <el-icon style="margin-right:4px;vertical-align:-2px;"><Connection /></el-icon>资产分组
+          <el-icon style="margin-right:4px;vertical-align:-2px;"><Connection /></el-icon>一级资产业务分组
         </span>
-        <el-button v-if="canManage && !currentContext?.task_resource_environment" link type="primary" size="small" class="tree-head-btn" @click="openNodeDialog()">
-          <el-icon><Plus /></el-icon>
+        <el-button v-if="canManage" link type="primary" size="small" class="tree-head-btn" @click="openNodeDialog()">
+          <el-icon><Plus /></el-icon>新增
         </el-button>
       </div>
 
@@ -56,7 +56,7 @@
 
       <el-empty
         v-if="!loading.tree && !treeData.length"
-        description="暂无资产分组"
+        description="暂无一级资产业务分组"
         :image-size="72"
         class="tree-empty"
       />
@@ -69,10 +69,7 @@
             <el-option label="主机" value="host" />
             <el-option label="K8S 集群" value="k8s" />
           </el-select>
-          <div class="bound-asset-environment">{{ currentContext?.task_resource_environment_name || '当前上下文未绑定资产分组' }}</div>
-          <el-select v-model="filters.asset_environment" placeholder="环境" clearable style="width:108px" size="small" @change="refreshResourceView">
-            <el-option v-for="item in assetEnvironmentOptions" :key="item.value" :label="item.label" :value="item.value" />
-          </el-select>
+          <div class="bound-asset-environment">当前上下文默认：{{ currentContext?.task_resource_environment_name || '未绑定' }}</div>
           <el-select v-model="filters.status" placeholder="状态" clearable style="width:110px" size="small" @change="refreshResourceView">
             <el-option label="可用" value="active" />
             <el-option label="异常" value="warning" />
@@ -93,8 +90,8 @@
         <div class="toolbar-right resource-toolbar-right">
           <el-button size="small" @click="resetFilters">重置</el-button>
           <el-button size="small" :loading="loading.resources" @click="reloadAll">刷新</el-button>
-          <el-button v-if="canManage" size="small" :disabled="!currentContext?.task_resource_environment" @click="openResourceDialog(null, 'host')">登记服务器</el-button>
-          <el-button v-if="canManage" type="primary" size="small" :disabled="!currentContext?.task_resource_environment" @click="openResourceDialog(null, 'k8s')">登记 K8S 集群</el-button>
+          <el-button v-if="canManage" size="small" @click="openResourceDialog(null, 'host')">登记服务器</el-button>
+          <el-button v-if="canManage" type="primary" size="small" @click="openResourceDialog(null, 'k8s')">登记 K8S 集群</el-button>
         </div>
       </div>
 
@@ -132,9 +129,8 @@
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="environment_name" label="资产分组" width="100" show-overflow-tooltip />
-          <el-table-column label="环境" width="80">
-            <template #default="{ row }">{{ assetEnvironmentLabel(row.asset_environment) }}</template>
+          <el-table-column label="一级资产业务分组" min-width="160" show-overflow-tooltip>
+            <template #default="{ row }">{{ (row.business_group_names || [row.environment_name]).filter(Boolean).join('、') || '-' }}</template>
           </el-table-column>
           <el-table-column label="执行入口" min-width="140" show-overflow-tooltip>
             <template #default="{ row }">{{ resourceEndpoint(row) }}</template>
@@ -174,10 +170,10 @@
     >
       <el-form :model="nodeForm" label-width="96px" class="resource-compact-form">
         <el-form-item label="节点类型">
-          <el-tag size="small" type="success" effect="plain">资产分组</el-tag>
+          <el-tag size="small" type="success" effect="plain">一级资产业务分组</el-tag>
         </el-form-item>
-        <el-form-item label="名称" required>
-          <el-input v-model="nodeForm.name" placeholder="请输入节点名称" />
+        <el-form-item label="业务名称" required>
+          <el-input v-model="nodeForm.name" placeholder="例如：智能平台、支付业务、中间件集群" />
         </el-form-item>
         <el-form-item label="编码">
           <el-input v-model="nodeForm.code" placeholder="可选，例如 prod / quality" />
@@ -221,13 +217,13 @@
           </el-form-item>
         </div>
         <div class="form-row">
-          <el-form-item label="资产分组" required class="form-col">
-            <div class="bound-form-value">{{ currentContext?.task_resource_environment_name || '未绑定' }}</div>
-          </el-form-item>
-          <el-form-item label="环境" required class="form-col">
-            <el-select v-model="resourceForm.asset_environment" style="width:100%">
-              <el-option v-for="item in assetEnvironmentOptions" :key="item.value" :label="item.label" :value="item.value" />
-            </el-select>
+          <el-form-item label="业务分组" required class="form-col wide">
+            <div class="resource-group-picker">
+              <el-select v-model="resourceForm.business_groups" multiple filterable placeholder="可选择多个一级业务分组" style="width:100%">
+                <el-option v-for="item in environments" :key="item.id" :label="item.name" :value="item.id" />
+              </el-select>
+              <el-button v-if="canManage" plain :icon="Plus" @click="openNodeDialog(null, true)">新建</el-button>
+            </div>
           </el-form-item>
         </div>
         <div class="form-row">
@@ -318,10 +314,11 @@ const resources = ref([])
 const stats = ref({})
 const k8sClusters = ref([])
 const loading = reactive({ tree: false, resources: false, submit: false })
-const filters = reactive({ search: '', resource_type: '', status: '', environment: '', asset_environment: '' })
+const filters = reactive({ search: '', resource_type: '', status: '', environment: '' })
 
 const nodeDialogVisible = ref(false)
 const editingNodeId = ref(null)
+const selectCreatedGroupForResource = ref(false)
 const nodeForm = reactive(defaultNodeForm())
 
 const resourceDialogVisible = ref(false)
@@ -330,16 +327,9 @@ const resourceForm = reactive(defaultResourceForm())
 
 const environments = computed(() => treeData.value)
 const selectedK8sClusterName = computed(() => k8sClusters.value.find(item => item.id === resourceForm.cluster)?.name || '')
-const assetEnvironmentOptions = [
-  { label: '生产', value: 'prod' },
-  { label: '测试', value: 'test' },
-  { label: '开发', value: 'dev' },
-  { label: '预发', value: 'staging' },
-  { label: '其他', value: 'other' },
-]
-const nodeDialogTitle = computed(() => `${editingNodeId.value ? '编辑' : '新增'}资产分组`)
+const nodeDialogTitle = computed(() => `${editingNodeId.value ? '编辑' : '新增'}一级资产业务分组`)
 const resourceDialogTitle = computed(() => `${editingResourceId.value ? '编辑' : '新增'}资产`)
-const emptyText = computed(() => (treeData.value.length ? '暂无匹配资产' : '暂无资产，请先创建左侧资产分组'))
+const emptyText = computed(() => (treeData.value.length ? '暂无匹配资产' : '暂无资产，请先创建左侧一级资产业务分组'))
 const statCards = computed(() => [
   { key: 'total', label: '资产总数', value: stats.value.total || 0, color: '#8b5cf6' },
   { key: 'host', label: '主机', value: stats.value.host || 0, color: '#10b981', resourceType: 'host', active: filters.resource_type === 'host' },
@@ -358,8 +348,9 @@ function defaultResourceForm() {
     resource_type: 'host',
     name: '',
     environment: '',
+    business_groups: [],
     system: '',
-    asset_environment: 'prod',
+    asset_environment: '',
     status: 'active',
     ip_address: '',
     ssh_port: 22,
@@ -391,10 +382,6 @@ function resourceTypeLabel(type) {
   return type === 'k8s' ? 'K8S 集群' : '主机'
 }
 
-function assetEnvironmentLabel(value) {
-  return assetEnvironmentOptions.find(item => item.value === value)?.label || value || '-'
-}
-
 function resourceEndpoint(row) {
   if (row.resource_type === 'k8s') return row.cluster_name || row.name || '-'
   return row.endpoint || row.ip_address || '-'
@@ -415,7 +402,7 @@ function statusType(status) {
 
 function clearTreeFilter() {
   treeRef.value?.setCurrentKey(null)
-  filters.environment = currentContext.value?.task_resource_environment || ''
+  filters.environment = ''
   refreshResourceView()
 }
 
@@ -430,7 +417,7 @@ function onEnvironmentFilterChange() {
 }
 
 function resetFilters() {
-  Object.assign(filters, { search: '', resource_type: '', status: '', environment: currentContext.value?.task_resource_environment || '', asset_environment: '' })
+  Object.assign(filters, { search: '', resource_type: '', status: '', environment: '' })
   treeRef.value?.setCurrentKey(null)
   refreshResourceView()
 }
@@ -452,9 +439,10 @@ function syncK8sResourceName() {
   }
 }
 
-function openNodeDialog(row = null) {
+function openNodeDialog(row = null, selectForResource = false) {
   if (!canManage.value) return
   editingNodeId.value = row?.id || null
+  selectCreatedGroupForResource.value = Boolean(selectForResource && !row)
   Object.assign(nodeForm, defaultNodeForm())
   if (row) {
     Object.assign(nodeForm, {
@@ -471,6 +459,12 @@ function openNodeDialog(row = null) {
 
 function openResourceDialog(row = null, preferredType = '') {
   if (!canManage.value) return
+  if (!row && !treeData.value.length) {
+    Object.assign(resourceForm, defaultResourceForm(), { resource_type: preferredType || 'host' })
+    ElMessage.warning('请先新增一级资产业务分组')
+    openNodeDialog(null, true)
+    return
+  }
   editingResourceId.value = row?.id || null
   Object.assign(resourceForm, defaultResourceForm())
   if (row) {
@@ -478,8 +472,9 @@ function openResourceDialog(row = null, preferredType = '') {
       resource_type: row.resource_type,
       name: row.name || '',
       environment: row.environment || '',
+      business_groups: row.business_groups?.length ? [...row.business_groups] : (row.environment ? [row.environment] : []),
       system: row.system || '',
-      asset_environment: row.asset_environment || 'prod',
+      asset_environment: '',
       status: row.status || 'active',
       ip_address: row.ip_address || '',
       ssh_port: row.ssh_port || 22,
@@ -495,7 +490,7 @@ function openResourceDialog(row = null, preferredType = '') {
   } else {
     Object.assign(resourceForm, {
       resource_type: preferredType || 'host',
-      environment: currentContext.value?.task_resource_environment || '',
+      business_groups: [filters.environment || currentContext.value?.task_resource_environment].filter(Boolean),
     })
   }
   resourceDialogVisible.value = true
@@ -505,9 +500,8 @@ async function fetchTree() {
   loading.tree = true
   try {
     const res = await getTaskResourceTree()
-    const boundId = Number(currentContext.value?.task_resource_environment)
-    treeData.value = normalizeTree(normalizeList(res)).filter(item => item.id === boundId)
-    filters.environment = boundId || ''
+    treeData.value = normalizeTree(normalizeList(res))
+    if (filters.environment && !treeData.value.some(item => Number(item.id) === Number(filters.environment))) filters.environment = ''
     emit('tree-updated', treeData.value)
   } finally {
     loading.tree = false
@@ -517,10 +511,6 @@ async function fetchTree() {
 async function fetchResources() {
   loading.resources = true
   try {
-    if (!currentContext.value?.task_resource_environment) {
-      resources.value = []
-      return
-    }
     const res = await getTaskResources({ ...filters })
     resources.value = normalizeList(res)
   } finally {
@@ -531,18 +521,12 @@ async function fetchResources() {
 function statFilterParams() {
   return {
     environment: filters.environment || undefined,
-    asset_environment: filters.asset_environment || undefined,
     status: filters.status || undefined,
     search: filters.search || undefined,
   }
 }
 
 async function fetchStats() {
-  if (!currentContext.value?.task_resource_environment) {
-    stats.value = {}
-    emit('stats-updated', stats.value)
-    return
-  }
   const res = await getTaskResourceStats(statFilterParams())
   stats.value = res || {}
   emit('stats-updated', stats.value)
@@ -554,20 +538,18 @@ async function refreshResourceView() {
 
 async function fetchK8sClusters() {
   try {
-    const boundId = Number(currentContext.value?.k8s_cluster)
-    k8sClusters.value = normalizeList(await getK8sClusters()).filter(item => item.id === boundId)
+    k8sClusters.value = normalizeList(await getK8sClusters())
   } catch {
     k8sClusters.value = []
   }
 }
 
 async function reloadAll() {
-  filters.environment = currentContext.value?.task_resource_environment || ''
   await Promise.all([fetchTree(), fetchResources(), fetchStats(), fetchK8sClusters()])
 }
 
 async function submitNode() {
-  if (!nodeForm.name.trim()) return ElMessage.warning('请填写节点名称')
+  if (!nodeForm.name.trim()) return ElMessage.warning('请填写业务名称')
   loading.submit = true
   try {
     const payload = {
@@ -577,13 +559,20 @@ async function submitNode() {
       parent: null,
       event_environment: null,
     }
+    let saved
     if (editingNodeId.value) {
-      await updateTaskResourceGroup(editingNodeId.value, payload)
+      saved = await updateTaskResourceGroup(editingNodeId.value, payload)
     } else {
-      await createTaskResourceGroup(payload)
+      saved = await createTaskResourceGroup(payload)
     }
     nodeDialogVisible.value = false
-    ElMessage.success('资产分组已保存')
+    if (selectCreatedGroupForResource.value && saved?.id) {
+      resourceForm.business_groups = Array.from(new Set([...resourceForm.business_groups, saved.id]))
+      resourceForm.environment = saved.id
+      resourceDialogVisible.value = true
+    }
+    selectCreatedGroupForResource.value = false
+    ElMessage.success('一级资产业务分组已保存')
     await reloadAll()
   } finally {
     loading.submit = false
@@ -591,8 +580,7 @@ async function submitNode() {
 }
 
 async function submitResource() {
-  if (!resourceForm.environment) return ElMessage.warning('请选择资产分组')
-  if (!resourceForm.asset_environment) return ElMessage.warning('请选择环境')
+  if (!resourceForm.business_groups.length) return ElMessage.warning('请至少选择一个一级资产业务分组')
   if (resourceForm.resource_type === 'host') {
     if (!resourceForm.name.trim()) return ElMessage.warning('请填写资产名称')
     if (!resourceForm.ip_address) return ElMessage.warning('请填写主机 IP')
@@ -607,6 +595,8 @@ async function submitResource() {
     const payload = {
       ...resourceForm,
       name: resourceForm.name.trim(),
+      environment: resourceForm.business_groups[0],
+      asset_environment: '',
       system: resourceForm.system || null,
       cluster: resourceForm.cluster || null,
       namespace: '',
@@ -668,6 +658,13 @@ onMounted(async () => {
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.resource-group-picker {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .bound-asset-environment {

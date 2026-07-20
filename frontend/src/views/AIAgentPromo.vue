@@ -6,13 +6,13 @@
         <span>返回</span>
       </button>
       <div class="promo-title">Xing-Cloud AI Agent 产品介绍</div>
-      <a class="promo-open" href="/promo/xing-cloud-ai-agent-promo.html" target="_blank" rel="noopener">
+      <a class="promo-open" href="/promo/xing-cloud-ai-agent-promo.html?v=20260717-2020" target="_blank" rel="noopener">
         新窗口打开
       </a>
     </div>
     <iframe
       class="promo-frame"
-      src="/promo/xing-cloud-ai-agent-promo.html"
+      src="/promo/xing-cloud-ai-agent-promo.html?v=20260717-2020"
       title="Xing-Cloud AI Agent 产品介绍"
     ></iframe>
   </div>

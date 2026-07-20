@@ -4,7 +4,7 @@ from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import TestCase
 
-from ops.models import K8sCluster, LogDataSource, MetricDataSource
+from ops.models import K8sCluster, LogDataSource, MetricDataSource, TaskResource, TaskResourceGroup
 
 from .knowledge_graph import (
     _collapse_unassigned_system_nodes,
@@ -21,13 +21,18 @@ from .models import (
 )
 from .serializers import AIOpsKnowledgeEnvironmentSerializer
 from .services import (
+    BUILTIN_ACTION_REGISTRY,
+    BUILTIN_SKILLS,
+    _action_question_matches,
     _build_k8s_resource_count_answer,
     _content_conflicts_with_tool_facts,
+    _detect_k8s_inspection_profile,
     _detect_k8s_resource_type,
     _ensure_builtin_model_provider,
     _is_direct_k8s_resource_lookup_question,
     _is_k8s_analysis_question,
     _is_k8s_resource_count_question,
+    _json_safe_value,
     _k8s_cluster_search_context,
     _select_k8s_cluster,
     list_model_provider_presets,
@@ -39,6 +44,14 @@ User = get_user_model()
 
 
 class AIOpsConfigurationTests(TestCase):
+    def test_chat_metadata_normalization_replaces_non_finite_numbers(self):
+        normalized = _json_safe_value({
+            'latest': float('nan'),
+            'series': [float('inf'), float('-inf'), 1.5],
+        })
+
+        self.assertEqual(normalized, {'latest': None, 'series': [None, None, 1.5]})
+
     def test_k8s_node_count_question_uses_direct_resource_lookup(self):
         question = '当前集群有几个节点'
 
@@ -49,6 +62,23 @@ class AIOpsConfigurationTests(TestCase):
 
     def test_k8s_cluster_inspection_uses_deterministic_analysis_route(self):
         self.assertTrue(_is_k8s_analysis_question('巡检集群'))
+
+    def test_k8s_fixed_inspection_has_separate_action_and_profiles(self):
+        self.assertTrue(_action_question_matches('k8s.inspect', '巡检当前K8S集群'))
+        self.assertFalse(_action_question_matches('k8s.diagnose', '巡检当前K8S集群'))
+        self.assertTrue(_action_question_matches('k8s.diagnose', '排查K8S异常Pod为什么重启'))
+        self.assertEqual(_detect_k8s_inspection_profile('检查 API Server 和 ETCD'), 'control_plane')
+        self.assertEqual(_detect_k8s_inspection_profile('巡检 node worker-01'), 'node')
+        self.assertEqual(_detect_k8s_inspection_profile('巡检 payment deployment'), 'workload')
+
+    def test_builtin_skills_are_consolidated_and_alert_action_can_collect_k8s_evidence(self):
+        skill_slugs = {item['slug'] for item in BUILTIN_SKILLS}
+        self.assertIn('xing-cloud-k8s-alert-troubleshooting', skill_slugs)
+        self.assertNotIn('xing-cloud-k8s-troubleshooting', skill_slugs)
+        alert_action = next(item for item in BUILTIN_ACTION_REGISTRY if item['code'] == 'alert.root_cause')
+        self.assertIn('query_metric_promql', alert_action['allowed_tools'])
+        self.assertIn('query_k8s_cluster_summary', alert_action['allowed_tools'])
+        self.assertIn('query_k8s_resources', alert_action['allowed_tools'])
 
     def test_k8s_cluster_inspection_uses_single_environment_cluster_without_name_matching(self):
         scoped_query, cluster_query, tokens = _k8s_cluster_search_context(
@@ -352,72 +382,90 @@ class AIOpsConfigurationTests(TestCase):
         self.assertEqual(response.json(), payload)
         catalog.assert_called_once_with(user=user)
 
-    def test_knowledge_environment_uses_context_code_for_metric_environment(self):
+    def test_knowledge_environment_does_not_rewrite_reusable_metric_environment(self):
         first = MetricDataSource.objects.create(name='prometheus-a', config={})
         first.environment = 'other'
         first.save(update_fields=['environment'])
+        logs = LogDataSource.objects.create(name='logs-a', provider='elk', config={})
+        asset_group = TaskResourceGroup.objects.create(
+            name='智能平台', code='smart-platform', group_type=TaskResourceGroup.GROUP_ENVIRONMENT,
+        )
         serializer = AIOpsKnowledgeEnvironmentSerializer(data={
             'name': 'production',
             'code': 'prod',
             'business_line': 'xing-cloud',
             'metric_datasource': first.id,
+            'log_datasource': logs.id,
+            'task_resource_environment': asset_group.id,
         })
 
         self.assertTrue(serializer.is_valid(), serializer.errors)
         serializer.save()
         first.refresh_from_db()
-        self.assertEqual(first.environment, 'prod')
+        self.assertEqual(first.environment, 'other')
 
-    def test_knowledge_environment_can_transfer_bound_resource_after_confirmation(self):
+    def test_knowledge_environment_can_reuse_registered_datasources(self):
         metric = MetricDataSource.objects.create(name='shared-prometheus', environment='old', config={})
+        logs = LogDataSource.objects.create(name='shared-logs', provider='elk', config={})
+        first_group = TaskResourceGroup.objects.create(
+            name='业务一', code='business-one', group_type=TaskResourceGroup.GROUP_ENVIRONMENT,
+        )
+        second_group = TaskResourceGroup.objects.create(
+            name='业务二', code='business-two', group_type=TaskResourceGroup.GROUP_ENVIRONMENT,
+        )
         previous = AIOpsKnowledgeEnvironment.objects.create(
             name='previous', code='previous', business_line='xing-cloud', metric_datasource=metric,
+            log_datasource=logs, task_resource_environment=first_group,
         )
-        blocked = AIOpsKnowledgeEnvironmentSerializer(data={
-            'name': 'next',
-            'code': 'next',
-            'business_line': 'xing-cloud',
-            'metric_datasource': metric.id,
-        })
-        self.assertFalse(blocked.is_valid())
-        self.assertIn('binding_conflicts', blocked.errors)
-
         serializer = AIOpsKnowledgeEnvironmentSerializer(data={
             'name': 'next',
             'code': 'next',
             'business_line': 'xing-cloud',
             'metric_datasource': metric.id,
-            'transfer_bindings': True,
+            'log_datasource': logs.id,
+            'task_resource_environment': second_group.id,
         })
         self.assertTrue(serializer.is_valid(), serializer.errors)
         current = serializer.save()
         previous.refresh_from_db()
         metric.refresh_from_db()
-        self.assertIsNone(previous.metric_datasource_id)
+        self.assertEqual(previous.metric_datasource_id, metric.id)
         self.assertEqual(current.metric_datasource_id, metric.id)
-        self.assertEqual(metric.environment, 'next')
+        self.assertEqual(metric.environment, 'old')
 
     def test_knowledge_environment_single_fields_drive_legacy_lists_and_resolution(self):
         metric = MetricDataSource.objects.create(name='prometheus-prod', config={})
         logs = LogDataSource.objects.create(name='elasticsearch-prod', provider='elk', config={})
+        asset_group = TaskResourceGroup.objects.create(
+            name='生产业务', code='prod-business', group_type=TaskResourceGroup.GROUP_ENVIRONMENT,
+        )
+        cluster = K8sCluster.objects.create(name='production-k8s', kubeconfig='')
+        cluster_asset = TaskResource.objects.create(
+            name='production-k8s', resource_type=TaskResource.RESOURCE_K8S,
+            environment=asset_group, cluster=cluster,
+        )
+        cluster_asset.business_groups.add(asset_group)
         serializer = AIOpsKnowledgeEnvironmentSerializer(data={
             'name': 'production',
             'code': 'prod',
             'business_line': 'xing-cloud',
             'metric_datasource': metric.id,
             'log_datasource': logs.id,
+            'task_resource_environment': asset_group.id,
         })
 
         self.assertTrue(serializer.is_valid(), serializer.errors)
         environment = serializer.save()
         self.assertEqual(environment.metric_datasource_id, metric.id)
         self.assertEqual(environment.log_datasource_id, logs.id)
+        self.assertEqual(environment.k8s_cluster_id, cluster.id)
 
         resolved = resolve_knowledge_environment('production')
         self.assertEqual(resolved['metric_datasource_id'], metric.id)
         self.assertEqual(resolved['log_datasource_id'], logs.id)
         self.assertEqual(resolved['metric_datasource_ids'], [metric.id])
         self.assertEqual(resolved['log_datasource_ids'], [logs.id])
+        self.assertEqual(resolved['k8s_cluster_ids'], [cluster.id])
 
     def test_configmap_runtime_matching_is_bounded_for_large_values(self):
         component = {

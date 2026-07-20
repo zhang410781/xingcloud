@@ -67,3 +67,24 @@ class TaskResourceGroupApiTests(APITestCase):
 
         self.assertEqual(len(targets), 1)
         self.assertEqual(targets[0].event_environment, '18')
+
+    def test_asset_can_bind_multiple_first_level_business_groups(self):
+        first = TaskResourceGroup.objects.create(
+            name='智能平台', code='smart-platform', group_type=TaskResourceGroup.GROUP_ENVIRONMENT,
+        )
+        second = TaskResourceGroup.objects.create(
+            name='共享中间件', code='shared-middleware', group_type=TaskResourceGroup.GROUP_ENVIRONMENT,
+        )
+
+        response = self.client.post('/api/task-resources/', {
+            'name': 'shared-server',
+            'resource_type': 'host',
+            'business_groups': [first.id, second.id],
+            'ip_address': '10.0.0.20',
+            'status': 'active',
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201, response.data)
+        resource = TaskResource.objects.get(pk=response.data['id'])
+        self.assertEqual(set(resource.business_groups.values_list('id', flat=True)), {first.id, second.id})
+        self.assertEqual(resource.environment_id, first.id)

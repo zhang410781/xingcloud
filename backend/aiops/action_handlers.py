@@ -174,6 +174,12 @@ HANDLERS: Dict[str, ActionHandler] = {
         keywords=['日志', 'log', 'error', 'warn', '查询', '生成'],
         prompt_hint='日志页面上下文优先作为服务、数据源、日志级别和时间窗口的候选输入。',
     ),
+    'k8s.inspect': ActionHandler(
+        code='k8s.inspect',
+        page_prefixes=['/containers/k8s', '/observability/dashboards'],
+        keywords=['巡检', '健康检查', '集群概览', '节点检查', '控制平面', 'inspection'],
+        prompt_hint='K8s 巡检优先使用当前业务上下文绑定的集群，并按集群、节点、工作负载、服务或控制平面 Profile 执行。',
+    ),
     'k8s.diagnose': ActionHandler(
         code='k8s.diagnose',
         page_prefixes=['/containers/k8s'],

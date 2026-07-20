@@ -18,7 +18,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: xing-cloud-init
-          image: registry.cn-hangzhou.aliyuncs.com/xinghaik8s/ops-agent:context-catalog-20260717-1209
+          image: registry.cn-hangzhou.aliyuncs.com/xinghaik8s/ops-agent:inspection-reports-20260717-2325
           imagePullPolicy: Always
           envFrom:
             - configMapRef:

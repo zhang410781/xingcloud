@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import json
+import math
 import os
 import queue
 import re
@@ -361,10 +362,10 @@ DEPRECATED_BUILTIN_MCP_SERVER_NAMES = {'CMDB MCP'}
 
 BUILTIN_SKILLS = [
     {
-        'name': '告警证据清单',
+        'name': '告警研判编排',
         'slug': 'xing-cloud-alert-evidence-checklist',
         'category': '告警排障',
-        'description': '规范告警根因分析的证据收集顺序、判断口径和输出结构。',
+        'description': '统一编排告警、指标、K8s、事件、最近五分钟日志、变更和拓扑证据。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
         'applicable_actions': ['alert.root_cause', 'slo.analysis', 'self_heal.recommend'],
         'examples': [
@@ -372,12 +373,15 @@ BUILTIN_SKILLS = [
             '这条告警可能影响哪些服务和依赖',
             '最近一小时 workorder 服务异常是不是告警引起的',
         ],
-        'builtin_tools': ['query_alerts', 'query_alert_root_cause', 'query_alert_metrics', 'query_knowledge_graph'],
-        'recommended_tools': ['query_logs', 'query_metric_promql', 'query_recent_changes'],
+        'builtin_tools': [
+            'query_alerts', 'query_alert_root_cause', 'query_alert_metrics', 'query_metric_promql',
+            'query_k8s_cluster_summary', 'query_k8s_resources', 'query_logs', 'query_knowledge_graph',
+        ],
+        'recommended_tools': ['query_recent_changes'],
         'max_iterations': 4,
         'risk_level': AIOpsSkill.RISK_READ_ONLY,
         'output_contract': {
-            'sections': ['结论', '关键证据', '影响范围', '建议动作'],
+            'sections': ['研判结论', '关键证据', '候选原因', '影响范围', '建议动作', '缺失证据'],
             'blocks': ['incident_card', 'evidence_timeline', 'risk_notice'],
         },
         'content': """适用场景：
@@ -385,16 +389,19 @@ BUILTIN_SKILLS = [
 - 只负责分析和建议，不直接修改告警规则、不直接执行恢复动作。
 
 取证顺序：
-1. 先确认知识图谱环境，提取系统、服务、依赖和上下游范围。
-2. 查询当前告警和历史告警，优先关注级别、状态、开始时间、持续时长、确认状态和指纹。
-3. 如果有根因接口，优先读取根因候选和关联证据。
-4. 按影响对象追加日志、指标、事件和最近变更证据。
-5. 没有证据时要明确说明“暂未发现平台证据”，不能编造根因。
+1. 先确认业务上下文，只使用该上下文绑定的 Prometheus、日志源、K8s 集群和资产范围。
+2. 查询告警规则、当前值、阈值、开始时间、持续时长、标签和指纹。
+3. 查询告警指标及历史趋势，再查询关联 K8s 对象状态和 Warning 事件。
+4. 日志主窗口固定为告警发生前 5 分钟至发生后 2 分钟；基线窗口为告警发生前 30 分钟至前 5 分钟。
+5. 日志按 Pod、容器、工作负载、服务、命名空间、节点和控制平面组件逐级收窄；无精确对象时才扩大范围。
+6. 追加最近变更、发布和知识图谱依赖证据；单个来源失败时继续其他阶段。
 
 判断要求：
 - 结论必须区分事实、推断和待验证假设。
 - 根因只能基于工具事实给出置信度，不允许凭经验直接定性。
 - 如果发现变更、发布、工单或事件时间线接近，要标记为候选原因而不是确定原因。
+- 只有日志证据时置信度最高 49%；两类独立来源最高 79%；80% 以上至少需要三类独立证据和直接异常事实。
+- 查询不到日志不代表系统正常，必须标记为“日志证据缺失”或“当前查询未命中”。
 
 输出要求：
 - 先给一句结论，再列关键证据、影响范围、建议动作。
@@ -402,13 +409,15 @@ BUILTIN_SKILLS = [
         'allowed_role_codes': [],
     },
     {
-        'name': 'K8s 告警排障',
+        'name': 'K8S 巡检与告警排障',
         'slug': 'xing-cloud-k8s-alert-troubleshooting',
         'category': 'K8s 诊断',
-        'description': '针对 K8s 相关告警组织集群、命名空间、工作负载、Pod、Event 和日志证据。',
+        'description': '统一承载 K8S 集群、节点、工作负载、服务和控制面的固定巡检与告警排障。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
-        'applicable_actions': ['alert.root_cause', 'k8s.diagnose'],
+        'applicable_actions': ['alert.root_cause', 'k8s.inspect', 'k8s.diagnose'],
         'examples': [
+            '巡检 app-prod-k8s 集群',
+            '检查 API Server 和 ETCD 控制平面',
             '分析 app-prod-k8s 集群异常 Pod',
             'Deployment 副本不可用是什么原因',
             'CrashLoopBackOff 需要看哪些证据',
@@ -418,28 +427,36 @@ BUILTIN_SKILLS = [
         'max_iterations': 5,
         'risk_level': AIOpsSkill.RISK_READ_ONLY,
         'output_contract': {
-            'sections': ['异常对象', 'K8s 证据', '可能原因', '处置建议'],
+            'sections': ['巡检范围', '健康结论', 'K8s 证据', '异常项', '可能原因', '处置建议', '缺失证据'],
             'blocks': ['k8s_action', 'evidence_timeline', 'risk_notice'],
         },
         'content': """适用场景：
-- K8s 集群、命名空间、工作负载、Pod、容器日志和 Event 相关异常。
+- K8s 集群固定巡检，以及命名空间、节点、工作负载、Pod、服务、控制平面、容器日志和 Event 相关异常。
 - 只做只读取证和建议，不能直接执行 kubectl 写操作。
 
+巡检 Profile：
+- cluster：节点、Pod、工作负载、PVC、API Server 和资源余量总览。
+- node：Ready、压力状态、CPU、内存、负载、磁盘、inode、网络、I/O、kubelet 和运行时。
+- workload：副本、调度、退出原因、探针、资源限制、Warning Event、当前日志和上次崩溃日志。
+- service：Service、Endpoint、Ingress、后端 Pod、请求量、错误率、延迟和最近五分钟服务日志。
+- control_plane：API Server、ETCD、Scheduler、Controller Manager、CoreDNS、审计日志和高频 List/Watch。
+
 取证顺序：
-1. 先确认环境对应的集群和命名空间，避免跨环境查询。
-2. 查询集群摘要，获取异常工作负载、Pod 状态、资源使用和事件概览。
-3. 按问题对象查询 workload、pod、event、container log。
-4. 如果问题与发布或镜像相关，追加最近变更和发布记录。
-5. 如果问题与业务错误相关，追加日志、指标和告警证据。
+1. 先确认业务上下文绑定的唯一集群，不使用名称相似度或默认集群兜底。
+2. 根据用户范围或告警对象选择 Profile；固定巡检由后端确定性执行，不依赖模型主动调用工具。
+3. 查询集群摘要、目标对象、指标、Warning Event 和日志，发现重启时补充上次崩溃日志。
+4. 如果问题与发布、镜像或配置相关，追加最近变更和发布记录。
+5. 输出健康分、异常项、证据来源、建议和未获取证据。
 
 常见判断：
 - Pending 优先看资源不足、调度约束、PVC 和节点状态。
 - CrashLoopBackOff 优先看容器日志、退出码、探针和配置。
 - ImagePullBackOff 优先看镜像地址、凭据、仓库可达性和 tag。
 - Readiness/Liveness 失败优先看探针路径、启动时间、依赖服务和资源压力。
+- API Server 延迟优先看 P99、QPS、5xx、CPU/内存、ETCD fsync/backend commit 和审计日志高频请求。
 
 输出要求：
-- 明确异常对象、命名空间、状态、关键事件和推荐排查顺序。
+- 明确巡检 Profile、异常对象、命名空间、状态、关键事件和推荐排查顺序。
 - 高风险建议必须以“待确认动作”表达，不允许直接执行。""",
         'allowed_role_codes': [],
     },
@@ -449,7 +466,7 @@ BUILTIN_SKILLS = [
         'category': '回答规范',
         'description': '基于工具事实重组最终回答，输出更稳定的结构化结果。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
-        'applicable_actions': ['alert.root_cause', 'change.correlation', 'log.query_generate', 'k8s.diagnose', 'self_heal.recommend', 'host_task.generate'],
+        'applicable_actions': ['alert.root_cause', 'change.correlation', 'log.query_generate', 'k8s.inspect', 'k8s.diagnose', 'self_heal.recommend', 'host_task.generate'],
         'examples': ['把工具结果整理成结论、证据、建议', '将任务草稿说明成待确认动作'],
         'builtin_tools': [],
         'recommended_tools': [],
@@ -475,7 +492,7 @@ BUILTIN_SKILLS = [
         'category': '日志查询',
         'description': '规范日志聚合、样本解释、错误模式归类和证据表达。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
-        'applicable_actions': ['alert.root_cause', 'log.query_generate'],
+        'applicable_actions': ['alert.root_cause', 'log.query_generate', 'k8s.inspect', 'k8s.diagnose'],
         'examples': [
             '查询 workorder-service 最近 30 分钟 ERROR 日志',
             '登录失败日志按错误码聚合',
@@ -578,7 +595,7 @@ BUILTIN_SKILLS = [
         'category': '日志查询',
         'description': '沉淀日志字段含义和跨工具关联字段，提升查询生成稳定性。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
-        'applicable_actions': ['log.query_generate', 'alert.root_cause', 'k8s.diagnose'],
+        'applicable_actions': ['log.query_generate', 'alert.root_cause', 'k8s.inspect', 'k8s.diagnose'],
         'examples': ['service 字段怎么过滤', 'trace_id 和 request_id 怎么关联', 'namespace 和 pod 字段怎么用'],
         'builtin_tools': ['query_logs'],
         'recommended_tools': ['query_knowledge_graph'],
@@ -603,41 +620,12 @@ BUILTIN_SKILLS = [
         'allowed_role_codes': [],
     },
     {
-        'name': 'K8s 排障 SOP',
-        'slug': 'xing-cloud-k8s-troubleshooting',
-        'category': 'K8s 诊断',
-        'description': '沉淀 K8s 常见异常的只读排障路径和输出格式。',
-        'source_type': AIOpsSkill.SOURCE_INLINE,
-        'applicable_actions': ['k8s.diagnose', 'alert.root_cause'],
-        'examples': ['Pod Pending 怎么排查', '探针失败如何判断', '节点资源不足会影响哪些服务'],
-        'builtin_tools': ['query_k8s_cluster_summary', 'query_k8s_resources', 'query_logs'],
-        'recommended_tools': ['query_alerts', 'query_knowledge_graph'],
-        'max_iterations': 5,
-        'risk_level': AIOpsSkill.RISK_READ_ONLY,
-        'output_contract': {
-            'sections': ['现象', '证据', '原因判断', '建议'],
-            'blocks': ['k8s_action', 'evidence_timeline'],
-        },
-        'content': """排障路径：
-- Pod Pending：看调度事件、资源请求、节点 taint、亲和性、PVC。
-- CrashLoopBackOff：看退出码、容器日志、启动命令、环境变量、探针。
-- ImagePullBackOff：看镜像地址、tag、仓库凭据、网络连通。
-- OOMKilled：看内存 limit、峰值、重启次数和近期流量。
-- Probe Failed：看探针路径、超时、启动时间、依赖服务状态。
-
-边界：
-- 只读取平台接口返回的集群与日志事实。
-- 不直接执行扩缩容、删除 Pod、重启工作负载、修改配置等写操作。
-- 写操作只能形成建议或待确认动作。""",
-        'allowed_role_codes': [],
-    },
-    {
         'name': '容器只读取证护栏',
         'slug': 'xing-cloud-container-readonly-guard',
         'category': '安全护栏',
         'description': '限定容器和 K8s 场景只能通过平台后端接口取证，写操作必须走确认流。',
         'source_type': AIOpsSkill.SOURCE_INLINE,
-        'applicable_actions': ['k8s.diagnose', 'self_heal.recommend'],
+        'applicable_actions': ['k8s.inspect', 'k8s.diagnose', 'self_heal.recommend'],
         'examples': ['能不能直接重启这个 Pod', '帮我扩容 Deployment', '删除异常 Pod 是否安全'],
         'builtin_tools': ['query_k8s_cluster_summary', 'query_k8s_resources', 'query_container_assets'],
         'recommended_tools': ['generate_host_task'],
@@ -778,6 +766,9 @@ BUILTIN_ACTION_REGISTRY = [
             'query_alerts',
             'query_alert_root_cause',
             'query_alert_metrics',
+            'query_metric_promql',
+            'query_k8s_cluster_summary',
+            'query_k8s_resources',
             'query_logs',
             'query_recent_changes',
             'query_knowledge_graph',
@@ -858,6 +849,40 @@ BUILTIN_ACTION_REGISTRY = [
         'suggested_questions': [],
     },
     {
+        'code': 'k8s.inspect',
+        'display_name': 'K8S 固定巡检',
+        'category': 'K8s 巡检',
+        'description': '按集群、节点、工作负载、服务或控制平面 Profile 执行确定性只读巡检。',
+        'risk_level': 'read_only',
+        'agent_mode': 'direct',
+        'required_context': ['cluster'],
+        'allowed_tools': [
+            'query_k8s_cluster_summary',
+            'query_k8s_resources',
+            'query_container_assets',
+            'query_metric_promql',
+            'query_logs',
+            'query_knowledge_graph',
+        ],
+        'skills': [
+            'xing-cloud-k8s-alert-troubleshooting',
+            'xing-cloud-log-pattern-analysis',
+            'xing-cloud-log-field-dictionary',
+            'xing-cloud-container-readonly-guard',
+            'answer-formatter',
+        ],
+        'preflight_required': False,
+        'preflight_fields': [
+            {'name': 'cluster_name', 'label': '集群', 'required': True},
+            {'name': 'profile', 'label': '巡检范围', 'required': False},
+            {'name': 'target', 'label': '目标对象', 'required': False},
+            {'name': 'time_window', 'label': '时间窗口', 'required': False},
+        ],
+        'output_blocks': ['inspection_summary', 'k8s_action', 'evidence_timeline', 'query_suggestion'],
+        'rbac_permissions': ['aiops.chat.view', 'aiops.chat.analyze'],
+        'suggested_questions': [],
+    },
+    {
         'code': 'k8s.diagnose',
         'display_name': 'K8s 诊断',
         'category': 'K8s 诊断',
@@ -873,7 +898,9 @@ BUILTIN_ACTION_REGISTRY = [
             'query_knowledge_graph',
         ],
         'skills': [
-            'xing-cloud-k8s-troubleshooting',
+            'xing-cloud-k8s-alert-troubleshooting',
+            'xing-cloud-log-pattern-analysis',
+            'xing-cloud-log-field-dictionary',
             'xing-cloud-container-readonly-guard',
             'answer-formatter',
         ],
@@ -1917,6 +1944,7 @@ ACTION_ROUTE_PRIORITY = [
     'self_heal.recommend',
     'log.query_generate',
     'change.correlation',
+    'k8s.inspect',
     'k8s.diagnose',
     'slo.analysis',
     'alert.root_cause',
@@ -2002,6 +2030,17 @@ def _action_question_matches(action_code, question, analysis_scope=None):
                 '模式', '共同模式', '共性', '规律', '聚合', '统计', '归类', '有什么', '请求',
             ])
         )
+    if action_code == 'k8s.inspect':
+        has_k8s_scope = _question_contains_any(lowered, [
+            'k8s', 'kubernetes', 'pod', 'pods', 'namespace', '命名空间', '集群', '节点', 'node',
+            'deployment', 'statefulset', 'daemonset', 'workload', 'service', 'apiserver', 'api server',
+            'etcd', 'coredns', '控制平面', '容器',
+        ])
+        has_inspection_intent = _question_contains_any(lowered, [
+            '巡检', '健康检查', '检查集群', '检查节点', '检查控制平面', '集群概览', '健康概览',
+            'inspect', 'inspection',
+        ])
+        return has_k8s_scope and has_inspection_intent
     if action_code == 'k8s.diagnose':
         return (
             _question_contains_any(lowered, ['k8s', 'kubernetes', 'pod', 'pods', 'namespace', '命名空间', '集群', 'deployment', 'statefulset', 'daemonset', 'workload', 'workloads', '容器'])
@@ -2282,7 +2321,7 @@ def _missing_action_context_fields(action, question, knowledge_environment=None,
             '自愈推荐需要先明确告警、服务、异常现象或影响范围。',
             '例如：给生产环境订单服务 5xx 告警推荐自愈方案。',
         ))
-    elif action_code == 'k8s.diagnose':
+    elif action_code in {'k8s.inspect', 'k8s.diagnose'}:
         has_cluster_scope = (
             _action_context_present('cluster', question, knowledge_environment, analysis_scope, page_context)
             or bool((analysis_scope or {}).get('k8s_cluster_ids'))
@@ -2294,8 +2333,8 @@ def _missing_action_context_fields(action, question, knowledge_environment=None,
         if not has_cluster_scope:
             missing.append(_build_action_missing_context_field(
                 'cluster',
-                'K8s 诊断需要明确集群、命名空间或工作负载范围。',
-                '例如：分析生产 K8s 集群 production 命名空间异常工作负载。',
+                'K8s 巡检或诊断需要明确集群、命名空间或工作负载范围。',
+                '例如：巡检当前业务上下文的 K8s 集群，或分析 production 命名空间异常工作负载。',
             ))
 
     return missing
@@ -3043,6 +3082,24 @@ def recover_masked_suggested_question(content):
 def _json_default(value):
     if isinstance(value, Decimal):
         return float(value)
+    if hasattr(value, 'isoformat'):
+        return value.isoformat()
+    return str(value)
+
+
+def _json_safe_value(value):
+    """Return a recursively normalized value accepted by strict JSON columns."""
+    if value is None or isinstance(value, (bool, str, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, Decimal):
+        number = float(value)
+        return number if math.isfinite(number) else None
+    if isinstance(value, dict):
+        return {str(key): _json_safe_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe_value(item) for item in value]
     if hasattr(value, 'isoformat'):
         return value.isoformat()
     return str(value)
@@ -4078,6 +4135,10 @@ def _update_chat_message_processing(
     if metadata_updates:
         metadata.update(metadata_updates)
 
+    metadata = _json_safe_value(metadata)
+    citations = _json_safe_value(citations) if citations is not None else None
+    tool_calls = _json_safe_value(tool_calls) if tool_calls is not None else None
+
     if message.metadata != metadata:
         message.metadata = metadata
         changed_fields.append('metadata')
@@ -4306,8 +4367,8 @@ def _task_resource_environment_filter(queryset, environment):
             if environment_text == name or environment_text in name or name in environment_text or environment_text.lower() == code.lower():
                 environment_ids.append(group.id)
         if environment_ids:
-            return queryset.filter(environment_id__in=environment_ids)
-    filters = Q(environment__name__icontains=environment_text) | Q(environment__code__iexact=environment_text)
+            return queryset.filter(business_groups__id__in=environment_ids).distinct()
+    filters = Q(business_groups__name__icontains=environment_text) | Q(business_groups__code__iexact=environment_text)
     if environment_text in {'prod', 'test', 'dev'}:
         env_aliases = {
             'prod': ['生产', '生产环境', 'prod'],
@@ -4315,8 +4376,8 @@ def _task_resource_environment_filter(queryset, environment):
             'dev': ['开发', '开发环境', 'dev'],
         }
         for alias in env_aliases.get(environment_text, []):
-            filters |= Q(environment__name__icontains=alias) | Q(environment__code__iexact=alias)
-    return queryset.filter(filters)
+            filters |= Q(business_groups__name__icontains=alias) | Q(business_groups__code__iexact=alias)
+    return queryset.filter(filters).distinct()
 
 
 def _task_resource_system_filter(queryset, system_name):
@@ -4466,15 +4527,15 @@ def query_task_resources(session, user_message, user, query='', environment='', 
         _finish_tool_invocation(invocation, {'detail': 'missing_permission'}, started_at, success=False)
         return {'summary': {'count': 0, 'detail': 'missing_permission'}, 'sections': [], 'citations': [{'title': '任务中心资源底座', 'path': '/tasks/resources'}], 'resources': []}
 
-    queryset = TaskResource.objects.select_related('environment', 'system', 'cluster').all()
+    queryset = TaskResource.objects.select_related('environment', 'system', 'cluster').prefetch_related('business_groups').all()
     if resource_type:
         queryset = queryset.filter(resource_type=resource_type)
     scoped_env_ids = _dedupe_int_list((knowledge_environment or {}).get('task_resource_environment_ids') or [])
     explicit_environment_ids = _task_resource_environment_ids_for_name(environment)
     if explicit_environment_ids:
-        queryset = queryset.filter(environment_id__in=explicit_environment_ids)
+        queryset = queryset.filter(business_groups__id__in=explicit_environment_ids).distinct()
     elif scoped_env_ids:
-        queryset = queryset.filter(environment_id__in=scoped_env_ids)
+        queryset = queryset.filter(business_groups__id__in=scoped_env_ids).distinct()
     elif environment:
         queryset = _task_resource_environment_filter(queryset, environment)
     has_environment_scope = bool(explicit_environment_ids or scoped_env_ids or environment)
@@ -7332,7 +7393,43 @@ def _direct_alert_list_fastpath(session, user_message, user, question, scoped_qu
     )
 
 
-def _run_k8s_analysis_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, emit):
+def _detect_k8s_inspection_profile(question):
+    lowered = str(question or '').lower()
+    if any(keyword in lowered for keyword in ['apiserver', 'api server', 'etcd', 'coredns', '控制平面', 'scheduler', 'controller manager']):
+        return 'control_plane'
+    if any(keyword in lowered for keyword in ['node', '节点', 'kubelet', '容器运行时']):
+        return 'node'
+    if any(keyword in lowered for keyword in ['service', 'svc', 'endpoint', 'ingress', '服务']):
+        return 'service'
+    if any(keyword in lowered for keyword in ['pod', 'deployment', 'statefulset', 'daemonset', 'workload', '工作负载', '容器']):
+        return 'workload'
+    return 'cluster'
+
+
+def _detect_k8s_inspection_target(question, profile):
+    if profile == 'workload':
+        return _extract_k8s_pod_name(question, {}) or _extract_k8s_workload_name(question, {})
+    if profile == 'service':
+        return _extract_k8s_service_name(question, {})
+    if profile == 'node':
+        match = re.search(r'(?:node|节点)\s*(?:名|名称|named|name)?\s*[:=：]?\s*["“]?([a-z0-9][a-z0-9_.-]{1,120})', str(question or ''), flags=re.IGNORECASE)
+        return match.group(1).strip(' "\'“”‘’') if match else ''
+    return ''
+
+
+def _run_k8s_analysis_evidence(
+    session,
+    user_message,
+    user,
+    question,
+    scoped_question,
+    knowledge_environment,
+    analysis_scope,
+    provider,
+    active_skills,
+    emit,
+    inspection_profile='',
+):
     emit(
         step={'title': 'K8s 异常证据收集', 'detail': '同时收集工作负载、集群摘要、告警和事件。', 'status': PROCESSING_STATUS_COMPLETED},
         text='正在收集 K8s 异常证据',
@@ -7340,18 +7437,21 @@ def _run_k8s_analysis_evidence(session, user_message, user, question, scoped_que
     from ops.observability_evidence import collect_observability_evidence, inspection_result
 
     context_id = knowledge_environment.get('id')
-    depth = 'targeted' if _detect_k8s_resource_type(question) else 'full'
+    profile = inspection_profile or _detect_k8s_inspection_profile(question)
+    target = _detect_k8s_inspection_target(question, profile)
+    depth = 'full' if profile in {'cluster', 'control_plane'} else 'targeted'
     evidence = collect_observability_evidence(
         context_id,
-        profile='inspection',
+        profile=profile,
         depth=depth,
-        target='',
+        target=target,
         window_minutes=_detect_log_duration_minutes(question),
     )
     result = inspection_result(evidence)
     summary = result.get('cluster_summary') or {}
     findings = result.get('findings') or []
     sections = [
+        {'title': '巡检范围', 'items': [f"Profile={profile}" + (f"，目标={target}" if target else '')]},
         {'title': '巡检结论', 'items': [f"{result.get('conclusion')}，健康分 {result.get('health_score')} 分"]},
         {'title': '集群概览', 'items': [
             f"节点 {summary.get('ready_nodes', 0)}/{summary.get('node_count', 0)} Ready",
@@ -7375,7 +7475,12 @@ def _run_k8s_analysis_evidence(session, user_message, user, question, scoped_que
         knowledge_environment,
         analysis_scope,
         'deterministic_k8s_inspection',
-        extra_metadata={'inspection': result, 'k8s_resource_type': _detect_k8s_resource_type(question) or 'cluster'},
+        extra_metadata={
+            'inspection': result,
+            'inspection_profile': profile,
+            'inspection_target': target,
+            'k8s_resource_type': _detect_k8s_resource_type(question) or 'cluster',
+        },
         provider=provider,
         active_skills=active_skills,
         prefer_llm=False,
@@ -8049,6 +8154,28 @@ def _run_action_log_query(session, user_message, user, question, scoped_question
 def _run_action_k8s_diagnose(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, action, emit):
     result = _run_k8s_analysis_evidence(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, emit)
     return _attach_selected_action_metadata(result, action, extra_metadata={'action_route': 'deterministic_k8s_rca'})
+
+
+def _run_action_k8s_inspect(session, user_message, user, question, scoped_question, knowledge_environment, analysis_scope, provider, active_skills, action, emit):
+    profile = _detect_k8s_inspection_profile(question)
+    result = _run_k8s_analysis_evidence(
+        session,
+        user_message,
+        user,
+        question,
+        scoped_question,
+        knowledge_environment,
+        analysis_scope,
+        provider,
+        active_skills,
+        emit,
+        inspection_profile=profile,
+    )
+    return _attach_selected_action_metadata(
+        result,
+        action,
+        extra_metadata={'action_route': 'deterministic_k8s_inspection', 'inspection_profile': profile},
+    )
 
 
 def query_recent_changes(session, user_message, user, limit=5):
@@ -12167,15 +12294,15 @@ def _resolve_task_resource_targets_for_task(question='', environment='', system_
     resource_type = (resource_type or TaskResource.RESOURCE_HOST).strip().lower()
     if resource_type in {'hosts', 'server', 'servers', 'machine', 'machines'}:
         resource_type = TaskResource.RESOURCE_HOST
-    queryset = TaskResource.objects.select_related('environment', 'system', 'cluster').all()
+    queryset = TaskResource.objects.select_related('environment', 'system', 'cluster').prefetch_related('business_groups').all()
     if resource_type:
         queryset = queryset.filter(resource_type=resource_type)
     scoped_env_ids = _dedupe_int_list((knowledge_environment or {}).get('task_resource_environment_ids') or [])
     explicit_environment_ids = _task_resource_environment_ids_for_name(environment)
     if explicit_environment_ids:
-        queryset = queryset.filter(environment_id__in=explicit_environment_ids)
+        queryset = queryset.filter(business_groups__id__in=explicit_environment_ids).distinct()
     elif scoped_env_ids:
-        queryset = queryset.filter(environment_id__in=scoped_env_ids)
+        queryset = queryset.filter(business_groups__id__in=scoped_env_ids).distinct()
     else:
         queryset = _task_resource_environment_filter(queryset, environment)
     has_environment_scope = bool(explicit_environment_ids or scoped_env_ids or environment)
@@ -14742,6 +14869,20 @@ def _run_selected_action(session, user_message, user, question, scoped_question,
             action,
             emit,
         )
+    if action_code == 'k8s.inspect':
+        return _run_action_k8s_inspect(
+            session,
+            user_message,
+            user,
+            question,
+            scoped_question,
+            knowledge_environment,
+            analysis_scope,
+            provider,
+            action_skills,
+            action,
+            emit,
+        )
     if action_code == 'k8s.diagnose':
         return _run_action_k8s_diagnose(
             session,
@@ -15760,6 +15901,7 @@ def _apply_dispatch_result_to_message(session, assistant_message, result, user, 
             'processing_text': '\u5206\u6790\u5b8c\u6210',
         },
     }
+    payload = _json_safe_value(payload)
 
     if enable_stream:
         _stream_dispatch_result(assistant_message.id, payload, progress_callback=progress_callback)

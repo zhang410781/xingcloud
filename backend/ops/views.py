@@ -43,6 +43,8 @@ from .models import (
     HostTaskSchedule,
     HostTaskScheduleExecution,
     HostTaskTemplate,
+    InspectionReportExecution,
+    InspectionReportSchedule,
     K8sCluster,
     LogEntry,
     MetricDataSource,
@@ -75,6 +77,8 @@ from .serializers import (
     HostTaskSubmitSerializer,
     HostTaskTargetSerializer,
     HostTaskTemplateSerializer,
+    InspectionReportExecutionSerializer,
+    InspectionReportScheduleSerializer,
     LogEntrySerializer,
     TaskResourceGroupSerializer,
     TaskResourceSerializer,
@@ -712,20 +716,23 @@ class TaskResourceGroupViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, 
         instance = self.get_object()
         if instance.children.exists():
             return Response({'detail': '请先删除该节点下的系统'}, status=status.HTTP_400_BAD_REQUEST)
-        if TaskResource.objects.filter(Q(environment=instance) | Q(system=instance)).exists():
+        if instance.shared_middleware_assets.exists():
+            return Response({'detail': '该业务分组仍关联中间件或数据库资产，不能删除。'}, status=status.HTTP_400_BAD_REQUEST)
+        if instance.aiops_knowledge_environments.exists():
+            return Response({'detail': '该业务分组仍被知识图谱业务上下文使用，不能删除。'}, status=status.HTTP_400_BAD_REQUEST)
+        if TaskResource.objects.filter(Q(environment=instance) | Q(system=instance) | Q(business_groups=instance)).distinct().exists():
             return Response({'detail': '该节点下仍存在执行资源，不能删除'}, status=status.HTTP_400_BAD_REQUEST)
         return super().destroy(request, *args, **kwargs)
 
     @action(detail=False, methods=['get'])
     def tree(self, request):
         groups = list(TaskResourceGroup.objects.select_related('parent').order_by('group_type', 'sort_order', 'name', 'id'))
-        resources = TaskResource.objects.values('environment_id', 'system_id', 'resource_type').annotate(total=Count('id'))
+        resources = TaskResource.objects.exclude(business_groups=None).values('business_groups__id', 'resource_type').annotate(total=Count('id'))
         env_counts = {}
         system_counts = {}
         for item in resources:
-            env_counts[item['environment_id']] = env_counts.get(item['environment_id'], 0) + item['total']
-            if item['system_id']:
-                system_counts[item['system_id']] = system_counts.get(item['system_id'], 0) + item['total']
+            group_id = item['business_groups__id']
+            env_counts[group_id] = env_counts.get(group_id, 0) + item['total']
         systems_by_env = {}
         for group in groups:
             if group.group_type == TaskResourceGroup.GROUP_SYSTEM and group.parent_id:
@@ -787,7 +794,7 @@ class TaskResourceViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, views
     }
 
     def get_queryset(self):
-        queryset = TaskResource.objects.select_related('environment', 'system', 'cluster').all()
+        queryset = TaskResource.objects.select_related('environment', 'system', 'cluster').prefetch_related('business_groups').all()
         resource_type = self.request.query_params.get('resource_type')
         status_value = self.request.query_params.get('status')
         asset_environment = self.request.query_params.get('asset_environment')
@@ -801,7 +808,12 @@ class TaskResourceViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, views
         if asset_environment:
             queryset = queryset.filter(asset_environment=asset_environment)
         if environment:
-            queryset = queryset.filter(Q(environment_id=environment) | Q(environment__name=environment))
+            queryset = queryset.filter(
+                Q(business_groups__id=environment)
+                | Q(business_groups__name=environment)
+                | Q(environment_id=environment)
+                | Q(environment__name=environment)
+            ).distinct()
         if system_value:
             queryset = queryset.filter(Q(system_id=system_value) | Q(system__name=system_value))
         if search:
@@ -824,14 +836,19 @@ class TaskResourceViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, views
 
     @action(detail=False, methods=['get'])
     def stats(self, request):
-        queryset = TaskResource.objects.select_related('environment', 'system', 'cluster').all()
+        queryset = TaskResource.objects.select_related('environment', 'system', 'cluster').prefetch_related('business_groups').all()
         environment = request.query_params.get('environment')
         system_value = request.query_params.get('system')
         status_value = request.query_params.get('status')
         asset_environment = request.query_params.get('asset_environment')
         search = (request.query_params.get('search') or '').strip()
         if environment:
-            queryset = queryset.filter(Q(environment_id=environment) | Q(environment__name=environment))
+            queryset = queryset.filter(
+                Q(business_groups__id=environment)
+                | Q(business_groups__name=environment)
+                | Q(environment_id=environment)
+                | Q(environment__name=environment)
+            ).distinct()
         if system_value:
             queryset = queryset.filter(Q(system_id=system_value) | Q(system__name=system_value))
         if status_value:
@@ -2477,7 +2494,7 @@ class AlertRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets
 
 
 class AlertRecipientViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
-    queryset = AlertRecipient.objects.select_related('user').prefetch_related('groups').all()
+    queryset = AlertRecipient.objects.select_related('user').prefetch_related('groups', 'inspection_report_schedules').all()
     serializer_class = AlertRecipientSerializer
     search_fields = ['name', 'phone', 'email', 'description']
     event_module = 'ops'
@@ -2504,14 +2521,24 @@ class AlertRecipientViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, vie
                 },
                 status=status.HTTP_409_CONFLICT,
             )
+        report_refs = list(instance.inspection_report_schedules.values('id', 'name').order_by('name')[:20])
+        if report_refs:
+            return Response(
+                {
+                    'detail': '接收人正在被巡检报告计划引用，请先解除引用后再删除',
+                    'report_schedule_refs': report_refs,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
         return super().destroy(request, *args, **kwargs)
 
 
 class AlertRecipientGroupViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
     queryset = AlertRecipientGroup.objects.prefetch_related(
-        Prefetch('recipients', queryset=AlertRecipient.objects.select_related('user').prefetch_related('groups')),
+        Prefetch('recipients', queryset=AlertRecipient.objects.select_related('user').prefetch_related('groups', 'inspection_report_schedules')),
         'users',
         'notification_policies',
+        'inspection_report_schedules',
     ).all()
     serializer_class = AlertRecipientGroupSerializer
     pagination_class = AlertConfigPagination
@@ -2537,6 +2564,15 @@ class AlertRecipientGroupViewSet(EventWallModelViewSetMixin, RBACPermissionMixin
                 {
                     'detail': '接收组正在被通知策略引用，请先解除引用后再删除',
                     'policy_refs': policy_refs,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        report_refs = list(instance.inspection_report_schedules.values('id', 'name').order_by('name')[:20])
+        if report_refs:
+            return Response(
+                {
+                    'detail': '接收组正在被巡检报告计划引用，请先解除引用后再删除',
+                    'report_schedule_refs': report_refs,
                 },
                 status=status.HTTP_409_CONFLICT,
             )
@@ -2644,6 +2680,55 @@ class AlertNotificationPolicyViewSet(EventWallModelViewSetMixin, RBACPermissionM
             'matched_count': len(policies),
             'policies': self.get_serializer(policies, many=True).data,
         })
+
+
+class InspectionReportScheduleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
+    queryset = InspectionReportSchedule.objects.select_related('knowledge_environment').prefetch_related(
+        'channels', 'recipients', 'recipient_groups',
+    ).all()
+    serializer_class = InspectionReportScheduleSerializer
+    pagination_class = AlertConfigPagination
+    search_fields = ['name', 'knowledge_environment__name', 'knowledge_environment__code']
+    filterset_fields = ['knowledge_environment', 'frequency', 'profile', 'is_enabled', 'last_status']
+    event_module = 'ops'
+    event_resource_type = 'inspection_report_schedule'
+    event_resource_label = '巡检报告计划'
+    event_resource_name_fields = ('name',)
+    rbac_permissions = {
+        'list': ['ops.alert.config.view'],
+        'retrieve': ['ops.alert.config.view'],
+        'create': ['ops.alert.config.manage'],
+        'update': ['ops.alert.config.manage'],
+        'partial_update': ['ops.alert.config.manage'],
+        'destroy': ['ops.alert.config.manage'],
+        'run_now': ['ops.alert.notify'],
+    }
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user.get_username())
+
+    @action(detail=True, methods=['post'], url_path='run-now')
+    def run_now(self, request, pk=None):
+        from .inspection_reports import run_inspection_report_schedule
+        schedule = self.get_object()
+        execution = run_inspection_report_schedule(
+            schedule,
+            trigger=InspectionReportExecution.TRIGGER_MANUAL,
+        )
+        response_status = status.HTTP_200_OK if execution.status != InspectionReportExecution.STATUS_FAILED else status.HTTP_502_BAD_GATEWAY
+        return Response(InspectionReportExecutionSerializer(execution).data, status=response_status)
+
+
+class InspectionReportExecutionViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
+    queryset = InspectionReportExecution.objects.select_related('schedule').all()
+    serializer_class = InspectionReportExecutionSerializer
+    pagination_class = AlertConfigPagination
+    search_fields = ['schedule__name', 'error_message']
+    filterset_fields = ['schedule', 'trigger', 'status']
+    rbac_permissions = {
+        'list': ['ops.alert.config.view'],
+        'retrieve': ['ops.alert.config.view'],
+    }
 
 
 

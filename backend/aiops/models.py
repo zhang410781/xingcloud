@@ -214,7 +214,7 @@ class AIOpsKnowledgeEnvironment(models.Model):
     aliases = models.JSONField('环境别名', default=list, blank=True)
     description = models.CharField('描述', max_length=255, blank=True, default='')
     event_environments = models.JSONField('事件中心环境', default=list, blank=True)
-    metric_datasource = models.OneToOneField(
+    metric_datasource = models.ForeignKey(
         'ops.MetricDataSource',
         on_delete=models.SET_NULL,
         null=True,
@@ -222,7 +222,7 @@ class AIOpsKnowledgeEnvironment(models.Model):
         related_name='aiops_knowledge_environments',
         verbose_name='指标数据源',
     )
-    log_datasource = models.OneToOneField(
+    log_datasource = models.ForeignKey(
         'ops.LogDataSource',
         on_delete=models.SET_NULL,
         null=True,
@@ -230,20 +230,20 @@ class AIOpsKnowledgeEnvironment(models.Model):
         related_name='aiops_knowledge_environments',
         verbose_name='日志数据源',
     )
-    k8s_cluster = models.OneToOneField(
+    k8s_cluster = models.ForeignKey(
         'ops.K8sCluster',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='aiops_knowledge_environment',
+        related_name='aiops_knowledge_environments',
         verbose_name='K8s 集群',
     )
-    task_resource_environment = models.OneToOneField(
+    task_resource_environment = models.ForeignKey(
         'ops.TaskResourceGroup',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='aiops_knowledge_environment',
+        related_name='aiops_knowledge_environments',
         verbose_name='资产环境分组',
     )
     # 兼容旧客户端一个发布周期；新代码以单值外键为准。

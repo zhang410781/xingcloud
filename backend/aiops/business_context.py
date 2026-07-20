@@ -26,6 +26,18 @@ def resolve_business_context(value, *, enabled_only=True):
 def context_payload(context):
     if not context:
         return None
+    from ops.models import TaskResource
+
+    asset_group_id = context.task_resource_environment_id
+    k8s_cluster_ids = list(
+        TaskResource.objects.filter(
+            business_groups__id=asset_group_id,
+            resource_type=TaskResource.RESOURCE_K8S,
+            cluster__isnull=False,
+        ).order_by('cluster_id').values_list('cluster_id', flat=True).distinct()
+    ) if asset_group_id else []
+    if context.k8s_cluster_id and context.k8s_cluster_id not in k8s_cluster_ids:
+        k8s_cluster_ids.append(context.k8s_cluster_id)
     return {
         'id': context.id,
         'name': context.name,
@@ -35,7 +47,8 @@ def context_payload(context):
         'owner': context.owner,
         'metric_datasource_id': context.metric_datasource_id,
         'log_datasource_id': context.log_datasource_id,
-        'k8s_cluster_id': context.k8s_cluster_id,
+        'k8s_cluster_id': k8s_cluster_ids[0] if k8s_cluster_ids else None,
+        'k8s_cluster_ids': k8s_cluster_ids,
         'task_resource_environment_id': context.task_resource_environment_id,
     }
 
@@ -90,7 +103,7 @@ def validate_context_bindings(context, *, live=False):
     metric = context.metric_datasource
     add('metric_datasource', 'Prometheus 指标源', bool(metric and metric.is_enabled), getattr(metric, 'name', '') or '未绑定')
     if metric:
-        add('metric_environment', '指标源环境编码', metric.environment == context.code, metric.environment or '未设置')
+        add('metric_environment', '指标源目录标识', True, metric.environment or '未设置', blocking=False)
     log = context.log_datasource
     add('log_datasource', '日志数据源', bool(log and log.is_enabled), getattr(log, 'name', '') or '未绑定')
     if log:
@@ -105,17 +118,24 @@ def validate_context_bindings(context, *, live=False):
             '已配置' if not missing_log_fields else f"缺少 {', '.join(missing_log_fields)}",
             blocking=False,
         )
-    cluster = context.k8s_cluster
-    add('k8s_cluster', 'K8s 集群', bool(cluster), getattr(cluster, 'name', '') or '未绑定')
+    cluster_resources = list(
+        TaskResource.objects.filter(
+            business_groups=context.task_resource_environment,
+            resource_type=TaskResource.RESOURCE_K8S,
+            cluster__isnull=False,
+        ).select_related('cluster').order_by('cluster__name', 'id')
+    ) if context.task_resource_environment_id else []
+    cluster = cluster_resources[0].cluster if cluster_resources else None
+    add('k8s_cluster', 'K8s 集群', bool(cluster_resources), ', '.join(item.cluster.name for item in cluster_resources) or 'CMDB 分组未登记 K8S')
     asset_environment = context.task_resource_environment
     add(
         'asset_environment', '资产环境分组',
         bool(asset_environment and asset_environment.group_type == 'environment'),
         getattr(asset_environment, 'name', '') or '未绑定',
     )
-    asset_count = TaskResource.objects.filter(environment=asset_environment).count() if asset_environment else 0
+    asset_count = TaskResource.objects.filter(business_groups=asset_environment).distinct().count() if asset_environment else 0
     checks.append({'code': 'asset_count', 'title': '已登记资产', 'status': 'ready', 'detail': str(asset_count), 'blocking': False})
-    middleware_count = MiddlewareAsset.objects.filter(task_resource_environment=asset_environment).count() if asset_environment else 0
+    middleware_count = MiddlewareAsset.objects.filter(business_groups=asset_environment).distinct().count() if asset_environment else 0
     checks.append({'code': 'middleware_asset_count', 'title': '已登记中间件与数据库', 'status': 'ready', 'detail': str(middleware_count), 'blocking': False})
     mismatched_alerts = context.alerts.exclude(environment=context.code).count()
     add('alert_environment', '告警环境编码', mismatched_alerts == 0, f'{mismatched_alerts} 条不一致')

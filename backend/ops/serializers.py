@@ -30,6 +30,8 @@ from .models import (
     HostTaskSchedule,
     HostTaskScheduleExecution,
     HostTaskTemplate,
+    InspectionReportExecution,
+    InspectionReportSchedule,
     K8sCluster,
     LogDataSource,
     LogEntry,
@@ -389,6 +391,12 @@ class TaskResourceGroupSerializer(serializers.ModelSerializer):
 
 
 class TaskResourceSerializer(serializers.ModelSerializer):
+    business_groups = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=TaskResourceGroup.objects.filter(group_type=TaskResourceGroup.GROUP_ENVIRONMENT),
+        required=False,
+    )
+    business_group_names = serializers.SerializerMethodField()
     resource_type_display = serializers.CharField(source='get_resource_type_display', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     environment_name = serializers.CharField(source='environment.name', read_only=True)
@@ -411,6 +419,8 @@ class TaskResourceSerializer(serializers.ModelSerializer):
             'environment',
             'environment_name',
             'environment_display',
+            'business_groups',
+            'business_group_names',
             'system',
             'system_name',
             'business_line',
@@ -438,6 +448,7 @@ class TaskResourceSerializer(serializers.ModelSerializer):
         read_only_fields = ['created_by', 'updated_by', 'created_at', 'updated_at']
         extra_kwargs = {
             'name': {'required': False, 'allow_blank': True},
+            'environment': {'required': False},
             'ssh_password': {'write_only': True, 'required': False, 'allow_blank': True},
         }
 
@@ -452,9 +463,26 @@ class TaskResourceSerializer(serializers.ModelSerializer):
             return obj.cluster.name if obj.cluster else ''
         return str(obj.ip_address or '')
 
+    def get_business_group_names(self, obj):
+        return list(obj.business_groups.order_by('sort_order', 'name', 'id').values_list('name', flat=True))
+
     def validate(self, attrs):
         resource_type = attrs.get('resource_type') or getattr(self.instance, 'resource_type', TaskResource.RESOURCE_HOST)
         environment = attrs.get('environment') if 'environment' in attrs else getattr(self.instance, 'environment', None)
+        if 'business_groups' in attrs:
+            business_groups = list(attrs.get('business_groups') or [])
+        elif self.instance:
+            business_groups = list(self.instance.business_groups.all())
+        else:
+            business_groups = [environment] if environment else []
+        if not business_groups:
+            raise serializers.ValidationError({'business_groups': '请至少选择一个一级资产业务分组'})
+        if any(group.group_type != TaskResourceGroup.GROUP_ENVIRONMENT for group in business_groups):
+            raise serializers.ValidationError({'business_groups': '只能选择一级资产业务分组'})
+        attrs['business_groups'] = business_groups
+        attrs['environment'] = business_groups[0]
+        environment = business_groups[0]
+        attrs['asset_environment'] = ''
         system = attrs.get('system') if 'system' in attrs else getattr(self.instance, 'system', None)
         name = (attrs.get('name') if 'name' in attrs else getattr(self.instance, 'name', '')) or ''
         if resource_type == TaskResource.RESOURCE_K8S and not name.strip():
@@ -1523,17 +1551,22 @@ class AlertRecipientSerializer(serializers.ModelSerializer):
     user_detail = AlertUserLiteSerializer(source='user', read_only=True)
     contact_channels = serializers.SerializerMethodField()
     group_refs = serializers.SerializerMethodField()
+    report_schedule_refs = serializers.SerializerMethodField()
 
     class Meta:
         model = AlertRecipient
         fields = [
             'id', 'name', 'user', 'user_detail', 'phone', 'email',
-            'dingtalk_user_id', 'feishu_user_id', 'wecom_user_id',
+            'preferred_channels',
             'contact_channels', 'group_refs', 'is_enabled', 'description',
+            'report_schedule_refs',
             'created_at', 'updated_at',
         ]
 
     def get_contact_channels(self, obj):
+        selected = list(obj.preferred_channels or [])
+        if selected:
+            return selected
         channels = []
         if obj.email or (obj.user_id and obj.user and obj.user.email):
             channels.append('email')
@@ -1547,8 +1580,31 @@ class AlertRecipientSerializer(serializers.ModelSerializer):
             channels.append('wecom')
         return channels
 
+    def validate_preferred_channels(self, value):
+        allowed = {item[0] for item in AlertRecipient.CHANNEL_CHOICES}
+        channels = list(dict.fromkeys(value or []))
+        invalid = [item for item in channels if item not in allowed]
+        if invalid:
+            raise serializers.ValidationError(f'不支持的接收渠道：{", ".join(invalid)}')
+        return channels
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        channels = attrs.get('preferred_channels', getattr(self.instance, 'preferred_channels', []) or [])
+        phone = str(attrs.get('phone', getattr(self.instance, 'phone', '') or '')).strip()
+        email = str(attrs.get('email', getattr(self.instance, 'email', '') or '')).strip()
+        user = attrs.get('user', getattr(self.instance, 'user', None))
+        if 'email' in channels and not email and not (user and user.email):
+            raise serializers.ValidationError({'email': '选择邮件渠道后必须填写邮箱'})
+        if {'sms', 'voice'} & set(channels) and not phone:
+            raise serializers.ValidationError({'phone': '选择短信或语音渠道后必须填写手机号'})
+        return attrs
+
     def get_group_refs(self, obj):
         return [{'id': group.id, 'name': group.name} for group in obj.groups.all()]
+
+    def get_report_schedule_refs(self, obj):
+        return [{'id': item.id, 'name': item.name} for item in obj.inspection_report_schedules.all()]
 
 
 class AlertRecipientGroupSerializer(serializers.ModelSerializer):
@@ -1563,6 +1619,8 @@ class AlertRecipientGroupSerializer(serializers.ModelSerializer):
     health_status = serializers.SerializerMethodField()
     policy_refs = serializers.SerializerMethodField()
     policy_count = serializers.SerializerMethodField()
+    report_schedule_refs = serializers.SerializerMethodField()
+    report_schedule_count = serializers.SerializerMethodField()
 
     class Meta:
         model = AlertRecipientGroup
@@ -1571,6 +1629,7 @@ class AlertRecipientGroupSerializer(serializers.ModelSerializer):
             'recipient_ids', 'user_ids', 'recipients', 'users',
             'member_count', 'active_member_count', 'reachable_member_count',
             'contact_coverage', 'health_status', 'policy_refs', 'policy_count',
+            'report_schedule_refs', 'report_schedule_count',
         ]
 
     def _members(self, obj):
@@ -1595,20 +1654,21 @@ class AlertRecipientGroupSerializer(serializers.ModelSerializer):
 
     def get_contact_coverage(self, obj):
         recipients, users = self._active_members(obj)
+        recipient_channels = [set(AlertRecipientSerializer(item).data.get('contact_channels') or []) for item in recipients]
         return {
-            'email': sum(1 for item in recipients if item.email or (item.user_id and item.user and item.user.email)) + sum(1 for item in users if item.email),
-            'phone': sum(1 for item in recipients if item.phone),
-            'dingtalk': sum(1 for item in recipients if item.dingtalk_user_id),
-            'feishu': sum(1 for item in recipients if item.feishu_user_id),
-            'wecom': sum(1 for item in recipients if item.wecom_user_id),
+            'email': sum(1 for channels in recipient_channels if 'email' in channels) + sum(1 for item in users if item.email),
+            'phone': sum(1 for channels in recipient_channels if {'sms', 'voice'} & channels),
+            'dingtalk': sum(1 for channels in recipient_channels if 'dingtalk' in channels),
+            'feishu': sum(1 for channels in recipient_channels if 'feishu' in channels),
+            'wecom': sum(1 for channels in recipient_channels if 'wecom' in channels),
         }
 
     def get_reachable_member_count(self, obj):
         recipients, users = self._active_members(obj)
-        recipient_count = sum(1 for item in recipients if (
-            item.email or item.phone or item.dingtalk_user_id or item.feishu_user_id
-            or item.wecom_user_id or (item.user_id and item.user and item.user.email)
-        ))
+        recipient_count = sum(
+            1 for item in recipients
+            if AlertRecipientSerializer(item).data.get('contact_channels')
+        )
         return recipient_count + sum(1 for item in users if item.email)
 
     def get_health_status(self, obj):
@@ -1634,6 +1694,12 @@ class AlertRecipientGroupSerializer(serializers.ModelSerializer):
 
     def get_policy_count(self, obj):
         return len(self.get_policy_refs(obj))
+
+    def get_report_schedule_refs(self, obj):
+        return [{'id': item.id, 'name': item.name} for item in obj.inspection_report_schedules.all()]
+
+    def get_report_schedule_count(self, obj):
+        return len(self.get_report_schedule_refs(obj))
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
@@ -1800,6 +1866,141 @@ class AlertNotificationPolicySerializer(serializers.ModelSerializer):
         if groups is not None:
             instance.recipient_groups.set(groups)
         return instance
+
+
+class InspectionReportScheduleSerializer(serializers.ModelSerializer):
+    channel_ids = serializers.PrimaryKeyRelatedField(
+        queryset=AlertNotificationChannel.objects.all(), many=True, write_only=True, required=False,
+    )
+    recipient_ids = serializers.PrimaryKeyRelatedField(
+        queryset=AlertRecipient.objects.all(), many=True, write_only=True, required=False,
+    )
+    recipient_group_ids = serializers.PrimaryKeyRelatedField(
+        queryset=AlertRecipientGroup.objects.all(), many=True, write_only=True, required=False,
+    )
+    channels = serializers.SerializerMethodField()
+    recipients = serializers.SerializerMethodField()
+    recipient_groups = serializers.SerializerMethodField()
+    knowledge_environment_detail = serializers.SerializerMethodField()
+    frequency_display = serializers.CharField(source='get_frequency_display', read_only=True)
+    profile_display = serializers.CharField(source='get_profile_display', read_only=True)
+    last_status_display = serializers.CharField(source='get_last_status_display', read_only=True)
+
+    class Meta:
+        model = InspectionReportSchedule
+        fields = [
+            'id', 'name', 'knowledge_environment', 'knowledge_environment_detail',
+            'frequency', 'frequency_display', 'weekday', 'send_time', 'timezone',
+            'profile', 'profile_display', 'depth', 'window_minutes',
+            'channel_ids', 'channels', 'recipient_ids', 'recipients',
+            'recipient_group_ids', 'recipient_groups', 'is_enabled',
+            'next_run_at', 'last_run_at', 'last_status', 'last_status_display',
+            'last_error', 'last_report', 'created_by', 'created_at', 'updated_at',
+        ]
+        read_only_fields = [
+            'next_run_at', 'last_run_at', 'last_status', 'last_error', 'last_report',
+            'created_by', 'created_at', 'updated_at',
+        ]
+
+    def get_channels(self, obj):
+        return [
+            {'id': item.id, 'name': item.name, 'channel_type': item.channel_type, 'channel_type_display': item.get_channel_type_display()}
+            for item in obj.channels.all()
+        ]
+
+    def get_recipients(self, obj):
+        return [
+            {'id': item.id, 'name': item.name, 'contact_channels': AlertRecipientSerializer(item).data.get('contact_channels', [])}
+            for item in obj.recipients.all()
+        ]
+
+    def get_recipient_groups(self, obj):
+        return [{'id': item.id, 'name': item.name} for item in obj.recipient_groups.all()]
+
+    def get_knowledge_environment_detail(self, obj):
+        context = obj.knowledge_environment
+        return {'id': context.id, 'name': context.name, 'code': context.code}
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        frequency = attrs.get('frequency', getattr(self.instance, 'frequency', InspectionReportSchedule.FREQUENCY_WEEKLY))
+        weekday = int(attrs.get('weekday', getattr(self.instance, 'weekday', 1)) or 1)
+        if frequency == InspectionReportSchedule.FREQUENCY_WEEKLY and weekday not in range(1, 8):
+            raise serializers.ValidationError({'weekday': '每周发送时必须选择星期一至星期日'})
+        window_minutes = int(attrs.get('window_minutes', getattr(self.instance, 'window_minutes', 60)) or 60)
+        if not 5 <= window_minutes <= 360:
+            raise serializers.ValidationError({'window_minutes': '证据时间窗必须在 5 到 360 分钟之间'})
+        context = attrs.get('knowledge_environment', getattr(self.instance, 'knowledge_environment', None))
+        if context and not context.is_enabled:
+            raise serializers.ValidationError({'knowledge_environment': '业务上下文已停用'})
+        enabled = attrs.get('is_enabled', getattr(self.instance, 'is_enabled', True))
+        channels = attrs.get('channel_ids')
+        recipients = attrs.get('recipient_ids')
+        groups = attrs.get('recipient_group_ids')
+        if self.instance is not None:
+            if channels is None:
+                channels = list(self.instance.channels.all())
+            if recipients is None:
+                recipients = list(self.instance.recipients.all())
+            if groups is None:
+                groups = list(self.instance.recipient_groups.all())
+        if enabled and not channels:
+            raise serializers.ValidationError({'channel_ids': '启用的巡检报告至少需要一个通知渠道'})
+        if enabled and not (recipients or groups):
+            raise serializers.ValidationError({'recipient_ids': '启用的巡检报告至少需要一个接收人或接收组'})
+        return attrs
+
+    def _save_relations(self, instance, validated_data, *, partial=False):
+        relation_fields = [
+            ('channel_ids', instance.channels),
+            ('recipient_ids', instance.recipients),
+            ('recipient_group_ids', instance.recipient_groups),
+        ]
+        for field, manager in relation_fields:
+            values = validated_data.pop(field, None if partial else [])
+            if values is not None:
+                manager.set(values)
+
+    def _set_next_run(self, instance):
+        from .inspection_reports import compute_next_inspection_report_run
+        instance.next_run_at = compute_next_inspection_report_run(instance) if instance.is_enabled else None
+        instance.save(update_fields=['next_run_at', 'updated_at'])
+
+    def create(self, validated_data):
+        relations = {
+            key: validated_data.pop(key, [])
+            for key in ('channel_ids', 'recipient_ids', 'recipient_group_ids')
+        }
+        instance = super().create(validated_data)
+        instance.channels.set(relations['channel_ids'])
+        instance.recipients.set(relations['recipient_ids'])
+        instance.recipient_groups.set(relations['recipient_group_ids'])
+        self._set_next_run(instance)
+        return instance
+
+    def update(self, instance, validated_data):
+        relations = {
+            key: validated_data.pop(key, None)
+            for key in ('channel_ids', 'recipient_ids', 'recipient_group_ids')
+        }
+        instance = super().update(instance, validated_data)
+        if relations['channel_ids'] is not None:
+            instance.channels.set(relations['channel_ids'])
+        if relations['recipient_ids'] is not None:
+            instance.recipients.set(relations['recipient_ids'])
+        if relations['recipient_group_ids'] is not None:
+            instance.recipient_groups.set(relations['recipient_group_ids'])
+        self._set_next_run(instance)
+        return instance
+
+
+class InspectionReportExecutionSerializer(serializers.ModelSerializer):
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    trigger_display = serializers.CharField(source='get_trigger_display', read_only=True)
+
+    class Meta:
+        model = InspectionReportExecution
+        fields = '__all__'
 
 
 

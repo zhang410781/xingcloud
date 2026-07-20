@@ -1,6 +1,7 @@
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import timedelta
+import math
 import re
 
 from django.utils import timezone
@@ -34,6 +35,38 @@ METRIC_MATRIX = [
 ]
 
 DEPTH_METRIC_LIMIT = {'light': 4, 'targeted': 12, 'full': len(METRIC_MATRIX)}
+INSPECTION_PROFILE_ALIASES = {'inspection': 'cluster', 'k8s': 'cluster'}
+INSPECTION_PROFILE_METRICS = {
+    'cluster': {item[0] for item in METRIC_MATRIX},
+    'server': {
+        'node_count', 'node_cpu', 'node_memory', 'node_load', 'disk_usage', 'inode_usage',
+        'network_receive', 'network_transmit', 'network_errors', 'network_drops',
+        'tcp_connections', 'disk_io',
+    },
+    'node': {
+        'node_count', 'node_cpu', 'node_memory', 'node_load', 'disk_usage', 'inode_usage',
+        'network_receive', 'network_transmit', 'network_errors', 'network_drops',
+        'tcp_connections', 'disk_io',
+    },
+    'workload': {'pod_restarts', 'requests_cpu', 'limits_memory', 'node_cpu', 'node_memory'},
+    'service': {'pod_restarts', 'network_receive', 'network_transmit', 'requests_cpu', 'limits_memory'},
+    'control_plane': {
+        'apiserver_rate', 'apiserver_errors', 'apiserver_latency',
+        'node_count', 'node_cpu', 'node_memory', 'network_errors', 'network_drops', 'disk_io',
+    },
+}
+INSPECTION_PROFILE_RESOURCES = {
+    'cluster': ['deployments', 'statefulsets', 'daemonsets', 'pvcs'],
+    'server': [],
+    'node': [],
+    'workload': ['deployments', 'statefulsets', 'daemonsets', 'pvcs'],
+    'service': ['services', 'ingresses', 'deployments'],
+    'control_plane': ['deployments', 'daemonsets'],
+}
+CONTROL_PLANE_POD_KEYWORDS = (
+    'kube-apiserver', 'apiserver', 'etcd', 'coredns',
+    'kube-scheduler', 'kube-controller-manager',
+)
 SECRET_PATTERN = re.compile(
     r'(?i)\b(password|passwd|pwd|token|api[_-]?key|authorization|cookie|secret)\b(\s*[:=]\s*)([^\s,;]+)'
 )
@@ -50,9 +83,11 @@ def _series_values(result):
         for sample in samples:
             raw = sample[1] if isinstance(sample, (list, tuple)) and len(sample) > 1 else sample
             try:
-                values.append(float(raw))
+                number = float(raw)
             except (TypeError, ValueError):
                 continue
+            if math.isfinite(number):
+                values.append(number)
     return values
 
 
@@ -92,37 +127,65 @@ def _namespaces(context):
     return values or None
 
 
-def _k8s_evidence(context, depth, target=''):
+def _k8s_evidence(context, depth, target='', profile='cluster'):
     from .k8s_views import get_k8s_nodes_snapshot, get_k8s_pods_snapshot, get_k8s_resource_snapshot
 
     cluster = context.k8s_cluster
     namespaces = _namespaces(context)
+    if profile in {'node', 'control_plane'}:
+        namespaces = None
     nodes = get_k8s_nodes_snapshot(cluster)
     pods = get_k8s_pods_snapshot(cluster, namespaces)
+    if profile == 'control_plane':
+        pods = [
+            item for item in pods
+            if str(item.get('namespace') or '') == 'kube-system'
+            and any(keyword in str(item.get('name') or '').lower() for keyword in CONTROL_PLANE_POD_KEYWORDS)
+        ]
+    elif profile == 'node' and not target:
+        pods = []
+    elif profile == 'service' and not target:
+        pods = []
     if target:
         lowered = target.lower()
-        nodes = [item for item in nodes if lowered in str(item.get('name') or '').lower()] or nodes
-        pods = [item for item in pods if lowered in str(item.get('name') or '').lower()] or pods
+        if profile == 'node':
+            nodes = [item for item in nodes if lowered in str(item.get('name') or '').lower()]
+            pods_on_node = [item for item in pods if lowered in str(item.get('node') or item.get('node_name') or '').lower()]
+            if pods_on_node:
+                pods = pods_on_node
+        elif profile in {'workload', 'service'}:
+            pods = [item for item in pods if lowered in str(item.get('name') or '').lower()]
     resources = {}
     if depth in {'targeted', 'full'}:
-        kinds = ['deployments', 'statefulsets', 'daemonsets', 'pvcs'] if depth == 'full' else ['deployments', 'pvcs']
+        kinds = list(INSPECTION_PROFILE_RESOURCES.get(profile, INSPECTION_PROFILE_RESOURCES['cluster']))
+        if depth == 'targeted':
+            kinds = kinds[:2]
         for kind in kinds:
-            resources[kind] = get_k8s_resource_snapshot(cluster, kind, namespaces)
+            items = get_k8s_resource_snapshot(cluster, kind, namespaces)
+            if target and profile in {'workload', 'service'}:
+                matched = [item for item in items if target.lower() in str(item.get('name') or '').lower()]
+                items = matched or items
+            resources[kind] = items
 
     findings = []
     for node in nodes:
         if node.get('status') != 'Ready':
             findings.append({'fingerprint': f"node-not-ready:{node.get('name')}", 'severity': 'critical', 'code': 'node_not_ready', 'target': node.get('name'), 'message': '节点状态不是 Ready'})
     for pod in pods:
-        if pod.get('status') not in {'Running', 'Succeeded'}:
-            findings.append({'fingerprint': f"pod-phase:{pod.get('namespace')}:{pod.get('name')}", 'severity': 'warning', 'code': 'pod_abnormal', 'target': pod.get('name'), 'namespace': pod.get('namespace'), 'message': f"Pod 状态为 {pod.get('status')}"})
-        if int(pod.get('restarts') or 0) >= 3:
-            findings.append({'fingerprint': f"pod-restart:{pod.get('namespace')}:{pod.get('name')}", 'severity': 'warning', 'code': 'pod_restarts', 'target': pod.get('name'), 'namespace': pod.get('namespace'), 'message': f"Pod 已重启 {pod.get('restarts')} 次"})
+        pod_status = str(pod.get('status') or 'Unknown')
+        containers = list(pod.get('containers') or [])
+        not_ready = pod_status == 'Running' and any(not item.get('ready') for item in containers)
+        if pod_status not in {'Running', 'Succeeded', 'Failed'}:
+            findings.append({'fingerprint': f"pod-phase:{pod.get('namespace')}:{pod.get('name')}", 'severity': 'warning', 'code': 'pod_abnormal', 'target': pod.get('name'), 'namespace': pod.get('namespace'), 'message': f"Pod 状态为 {pod_status}"})
+        elif not_ready:
+            restart_suffix = f"，累计重启 {pod.get('restarts')} 次" if int(pod.get('restarts') or 0) else ''
+            findings.append({'fingerprint': f"pod-not-ready:{pod.get('namespace')}:{pod.get('name')}", 'severity': 'warning', 'code': 'pod_not_ready', 'target': pod.get('name'), 'namespace': pod.get('namespace'), 'message': f"Pod 容器未就绪{restart_suffix}"})
     for pvc in resources.get('pvcs') or []:
         if pvc.get('status') != 'Bound':
             findings.append({'fingerprint': f"pvc:{pvc.get('namespace')}:{pvc.get('name')}", 'severity': 'warning', 'code': 'pvc_unbound', 'target': pvc.get('name'), 'namespace': pvc.get('namespace'), 'message': f"PVC 状态为 {pvc.get('status')}"})
     return {
         'status': 'ok',
+        'profile': profile,
         'cluster': {'id': cluster.id, 'name': cluster.name, 'status': cluster.status},
         'summary': {
             'node_count': len(nodes),
@@ -187,6 +250,24 @@ def _log_dimensions(alert=None, target=''):
         'host': str(labels.get('host') or labels.get('instance') or '').strip(),
         'cluster': str(getattr(alert, 'cluster', '') or labels.get('cluster') or '').strip(),
     }
+    if alert and not values.get('service'):
+        alert_text = ' '.join([
+            str(getattr(alert, 'title', '') or ''),
+            str(getattr(alert, 'metric_name', '') or ''),
+            str(labels.get('alertname') or ''),
+            str(labels.get('component') or ''),
+        ]).lower()
+        control_plane_services = [
+            (('apiserver', 'api server'), 'kube-apiserver'),
+            (('etcd',), 'etcd'),
+            (('coredns', 'core dns'), 'coredns'),
+            (('scheduler',), 'kube-scheduler'),
+            (('controller manager', 'controller-manager'), 'kube-controller-manager'),
+        ]
+        for keywords, service_name in control_plane_services:
+            if any(keyword in alert_text for keyword in keywords):
+                values['service'] = service_name
+                break
     if target and not any(values.values()):
         values['target'] = str(target).strip()
     return {key: value for key, value in values.items() if value}
@@ -241,44 +322,110 @@ def _dedupe_logs(logs, limit=20):
     return result
 
 
-def _log_evidence(context, *, alert=None, target='', window_minutes=60):
+def _log_evidence(context, *, alert=None, target='', window_minutes=60, profile='cluster'):
     datasource = context.log_datasource
     dimensions = _log_dimensions(alert=alert, target=target)
-    end_at = (
-        getattr(alert, 'ends_at', None)
-        or getattr(alert, 'last_received_at', None)
-        or getattr(alert, 'starts_at', None)
-        or timezone.now()
-    )
-    initial_minutes = max(15, min(int(window_minutes or 60), 360))
-    attempts = []
-    result = None
-    for minutes in list(dict.fromkeys([initial_minutes, 60])):
+    queries = [_log_query_terms(dimensions)]
+    if profile == 'control_plane' and not dimensions:
+        queries = [f'"{service}"' for service in CONTROL_PLANE_POD_KEYWORDS if service != 'apiserver']
+
+    def run_window(start_at, end_at, *, limit=50):
         payload = {
-            'query': _log_query_terms(dimensions),
-            'start_ms': int((end_at - timedelta(minutes=minutes)).timestamp() * 1000),
+            'query': ' OR '.join(queries),
+            'start_ms': int(start_at.timestamp() * 1000),
             'end_ms': int(end_at.timestamp() * 1000),
-            'limit': 50,
+            'limit': limit,
         }
         if datasource.provider == 'clickhouse':
             config = datasource.config if isinstance(datasource.config, dict) else {}
             payload['collection'] = config.get('default_collection') or 'container-logs'
-        attempts.append({'window_minutes': minutes, 'query': payload['query']})
-        result = _run_query(datasource.provider, _merge_config(datasource.provider, datasource.config), payload)
-        if result.get('logs') or minutes == 60:
-            break
+        config = _merge_config(datasource.provider, datasource.config)
+        combined = {'total': 0, 'logs': []}
+        for query in queries:
+            query_payload = {**payload, 'query': query}
+            result = _run_query(datasource.provider, config, query_payload)
+            combined['total'] += int(result.get('total') or 0)
+            combined['logs'].extend(result.get('logs') or [])
+        return payload, combined
+
+    now = timezone.now()
+    alert_started_at = getattr(alert, 'starts_at', None) if alert else None
+    if alert_started_at:
+        primary_start = alert_started_at - timedelta(minutes=5)
+        expected_end = alert_started_at + timedelta(minutes=2)
+        primary_end = min(now, expected_end) if now >= alert_started_at else expected_end
+        baseline_start = alert_started_at - timedelta(minutes=30)
+        baseline_end = primary_start
+        fallback_minutes = [15, 60]
+    else:
+        primary_end = now
+        primary_minutes = max(5, min(int(window_minutes or 60), 360))
+        primary_start = primary_end - timedelta(minutes=primary_minutes)
+        baseline_start = None
+        baseline_end = None
+        fallback_minutes = [60] if primary_minutes != 60 else []
+
+    attempts = []
+    result = None
+    payload, result = run_window(primary_start, primary_end)
+    attempts.append({
+        'kind': 'primary',
+        'start_at': primary_start.isoformat(),
+        'end_at': primary_end.isoformat(),
+        'query': payload['query'],
+    })
+    if not result.get('logs'):
+        for minutes in fallback_minutes:
+            fallback_start = primary_end - timedelta(minutes=minutes)
+            payload, result = run_window(fallback_start, primary_end)
+            attempts.append({
+                'kind': 'fallback',
+                'window_minutes': minutes,
+                'start_at': fallback_start.isoformat(),
+                'end_at': primary_end.isoformat(),
+                'query': payload['query'],
+            })
+            if result.get('logs') or minutes == 60:
+                break
+
     logs = _dedupe_logs((result or {}).get('logs') or [])
     levels = Counter(item.get('level') or 'unknown' for item in logs)
+    error_count = sum(count for level, count in levels.items() if level in {'warning', 'warn', 'error', 'critical', 'fatal'})
+    baseline = None
+    if baseline_start and baseline_end:
+        baseline_payload, baseline_result = run_window(baseline_start, baseline_end)
+        baseline_logs = _dedupe_logs((baseline_result or {}).get('logs') or [])
+        baseline_levels = Counter(item.get('level') or 'unknown' for item in baseline_logs)
+        baseline_error_count = sum(
+            count for level, count in baseline_levels.items()
+            if level in {'warning', 'warn', 'error', 'critical', 'fatal'}
+        )
+        baseline_total = int((baseline_result or {}).get('total') or len(baseline_logs) or 0)
+        baseline = {
+            'start_at': baseline_start.isoformat(),
+            'end_at': baseline_end.isoformat(),
+            'query': baseline_payload['query'],
+            'total': baseline_total,
+            'sample_count': len(baseline_logs),
+            'error_count': baseline_error_count,
+            'error_rate': (baseline_error_count / max(len(baseline_logs), 1)) if baseline_logs else 0,
+            'level_distribution': dict(baseline_levels),
+        }
     return {
         'status': 'ok',
+        'profile': profile,
         'datasource': {'id': datasource.id, 'name': datasource.name, 'provider': datasource.provider},
         'dimensions': dimensions,
         'field_map': (datasource.config if isinstance(datasource.config, dict) else {}).get('field_map') or {},
         'attempts': attempts,
+        'window': {'start_at': primary_start.isoformat(), 'end_at': primary_end.isoformat()},
         'total': (result or {}).get('total', len(logs)),
         'sample_count': len(logs),
+        'error_count': error_count,
+        'error_rate': (error_count / max(len(logs), 1)) if logs else 0,
         'level_distribution': dict(levels),
         'samples': logs,
+        'baseline': baseline,
     }
 
 
@@ -309,12 +456,14 @@ def _asset_and_topology_evidence(context):
         return [], [], []
     resources = list(
         TaskResource.objects
-        .filter(environment=environment)
+        .filter(business_groups=environment)
+        .distinct()
         .values('id', 'name', 'resource_type', 'status', 'ip_address', 'cluster_id', 'owner')[:100]
     )
     middleware = list(
         MiddlewareAsset.objects
-        .filter(task_resource_environment=environment)
+        .filter(business_groups=environment)
+        .distinct()
         .values('id', 'name', 'asset_type', 'status', 'endpoint', 'version')[:100]
     )
     topology = [
@@ -370,8 +519,25 @@ def collect_observability_evidence(context, profile='inspection', depth='full', 
     if not context:
         raise ValueError('业务上下文不存在或已停用')
     depth = depth if depth in DEPTH_METRIC_LIMIT else 'targeted'
+    profile = INSPECTION_PROFILE_ALIASES.get(str(profile or '').strip(), str(profile or '').strip()) or 'cluster'
+    profile_for_collection = profile if profile in INSPECTION_PROFILE_METRICS else 'cluster'
+    if alert and profile not in INSPECTION_PROFILE_METRICS:
+        alert_text = ' '.join([
+            str(getattr(alert, 'title', '') or ''),
+            str(getattr(alert, 'metric_name', '') or ''),
+            str(getattr(alert, 'resource_type', '') or ''),
+        ]).lower()
+        if any(keyword in alert_text for keyword in ['apiserver', 'api server', 'etcd', 'coredns', 'scheduler', 'controller manager']):
+            profile_for_collection = 'control_plane'
+        elif str(getattr(alert, 'resource_type', '') or '').lower() == 'node':
+            profile_for_collection = 'node'
+        elif getattr(alert, 'service', '') and not getattr(alert, 'resource', ''):
+            profile_for_collection = 'service'
+        elif getattr(alert, 'resource', '') or any(keyword in alert_text for keyword in ['pod', 'container', 'workload', 'deployment']):
+            profile_for_collection = 'workload'
     evidence = {
         'profile': profile,
+        'collection_profile': profile_for_collection,
         'depth': depth,
         'context': context_payload(context),
         'stage_status': {},
@@ -391,7 +557,8 @@ def collect_observability_evidence(context, profile='inspection', depth='full', 
     if context.metric_datasource_id and context.metric_datasource.is_enabled:
         start_time = timezone.now() - timedelta(minutes=max(15, min(int(window_minutes or 60), 360)))
         end_time = timezone.now()
-        definitions = METRIC_MATRIX[:DEPTH_METRIC_LIMIT[depth]]
+        allowed_metric_codes = INSPECTION_PROFILE_METRICS.get(profile_for_collection) or INSPECTION_PROFILE_METRICS['cluster']
+        definitions = [item for item in METRIC_MATRIX if item[0] in allowed_metric_codes][:DEPTH_METRIC_LIMIT[depth]]
         with ThreadPoolExecutor(max_workers=min(6, len(definitions))) as executor:
             futures = {executor.submit(_query_metric, context, item, start_time, end_time, 60): item for item in definitions}
             for future in as_completed(futures):
@@ -411,9 +578,13 @@ def collect_observability_evidence(context, profile='inspection', depth='full', 
         evidence['source_coverage']['metrics'] = False
         evidence['diagnostics'].append({'code': 'metric_datasource_unavailable', 'message': '业务上下文未绑定可用的 Prometheus'})
 
-    if context.k8s_cluster_id:
+    if profile_for_collection == 'server':
+        evidence['stage_status']['k8s'] = 'skipped'
+        evidence['source_coverage']['k8s'] = False
+        evidence['k8s'] = {'status': 'skipped', 'profile': 'server', 'summary': {}}
+    elif context.k8s_cluster_id:
         try:
-            k8s = _k8s_evidence(context, depth, target=target)
+            k8s = _k8s_evidence(context, depth, target=target, profile=profile_for_collection)
             evidence['k8s'] = k8s
             evidence['k8s_findings'] = k8s['findings']
             if depth in {'targeted', 'full'} and k8s['findings']:
@@ -437,6 +608,7 @@ def collect_observability_evidence(context, profile='inspection', depth='full', 
                 alert=alert,
                 target=target,
                 window_minutes=window_minutes,
+                profile=profile,
             )
             evidence['logs'] = logs
             evidence['log_findings'] = _log_findings(logs.get('samples') or [])
@@ -500,22 +672,64 @@ def inspection_result(evidence):
         unique.setdefault(item.get('fingerprint') or str(item), item)
     findings = list(unique.values())
     deductions = {'critical': 20, 'warning': 8, 'info': 2}
-    score = max(0, 100 - sum(deductions.get(item.get('severity'), 2) for item in findings))
+    deduction_groups = {}
+    for item in findings:
+        group_key = (
+            item.get('code') or 'unknown',
+            item.get('namespace') or '',
+            item.get('target') or item.get('fingerprint') or '',
+        )
+        existing = deduction_groups.get(group_key)
+        if not existing or deductions.get(item.get('severity'), 2) > deductions.get(existing.get('severity'), 2):
+            deduction_groups[group_key] = item
+    score_deductions = [
+        {
+            'code': item.get('code'),
+            'target': item.get('target'),
+            'namespace': item.get('namespace'),
+            'severity': item.get('severity'),
+            'points': deductions.get(item.get('severity'), 2),
+        }
+        for item in deduction_groups.values()
+    ]
+    score = max(0, 100 - sum(item['points'] for item in score_deductions))
+    profile = evidence.get('collection_profile') or evidence.get('profile') or 'cluster'
     summary = (evidence.get('k8s') or {}).get('summary') or {}
+    metric_summary = {
+        item.get('code'): item.get('latest')
+        for item in evidence.get('metrics') or []
+        if item.get('status') == 'ok' and item.get('latest') is not None
+    }
     missing = [item.get('message') for item in evidence.get('diagnostics') or []]
-    return {
-        'status': 'completed' if not missing else 'partial',
-        'health_score': score,
-        'conclusion': '集群运行正常' if score >= 90 else ('集群存在需要关注的问题' if score >= 75 else '集群存在明显异常'),
-        'cluster_summary': summary,
-        'findings': findings,
-        'evidence': evidence,
-        'suggestions': ['优先处理严重问题并复核关联事件和日志'] if findings else ['保持当前监控并按需复查'],
-        'missing_evidence': missing,
-        'links': [
+    if profile == 'server':
+        conclusion = '服务器运行正常' if score >= 90 else ('服务器存在需要关注的问题' if score >= 75 else '服务器存在明显异常')
+        suggestions = ['优先处理服务器资源异常，并复核关联日志和资产信息'] if findings else ['保持当前监控并按计划复查服务器资源']
+        links = [
+            {'title': '服务器监控', 'path': '/observability/dashboards'},
+            {'title': '告警中心', 'path': '/observability/alerts'},
+            {'title': '日志检索', 'path': '/observability/logs'},
+            {'title': '资产登记', 'path': '/cmdb/assets'},
+        ]
+    else:
+        conclusion = '集群运行正常' if score >= 90 else ('集群存在需要关注的问题' if score >= 75 else '集群存在明显异常')
+        suggestions = ['优先处理严重问题并复核关联事件和日志'] if findings else ['保持当前监控并按需复查']
+        links = [
             {'title': 'K8s 监控', 'path': '/observability/dashboards'},
             {'title': '告警中心', 'path': '/observability/alerts'},
             {'title': '日志检索', 'path': '/observability/logs'},
             {'title': '资产登记', 'path': '/cmdb/assets'},
-        ],
+        ]
+    return {
+        'status': 'completed' if not missing else 'partial',
+        'profile': profile,
+        'health_score': score,
+        'conclusion': conclusion,
+        'cluster_summary': summary,
+        'server_summary': metric_summary,
+        'findings': findings,
+        'score_deductions': score_deductions,
+        'evidence': evidence,
+        'suggestions': suggestions,
+        'missing_evidence': missing,
+        'links': links,
     }

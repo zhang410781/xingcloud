@@ -19,6 +19,7 @@ def _clean(value):
 
 
 def _serialize_asset(asset):
+    groups = list(asset.business_groups.order_by('sort_order', 'name', 'id'))
     return {
         'id': asset.id,
         'name': asset.name,
@@ -26,6 +27,8 @@ def _serialize_asset(asset):
         'asset_type_label': asset.get_asset_type_display(),
         'task_resource_environment_id': asset.task_resource_environment_id,
         'task_resource_environment_name': getattr(asset.task_resource_environment, 'name', ''),
+        'business_group_ids': [item.id for item in groups],
+        'business_group_names': [item.name for item in groups],
         'environment': asset.environment,
         'endpoint': asset.endpoint,
         'username': asset.username,
@@ -43,9 +46,9 @@ def _serialize_asset(asset):
 
 
 def _build_overview(task_resource_environment_id=None):
-    queryset = MiddlewareAsset.objects.select_related('task_resource_environment')
+    queryset = MiddlewareAsset.objects.select_related('task_resource_environment').prefetch_related('business_groups')
     if task_resource_environment_id:
-        queryset = queryset.filter(task_resource_environment_id=task_resource_environment_id)
+        queryset = queryset.filter(business_groups__id=task_resource_environment_id).distinct()
     assets = list(queryset)
     by_type = {asset_type: 0 for asset_type in ASSET_TYPES}
     by_status = {status: 0 for status in ASSET_STATUSES}
@@ -66,7 +69,7 @@ def _build_overview(task_resource_environment_id=None):
 def _validate_payload(payload, *, partial=False):
     payload = payload if isinstance(payload, dict) else {}
     cleaned = {}
-    required_fields = ('name', 'asset_type', 'environment', 'endpoint')
+    required_fields = ('name', 'asset_type', 'endpoint')
     for field in required_fields:
         if field in payload or not partial:
             cleaned[field] = _clean(payload.get(field))
@@ -99,10 +102,32 @@ def _validate_payload(payload, *, partial=False):
             cleaned['task_resource_environment_id'] = int(payload.get('task_resource_environment_id'))
         except (TypeError, ValueError):
             return None, 'task_resource_environment_id must be an integer.'
+    if 'business_group_ids' in payload:
+        raw_ids = payload.get('business_group_ids') or []
+        if not isinstance(raw_ids, list):
+            return None, 'business_group_ids must be an array.'
+        try:
+            cleaned['business_group_ids'] = list(dict.fromkeys(int(item) for item in raw_ids if item not in ('', None)))
+        except (TypeError, ValueError):
+            return None, 'business_group_ids must contain integers.'
     return cleaned, ''
 
 
 def _validate_asset_environment(cleaned):
+    group_ids = cleaned.get('business_group_ids') or []
+    if not group_ids and cleaned.get('task_resource_environment_id'):
+        group_ids = [cleaned['task_resource_environment_id']]
+    groups = list(TaskResourceGroup.objects.filter(
+        pk__in=group_ids,
+        group_type=TaskResourceGroup.GROUP_ENVIRONMENT,
+    ).order_by('sort_order', 'name', 'id'))
+    if not groups or len(groups) != len(set(group_ids)):
+        return None, '请至少选择一个有效的一级资产业务分组。'
+    cleaned['business_group_ids'] = [item.id for item in groups]
+    cleaned['task_resource_environment_id'] = groups[0].id
+    cleaned['environment'] = 'production'
+    return groups, ''
+
     environment_id = cleaned.get('task_resource_environment_id')
     if not environment_id:
         matches = list(TaskResourceGroup.objects.filter(
@@ -164,6 +189,7 @@ def middleware_action(request):
         if error:
             return Response({'detail': error}, status=400)
         password = cleaned.pop('password', '')
+        business_group_ids = cleaned.pop('business_group_ids', [])
         try:
             with transaction.atomic():
                 asset = MiddlewareAsset.objects.create(
@@ -172,17 +198,18 @@ def middleware_action(request):
                     created_by=actor,
                     updated_by=actor,
                 )
+                asset.business_groups.set(business_group_ids)
         except IntegrityError:
             return Response({'detail': '同类型、同环境下的资产名称已存在。'}, status=400)
         return Response({
             'success': True,
             'message': '中间件资产已登记。',
             'asset': _serialize_asset(asset),
-            'data': _build_overview(asset.task_resource_environment_id),
+            'data': _build_overview(),
         }, status=201)
 
     try:
-        asset = MiddlewareAsset.objects.select_related('task_resource_environment').get(pk=target_id)
+        asset = MiddlewareAsset.objects.select_related('task_resource_environment').prefetch_related('business_groups').get(pk=target_id)
     except (MiddlewareAsset.DoesNotExist, TypeError, ValueError):
         return Response({'detail': 'Middleware asset not found.'}, status=404)
 
@@ -191,7 +218,7 @@ def middleware_action(request):
         return Response({
             'success': True,
             'message': '中间件资产已删除。',
-            'data': _build_overview(asset.task_resource_environment_id),
+            'data': _build_overview(),
         })
 
     cleaned, error = _validate_payload(payload, partial=True)
@@ -199,21 +226,24 @@ def middleware_action(request):
         return Response({'detail': error}, status=400)
     if not cleaned:
         return Response({'detail': 'No middleware asset fields to update.'}, status=400)
-    if 'task_resource_environment_id' in cleaned:
+    if 'task_resource_environment_id' in cleaned or 'business_group_ids' in cleaned:
         _, error = _validate_asset_environment(cleaned)
         if error:
             return Response({'detail': error}, status=400)
+    business_group_ids = cleaned.pop('business_group_ids', None)
     for field, value in cleaned.items():
         setattr(asset, field, value)
     asset.updated_by = actor
     try:
         with transaction.atomic():
             asset.save()
+            if business_group_ids is not None:
+                asset.business_groups.set(business_group_ids)
     except IntegrityError:
         return Response({'detail': '同类型、同环境下的资产名称已存在。'}, status=400)
     return Response({
         'success': True,
         'message': '中间件资产已更新。',
         'asset': _serialize_asset(asset),
-        'data': _build_overview(asset.task_resource_environment_id),
+        'data': _build_overview(),
     })

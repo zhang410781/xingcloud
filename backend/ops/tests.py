@@ -2008,7 +2008,7 @@ class MiddlewareViewsTests(TestCase):
                 'payload': {
                     'name': 'production-cache',
                     'asset_type': 'redis',
-                    'environment': 'prod',
+                    'business_group_ids': [self.asset_environment.id],
                     'endpoint': 'redis.example.internal:6379',
                     'version': '7.2',
                 },
@@ -2021,6 +2021,7 @@ class MiddlewareViewsTests(TestCase):
         self.assertEqual(asset.status, MiddlewareAsset.STATUS_UNKNOWN)
         item = response.json()['asset']
         self.assertEqual(item['endpoint'], 'redis.example.internal:6379')
+        self.assertEqual(item['business_group_ids'], [self.asset_environment.id])
         self.assertNotIn('qps', item)
         self.assertNotIn('memory_usage', item)
 
@@ -2028,14 +2029,16 @@ class MiddlewareViewsTests(TestCase):
         other_environment = TaskResourceGroup.objects.create(
             name='测试资产', code='test', group_type=TaskResourceGroup.GROUP_ENVIRONMENT,
         )
-        MiddlewareAsset.objects.create(
+        prod_asset = MiddlewareAsset.objects.create(
             name='prod-cache', asset_type='redis', environment='prod', endpoint='redis-prod:6379',
             task_resource_environment=self.asset_environment,
         )
-        MiddlewareAsset.objects.create(
+        prod_asset.business_groups.add(self.asset_environment)
+        test_asset = MiddlewareAsset.objects.create(
             name='test-cache', asset_type='redis', environment='test', endpoint='redis-test:6379',
             task_resource_environment=other_environment,
         )
+        test_asset.business_groups.add(other_environment)
 
         response = self.client.get('/api/middleware/overview/', {
             'task_resource_environment_id': self.asset_environment.id,
@@ -2043,6 +2046,27 @@ class MiddlewareViewsTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual([item['name'] for item in response.json()['assets']], ['prod-cache'])
+
+    def test_middleware_asset_can_be_shared_by_multiple_business_groups(self):
+        shared_group = TaskResourceGroup.objects.create(
+            name='共享业务', code='shared-business', group_type=TaskResourceGroup.GROUP_ENVIRONMENT,
+        )
+        response = self.client.post('/api/middleware/action/', {
+            'action': 'create_asset',
+            'payload': {
+                'name': 'shared-redis',
+                'asset_type': 'redis',
+                'business_group_ids': [self.asset_environment.id, shared_group.id],
+                'endpoint': 'shared-redis:6379',
+            },
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201, response.json())
+        asset = MiddlewareAsset.objects.get()
+        self.assertEqual(
+            set(asset.business_groups.values_list('id', flat=True)),
+            {self.asset_environment.id, shared_group.id},
+        )
 
     def test_update_asset(self):
         asset = MiddlewareAsset.objects.create(
@@ -2083,7 +2107,7 @@ class MiddlewareViewsTests(TestCase):
                 'payload': {
                     'name': 'orders-db',
                     'asset_type': 'database',
-                    'environment': 'prod',
+                    'business_group_ids': [self.asset_environment.id],
                     'endpoint': 'mysql://db.internal:3306/orders',
                     'username': 'ops_reader',
                     'password': 'secret-for-test',
@@ -2104,7 +2128,7 @@ class MiddlewareViewsTests(TestCase):
             '/api/middleware/action/',
             {
                 'action': 'create_asset',
-                'payload': {'name': 'cache', 'asset_type': 'redis', 'environment': 'prod'},
+                'payload': {'name': 'cache', 'asset_type': 'redis', 'business_group_ids': [self.asset_environment.id]},
             },
             format='json',
         )
@@ -2115,7 +2139,7 @@ class MiddlewareViewsTests(TestCase):
                 'payload': {
                     'name': 'rabbit',
                     'asset_type': 'rabbitmq',
-                    'environment': 'prod',
+                    'business_group_ids': [self.asset_environment.id],
                     'endpoint': 'rabbit:5672',
                 },
             },

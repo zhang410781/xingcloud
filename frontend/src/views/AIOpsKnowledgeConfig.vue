@@ -5,7 +5,7 @@
         <div class="hero-title-row">
           <span class="hero-icon"><el-icon><Setting /></el-icon></span>
           <h2>业务上下文</h2>
-          <p class="page-inline-desc">一次绑定指标、日志、告警、K8S 与资产范围，作为全平台统一数据边界</p>
+          <p class="page-inline-desc">从已登记的 CMDB 资产分组和数据源组装统一业务上下文</p>
         </div>
       </div>
     </section>
@@ -14,7 +14,7 @@
       <div class="section-toolbar">
         <div class="toolbar-head">
           <div class="toolbar-title">业务上下文配置</div>
-          <div class="toolbar-desc">一个上下文固定绑定一个 K8S 集群、一个 Prometheus 和一个日志源。</div>
+          <div class="toolbar-desc">先登记 CMDB 与数据源，再选择资产分组、Prometheus 和日志源。</div>
         </div>
         <div class="toolbar-actions">
           <el-button size="small" :loading="loading" @click="loadData">
@@ -68,9 +68,9 @@
     <el-dialog v-model="dialog.visible" :title="dialog.editingId ? '编辑业务上下文' : '新建业务上下文'" width="860px" append-to-body destroy-on-close>
       <el-steps :active="wizardStep" finish-status="success" align-center class="context-steps">
         <el-step title="基本信息" />
-        <el-step title="K8S 与指标" />
-        <el-step title="日志与告警" />
-        <el-step title="资产与确认" />
+        <el-step title="CMDB 资产" />
+        <el-step title="数据源与告警" />
+        <el-step title="确认" />
       </el-steps>
       <el-form ref="formRef" :model="form" :rules="rules" label-width="128px">
         <div v-show="wizardStep === 0" class="form-group-card">
@@ -81,44 +81,31 @@
           <el-form-item label="显示名称" prop="name"><el-input v-model.trim="form.name" placeholder="例如：智能运维平台生产环境" /></el-form-item>
           <el-form-item label="唯一编码" prop="code"><el-input v-model.trim="form.code" :disabled="Boolean(dialog.editingId)" placeholder="例如：xingcloud-prod"><template #append><el-button :loading="discovering" @click="discoverBindings">发现绑定</el-button></template></el-input></el-form-item>
           <el-form-item label="业务线" prop="business_line"><el-input v-model.trim="form.business_line" placeholder="例如：智能运维平台" /></el-form-item>
-          <el-form-item label="环境类型"><el-segmented v-model="form.environment_type" :options="environmentTypeOptions" /></el-form-item>
           <el-form-item label="负责人"><el-input v-model.trim="form.owner" /></el-form-item>
           <el-form-item label="描述"><el-input v-model.trim="form.description" maxlength="255" show-word-limit /></el-form-item>
         </div>
         <div v-show="wizardStep === 1" class="form-group-card">
-          <div class="form-group-card__head"><strong>K8S 与指标</strong><span>一个上下文只允许一个集群和一个 Prometheus。</span></div>
-          <el-form-item label="K8S 集群" prop="k8s_cluster"><el-select v-model="form.k8s_cluster" filterable clearable><el-option v-for="item in catalog.k8s_clusters" :key="item.id" :label="k8sClusterLabel(item)" :value="item.id" /></el-select></el-form-item>
-          <el-form-item label="指标数据源">
-            <el-select v-model="form.metric_datasource" filterable clearable placeholder="选择当前环境唯一的 Prometheus 指标数据源">
-              <el-option v-for="item in catalog.metric_datasources" :key="item.id" :label="datasourceLabel(item)" :value="item.id" :disabled="item.is_enabled === false" />
+          <div class="form-group-card__head"><strong>选择 CMDB 一级资产业务分组</strong><span>K8S、服务器和中间件范围从该分组自动读取，不重复配置。</span></div>
+          <el-form-item label="资产业务分组">
+            <el-select v-model="form.task_resource_environment" filterable clearable placeholder="选择已在资产管理中创建的一级业务分组">
+              <el-option v-for="item in catalog.task_resource_environments" :key="item.id" :label="taskResourceEnvironmentLabel(item)" :value="item.id" />
             </el-select>
-            <div class="field-hint inline">保存后指标源环境编码自动同步为当前业务上下文编码。</div>
           </el-form-item>
-          <div v-if="selectedK8sCluster" class="namespace-config">
-            <div class="namespace-config-title">图谱展示命名空间</div>
-            <div class="namespace-row">
-              <div class="namespace-cluster">
-                <strong>{{ selectedK8sCluster.name }}</strong>
-                <span>展示在图谱拓扑图上的命名空间，不限制智能助手查询</span>
-              </div>
-              <el-select v-model="form.k8s_namespaces.namespaces" multiple filterable allow-create clearable><el-option v-for="namespace in namespaceOptionsForCluster(selectedK8sCluster)" :key="namespace" :label="namespace" :value="namespace" /></el-select>
-            </div>
-          </div>
+          <el-descriptions v-if="selectedAssetGroup" :column="2" border size="small">
+            <el-descriptions-item label="CMDB 资产">{{ selectedAssetGroup.resource_count || 0 }} 项</el-descriptions-item>
+            <el-descriptions-item label="K8S 集群">{{ (selectedAssetGroup.k8s_clusters || []).join('、') || '未登记' }}</el-descriptions-item>
+            <el-descriptions-item label="中间件" :span="2">{{ (selectedAssetGroup.middleware_assets || []).join('、') || '未登记' }}</el-descriptions-item>
+          </el-descriptions>
         </div>
         <div v-show="wizardStep === 2" class="form-group-card">
-          <div class="form-group-card__head"><strong>日志与告警</strong><span>告警环境固定使用业务上下文编码，不再单独维护别名。</span></div>
+          <div class="form-group-card__head"><strong>数据源与告警</strong><span>数据源来自可观测性数据源目录，允许多个业务上下文复用。</span></div>
+          <el-form-item label="指标数据源"><el-select v-model="form.metric_datasource" filterable clearable><el-option v-for="item in catalog.metric_datasources" :key="item.id" :label="datasourceLabel(item)" :value="item.id" :disabled="item.is_enabled === false" /></el-select></el-form-item>
           <el-form-item label="日志数据源"><el-select v-model="form.log_datasource" filterable clearable><el-option v-for="item in catalog.log_datasources" :key="item.id" :label="datasourceLabel(item)" :value="item.id" :disabled="item.is_enabled === false" /></el-select></el-form-item>
           <el-form-item label="告警环境"><el-input :model-value="form.code" disabled /><div class="field-hint inline">Prometheus 告警的 environment 必须完全等于此编码。</div></el-form-item>
         </div>
         <div v-show="wizardStep === 3" class="form-group-card">
-          <div class="form-group-card__head"><strong>资产与确认</strong><span>绑定资产登记一级环境，并检查上下文完整性。</span></div>
-          <div class="field-hint">资产登记中的一级业务用于 AIOps 生成巡检、脚本执行等任务时确定可选目标资源范围。</div>
-          <el-form-item label="资产登记">
-            <el-select v-model="form.task_resource_environment" filterable clearable placeholder="选择资产登记中的一级业务">
-              <el-option v-for="item in catalog.task_resource_environments" :key="item.id" :label="taskResourceEnvironmentLabel(item)" :value="item.id" />
-            </el-select>
-          </el-form-item>
-          <el-descriptions :column="2" border size="small"><el-descriptions-item label="业务上下文">{{ form.name || '-' }}</el-descriptions-item><el-descriptions-item label="环境编码">{{ form.code || '-' }}</el-descriptions-item><el-descriptions-item label="K8S">{{ selectedK8sCluster?.name || '未绑定' }}</el-descriptions-item><el-descriptions-item label="Prometheus">{{ selectedMetricName }}</el-descriptions-item><el-descriptions-item label="日志源">{{ selectedLogName }}</el-descriptions-item><el-descriptions-item label="资产范围">{{ selectedAssetName }}</el-descriptions-item></el-descriptions>
+          <div class="form-group-card__head"><strong>确认业务上下文</strong><span>保存后监控、日志、告警、巡检、知识图谱和智能助手统一继承。</span></div>
+          <el-descriptions :column="2" border size="small"><el-descriptions-item label="业务上下文">{{ form.name || '-' }}</el-descriptions-item><el-descriptions-item label="环境编码">{{ form.code || '-' }}</el-descriptions-item><el-descriptions-item label="资产业务分组">{{ selectedAssetName }}</el-descriptions-item><el-descriptions-item label="K8S">{{ (selectedAssetGroup?.k8s_clusters || []).join('、') || '未登记' }}</el-descriptions-item><el-descriptions-item label="Prometheus">{{ selectedMetricName }}</el-descriptions-item><el-descriptions-item label="日志源">{{ selectedLogName }}</el-descriptions-item></el-descriptions>
         </div>
         <el-form-item label="启用">
           <el-switch v-model="form.is_enabled" />
@@ -216,8 +203,7 @@ const rules = {
   business_line: [{ required: true, message: '请填写业务线', trigger: 'blur' }],
 }
 
-const environmentTypeOptions = [{ label: '生产', value: 'prod' }, { label: '测试', value: 'test' }, { label: '开发', value: 'dev' }]
-const selectedK8sCluster = computed(() => catalog.k8s_clusters.find(item => Number(item.id) === Number(form.k8s_cluster)) || null)
+const selectedAssetGroup = computed(() => catalog.task_resource_environments.find(item => Number(item.id) === Number(form.task_resource_environment)) || null)
 const selectedMetricName = computed(() => catalog.metric_datasources.find(item => Number(item.id) === Number(form.metric_datasource))?.name || '未绑定')
 const selectedLogName = computed(() => catalog.log_datasources.find(item => Number(item.id) === Number(form.log_datasource))?.name || '未绑定')
 const selectedAssetName = computed(() => catalog.task_resource_environments.find(item => Number(item.id) === Number(form.task_resource_environment))?.name || '未绑定')
@@ -241,7 +227,7 @@ function resetForm(row = null) {
 }
 
 function hasAnyBinding() {
-  return Boolean(form.metric_datasource || form.log_datasource || form.k8s_cluster || form.task_resource_environment)
+  return Boolean(form.metric_datasource && form.log_datasource && form.task_resource_environment)
 }
 
 function relationId(value) {
@@ -278,25 +264,12 @@ function taskResourceEnvironmentLabel(item) {
 }
 
 function bindingOwnerSuffix(item) {
-  const owner = item?.bound_context
-  return owner ? ` / 已绑定：${owner.name}（${owner.code}）` : ' / 未绑定'
+  const owners = item?.bound_contexts || (item?.bound_context ? [item.bound_context] : [])
+  return owners.length ? ` / 使用于：${owners.map(owner => owner.name).join('、')}` : ' / 暂未使用'
 }
 
 function bindingTransferConflicts() {
-  const currentId = Number(dialog.editingId || 0)
-  const selections = [
-    ['指标数据源', catalog.metric_datasources, form.metric_datasource],
-    ['日志数据源', catalog.log_datasources, form.log_datasource],
-    ['K8S 集群', catalog.k8s_clusters, form.k8s_cluster],
-    ['资产环境', catalog.task_resource_environments, form.task_resource_environment],
-  ]
-  return selections.flatMap(([label, items, selectedId]) => {
-    if (!selectedId) return []
-    const item = items.find(candidate => Number(candidate.id) === Number(selectedId))
-    const owner = item?.bound_context
-    if (!owner || Number(owner.id) === currentId) return []
-    return [{ label, item, owner }]
-  })
+  return []
 }
 
 function observabilityNames(row) {
@@ -310,10 +283,8 @@ function observabilityNames(row) {
 }
 
 function infrastructureNames(row) {
-  const k8sMap = new Map(catalog.k8s_clusters.map(item => [Number(item.id), `K8S: ${item.name}`]))
   const resourceEnvMap = new Map(catalog.task_resource_environments.map(item => [Number(item.id), `资产登记: ${item.name}`]))
   return [
-    ...(row.k8s_cluster ? [k8sMap.get(Number(row.k8s_cluster)) || `K8S ID ${row.k8s_cluster}`] : []),
     ...(row.task_resource_environment ? [resourceEnvMap.get(Number(row.task_resource_environment)) || `资产登记 ID ${row.task_resource_environment}`] : []),
   ]
 }
@@ -325,7 +296,6 @@ async function discoverBindings() {
     const result = await discoverAIOpsKnowledgeEnvironmentBindings(form.code)
     if (result.metric_datasources?.length === 1) form.metric_datasource = result.metric_datasources[0].id
     if (result.log_datasources?.length === 1) form.log_datasource = result.log_datasources[0].id
-    if (result.k8s_clusters?.length === 1) form.k8s_cluster = result.k8s_clusters[0].id
     if (result.asset_environments?.length === 1) form.task_resource_environment = result.asset_environments[0].id
     ElMessage.success(result.unambiguous ? '已填入唯一匹配的绑定' : '已发现候选项，请确认后继续')
   } finally { discovering.value = false }
@@ -366,7 +336,7 @@ function openDialog(row = null) {
 async function submitForm() {
   await formRef.value?.validate()
   if (!hasAnyBinding()) {
-    ElMessage.warning('请至少选择一个指标、日志、告警、K8S 集群或资产登记来源')
+    ElMessage.warning('请选择 CMDB 一级资产业务分组、指标数据源和日志数据源')
     return
   }
   const transferConflicts = bindingTransferConflicts()
@@ -386,15 +356,12 @@ async function submitForm() {
       name: form.name,
       code: form.code,
       business_line: form.business_line,
-      environment_type: form.environment_type,
       owner: form.owner,
       description: form.description,
       metric_datasource: form.metric_datasource || null,
       log_datasource: form.log_datasource || null,
-      k8s_cluster: form.k8s_cluster || null,
-      k8s_namespaces: form.k8s_namespaces,
       task_resource_environment: form.task_resource_environment || null,
-      transfer_bindings: transferConflicts.length > 0,
+      environment_type: 'prod',
       is_default: form.is_default,
       is_enabled: form.is_enabled,
     }
@@ -432,9 +399,6 @@ async function removeEnvironment(row) {
 
 onMounted(loadData)
 
-watch(() => form.k8s_cluster, () => {
-  if (!Array.isArray(form.k8s_namespaces.namespaces)) form.k8s_namespaces.namespaces = []
-})
 </script>
 
 <style scoped>

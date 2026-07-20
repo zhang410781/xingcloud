@@ -9,7 +9,7 @@
         </div>
       </div>
       <div class="hero-actions">
-        <el-button v-if="canManage" type="primary" :icon="Plus" :disabled="!currentContext?.task_resource_environment" @click="openRegistration()">登记资产</el-button>
+        <el-button v-if="canManage" type="primary" :icon="Plus" @click="openRegistration()">登记资产</el-button>
         <el-button :icon="Refresh" :loading="loading" @click="loadOverview">刷新</el-button>
       </div>
     </section>
@@ -56,7 +56,9 @@
         <el-table-column prop="asset_type_label" label="类型" width="130">
           <template #default="{ row }"><el-tag effect="plain">{{ row.asset_type_label || typeLabel(row.asset_type) }}</el-tag></template>
         </el-table-column>
-        <el-table-column prop="environment" label="环境" width="120" show-overflow-tooltip />
+        <el-table-column label="一级资产业务分组" min-width="170" show-overflow-tooltip>
+          <template #default="{ row }">{{ (row.business_group_names || []).join('、') || '-' }}</template>
+        </el-table-column>
         <el-table-column prop="endpoint" label="访问地址" min-width="230" show-overflow-tooltip>
           <template #default="{ row }"><code>{{ row.endpoint }}</code></template>
         </el-table-column>
@@ -89,7 +91,7 @@
         :description="activeType ? `暂无已登记的 ${typeLabel(activeType)} 资产` : '暂无已登记的中间件资产'"
         class="asset-empty"
       >
-        <el-button v-if="canManage" type="primary" :icon="Plus" :disabled="!currentContext?.task_resource_environment" @click="openRegistration(null, activeType)">登记第一条资产</el-button>
+        <el-button v-if="canManage" type="primary" :icon="Plus" @click="openRegistration(null, activeType)">登记第一条资产</el-button>
       </el-empty>
     </section>
 
@@ -103,8 +105,10 @@
         <el-form-item label="资产名称" required>
           <el-input v-model="registrationForm.name" placeholder="请输入实际资产或集群名称" maxlength="128" />
         </el-form-item>
-        <el-form-item label="所属环境" required>
-          <div class="bound-environment-value">{{ currentContext?.task_resource_environment_name || '当前业务上下文未绑定资产分组' }}</div>
+        <el-form-item label="业务分组" required>
+          <el-select v-model="registrationForm.business_group_ids" multiple filterable placeholder="选择一个或多个一级资产业务分组" style="width:100%">
+            <el-option v-for="item in businessGroups" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
         </el-form-item>
         <el-form-item label="访问地址" required>
           <el-input v-model="registrationForm.endpoint" placeholder="请输入实际连接地址或管理地址" maxlength="255" />
@@ -137,7 +141,7 @@ import { storeToRefs } from 'pinia'
 import { ElMessage } from 'element-plus'
 import { Coin, Connection, Grid, Plus, Refresh } from '@element-plus/icons-vue'
 
-import { getMiddlewareOverview, runMiddlewareAction } from '@/api/modules/ops'
+import { getMiddlewareOverview, getTaskResourceTree, runMiddlewareAction } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
 import { useBusinessContextStore } from '@/stores/businessContext'
 
@@ -151,6 +155,7 @@ const registrationVisible = ref(false)
 const registrationSubmitting = ref(false)
 const editingId = ref(null)
 const registrationForm = reactive(emptyForm())
+const businessGroups = ref([])
 
 const typeCards = [
   { key: 'redis', label: 'Redis', description: '缓存与会话存储', icon: Grid },
@@ -166,7 +171,7 @@ const filteredAssets = computed(() => activeType.value
   : assets.value)
 
 function emptyForm(assetType = 'redis') {
-  return { asset_type: assetType, name: '', environment: '', endpoint: '', username: '', password: '', version: '', description: '' }
+  return { asset_type: assetType, name: '', business_group_ids: [], endpoint: '', username: '', password: '', version: '', description: '' }
 }
 
 function typeCount(type) {
@@ -195,10 +200,7 @@ function toggleType(type) {
 async function loadOverview() {
   loading.value = true
   try {
-    const environmentId = currentContext.value?.task_resource_environment
-    overview.value = environmentId
-      ? await getMiddlewareOverview({ task_resource_environment_id: environmentId })
-      : { assets: [], summary: { total: 0, by_type: {}, by_status: {} } }
+    overview.value = await getMiddlewareOverview()
   } finally {
     loading.value = false
   }
@@ -209,7 +211,7 @@ function openRegistration(row = null, preferredType = '') {
   Object.assign(registrationForm, row ? {
     asset_type: row.asset_type,
     name: row.name,
-    environment: row.environment,
+    business_group_ids: [...(row.business_group_ids || [])],
     endpoint: row.endpoint,
     username: row.username || '',
     password: '',
@@ -220,13 +222,18 @@ function openRegistration(row = null, preferredType = '') {
 }
 
 async function submitRegistration() {
-  const payload = Object.fromEntries(
-    Object.entries(registrationForm).map(([key, value]) => [key, String(value || '').trim()]),
-  )
-  payload.environment = currentContext.value?.code || ''
-  payload.task_resource_environment_id = currentContext.value?.task_resource_environment || ''
-  if (!payload.asset_type || !payload.name || !payload.environment || !payload.endpoint || !payload.task_resource_environment_id) {
-    return ElMessage.warning('请先配置业务上下文资产分组，并完整填写资产类型、名称和访问地址')
+  const payload = {
+    asset_type: String(registrationForm.asset_type || '').trim(),
+    name: String(registrationForm.name || '').trim(),
+    business_group_ids: [...registrationForm.business_group_ids],
+    endpoint: String(registrationForm.endpoint || '').trim(),
+    username: String(registrationForm.username || '').trim(),
+    password: String(registrationForm.password || ''),
+    version: String(registrationForm.version || '').trim(),
+    description: String(registrationForm.description || '').trim(),
+  }
+  if (!payload.asset_type || !payload.name || !payload.endpoint || !payload.business_group_ids.length) {
+    return ElMessage.warning('请完整填写资产类型、名称、访问地址，并至少选择一个一级资产业务分组')
   }
   registrationSubmitting.value = true
   try {
@@ -254,6 +261,7 @@ watch(currentContextId, loadOverview)
 
 onMounted(async () => {
   await businessContextStore.loadContexts()
+  businessGroups.value = (await getTaskResourceTree()) || []
   await loadOverview()
 })
 </script>
