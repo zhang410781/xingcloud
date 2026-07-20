@@ -287,6 +287,178 @@ def _format_detailed_report(schedule, result):
     return title, result['markdown']
 
 
+def _report_status_badge(status):
+    value = str(status or '').lower()
+    if value in {'critical', 'failed', 'error'}:
+        return '❌ 异常'
+    if value in {'warning', 'warn'}:
+        return '⚠️ 警告'
+    if value in {'unknown', 'unavailable', 'partial'}:
+        return '⚪ 数据缺失'
+    return '✅ 正常'
+
+
+def _report_table(headers, rows):
+    """Render small, Feishu-compatible Markdown tables from collected evidence."""
+    def clean(value):
+        return str(value if value not in (None, '') else '-').replace('|', '／').replace('\n', ' ')
+
+    if not rows:
+        return ''
+    header = '| ' + ' | '.join(headers) + ' |'
+    align = '| ' + ' | '.join(':---' for _ in headers) + ' |'
+    body = ['| ' + ' | '.join(clean(value) for value in row) + ' |' for row in rows]
+    return '\n'.join([header, align, *body])
+
+
+def _format_skill_style_report(schedule, result):
+    """Format scheduled inspections as a deterministic Agent-1-style report."""
+    evidence = result.get('evidence') or {}
+    summary = result.get('cluster_summary') or {}
+    server_summary = result.get('server_summary') or {}
+    k8s = evidence.get('k8s') or {}
+    nodes = k8s.get('nodes') or []
+    pods = k8s.get('pods') or []
+    resources = k8s.get('resources') or {}
+    logs = evidence.get('logs') or {}
+    findings = result.get('findings') or []
+    missing = result.get('missing_evidence') or []
+    coverage = evidence.get('source_coverage') or {}
+    context = schedule.knowledge_environment
+    generated_at = timezone.localtime(timezone.now(), _schedule_timezone(schedule))
+    metrics = evidence.get('metrics') or []
+    metric_ok = sum(1 for item in metrics if item.get('status') == 'ok' and item.get('latest') is not None)
+    metric_warning = sum(1 for item in metrics if (item.get('anomaly') or {}).get('is_anomaly'))
+    metric_missing = len(metrics) - metric_ok
+
+    result['generated_at'] = generated_at.isoformat()
+    result['source_coverage'] = coverage
+    result['blocks'] = _report_blocks(schedule, result, generated_at)
+    title = f'【巡检报告】{context.name} · {schedule.get_profile_display()}'
+    scope = schedule.get_profile_display()
+    lines = [
+        '━━━━━━━━━━━━━━━━━━━━',
+        f'📋 {scope} · {context.name}',
+        f'时间：{generated_at.strftime("%Y-%m-%d %H:%M:%S")} · 证据窗口：{schedule.window_minutes} 分钟',
+        '━━━━━━━━━━━━━━━━━━━━',
+        '',
+        '## 📊 巡检摘要',
+    ]
+    if schedule.profile == 'server':
+        summary_rows = [[
+            f'{result.get("health_score", "-")} 分',
+            _report_status_badge('partial' if result.get('status') == 'partial' else 'normal'),
+            _display_report_value(server_summary.get('node_count')),
+            metric_ok,
+            metric_warning,
+            metric_missing,
+        ]]
+        lines.append(_report_table(['健康分', '结论状态', '主机数', '有效指标', '指标告警', '指标缺失'], summary_rows))
+    else:
+        summary_rows = [[
+            f'{result.get("health_score", "-")} 分',
+            _report_status_badge('partial' if result.get('status') == 'partial' else 'normal'),
+            f'{summary.get("ready_nodes", 0)}/{summary.get("node_count", 0)}',
+            summary.get('pod_count', 0),
+            metric_ok,
+            metric_missing,
+        ]]
+        lines.append(_report_table(['健康分', '结论状态', 'Ready 节点', 'Pod 数', '有效指标', '指标缺失'], summary_rows))
+    lines.extend(['', f'> {result.get("conclusion") or "巡检已完成"}'])
+
+    lines.extend(['', '## 📡 数据源覆盖'])
+    coverage_table = _report_table(['来源', '状态', '说明'], [
+        [name, '✅ 已获取' if enabled else '⚪ 未获取', '可用于本次巡检' if enabled else '该来源未参与健康结论']
+        for name, enabled in coverage.items()
+    ])
+    lines.append(coverage_table or '⚪ 未登记数据源覆盖信息')
+
+    if schedule.profile == 'server':
+        lines.extend(['', '## 🖥️ 服务器资源（来源：Prometheus）'])
+        lines.append(_report_table(['指标', '当前值', '状态'], [
+            ['CPU 使用率', _display_report_value(server_summary.get('node_cpu')), _report_status_badge('unknown' if server_summary.get('node_cpu') is None else 'normal')],
+            ['内存使用率', _display_report_value(server_summary.get('node_memory')), _report_status_badge('unknown' if server_summary.get('node_memory') is None else 'normal')],
+            ['一分钟负载', _display_report_value(server_summary.get('node_load')), _report_status_badge('unknown' if server_summary.get('node_load') is None else 'normal')],
+            ['磁盘使用率', _display_report_value(server_summary.get('disk_usage')), _report_status_badge('unknown' if server_summary.get('disk_usage') is None else 'normal')],
+        ]))
+    else:
+        lines.extend(['', '## 🖥️ 节点状态（来源：K8s API）'])
+        lines.append(_report_table(['节点', '状态'], [
+            [item.get('name') or '未命名节点', _report_status_badge('normal' if item.get('status') == 'Ready' else 'critical')]
+            for item in nodes[:20]
+        ]))
+        lines.extend(['', '## 📦 Pod 状态与重启排行（来源：K8s API）'])
+        restart_pods = sorted(pods, key=lambda item: int(item.get('restarts') or 0), reverse=True)
+        lines.append(_report_table(['命名空间', 'Pod', '状态', '重启次数', '巡检状态'], [
+            [
+                item.get('namespace') or 'default', item.get('name') or '未命名 Pod',
+                item.get('status') or 'Unknown', item.get('restarts') or 0,
+                _report_status_badge('warning' if int(item.get('restarts') or 0) > 5 else ('normal' if item.get('status') in {'Running', 'Succeeded'} else 'warning')),
+            ] for item in restart_pods[:10]
+        ]))
+        lines.extend(['', '## 🧩 工作负载与存储（来源：K8s API）'])
+        workload_rows = []
+        for kind, label, desired_key, ready_key in [
+            ('deployments', 'Deployment', 'replicas', 'ready_replicas'),
+            ('statefulsets', 'StatefulSet', 'replicas', 'ready_replicas'),
+            ('daemonsets', 'DaemonSet', 'desired', 'ready'),
+        ]:
+            items = resources.get(kind) or []
+            unhealthy = [item for item in items if item.get(desired_key) != item.get(ready_key)]
+            workload_rows.append([label, len(items), len(unhealthy), _report_status_badge('warning' if unhealthy else 'normal')])
+        pvcs = resources.get('pvcs') or []
+        unbound_pvcs = [item for item in pvcs if item.get('status') != 'Bound']
+        workload_rows.append(['PVC', len(pvcs), len(unbound_pvcs), _report_status_badge('warning' if unbound_pvcs else 'normal')])
+        lines.append(_report_table(['资源类型', '总数', '异常/未就绪', '状态'], workload_rows))
+
+    lines.extend(['', '## 📈 指标巡检（来源：Prometheus）'])
+    metric_rows = []
+    for item in sorted(metrics, key=lambda row: str(row.get('title') or row.get('code') or ''))[:20]:
+        anomaly = (item.get('anomaly') or {}).get('is_anomaly')
+        status = 'warning' if anomaly else ('normal' if item.get('status') == 'ok' and item.get('latest') is not None else 'unknown')
+        metric_rows.append([
+            item.get('title') or item.get('code'),
+            _display_report_value(item.get('latest')),
+            _report_status_badge(status),
+            '偏离历史基线' if anomaly else ('采样正常' if status == 'normal' else '指标不存在、无数据或查询失败'),
+        ])
+    lines.append(_report_table(['指标', '当前值', '状态', '说明'], metric_rows) or '⚪ 未获取指标采样结果')
+
+    lines.extend(['', '## 🔍 日志与事件'])
+    samples = logs.get('samples') or []
+    lines.append(_report_table(['项目', '数量/内容', '状态'], [
+        ['日志样本', f'{len(samples)} 条', _report_status_badge('normal' if coverage.get('logs') else 'unknown')],
+        ['异常日志', f'{len(evidence.get("log_findings") or [])} 项', _report_status_badge('warning' if evidence.get('log_findings') else 'normal')],
+        ['Warning Event', f'{len(evidence.get("event_findings") or [])} 项', _report_status_badge('warning' if evidence.get('event_findings') else 'normal')],
+    ]))
+    if samples:
+        lines.append('最近异常日志样本：')
+        lines.extend(f'- {str(item.get("message") or item.get("text") or item)[:240]}' for item in samples[:5])
+
+    lines.extend(['', '## ⚠️ 巡检发现'])
+    lines.append(_report_table(['级别', '对象', '发现'], [
+        [_report_status_badge(item.get('severity')), item.get('target') or item.get('namespace') or '集群', item.get('message') or item.get('code') or '异常']
+        for item in findings[:20]
+    ]) or '✅ 未发现明确异常')
+
+    lines.extend(['', '## 🧪 数据质量'])
+    quality_rows = [[
+        '采集完整性',
+        f'{sum(1 for value in coverage.values() if value)}/{len(coverage)} 个来源可用',
+        _report_status_badge('normal' if all(coverage.values()) else 'partial'),
+    ]]
+    quality_rows.extend([['缺失证据', item, '⚪ 数据缺失'] for item in missing[:12]])
+    lines.append(_report_table(['项目', '说明', '状态'], quality_rows))
+
+    lines.extend(['', '## ✅ 建议操作'])
+    lines.append(_report_table(['优先级', '操作建议', '目的'], [
+        ['P0', item, '恢复关键监控或处理当前异常'] for item in (result.get('suggestions') or ['保持当前监控并按计划复查'])
+    ]))
+    lines.extend(['', '━━━━━━━━━━━━━━━━━━━━', '报告仅基于 Prometheus、K8s API、日志源与资产证据生成；数据缺失不作推断。', '━━━━━━━━━━━━━━━━━━━━'])
+    result['markdown'] = '\n'.join(lines)
+    return title, result['markdown']
+
+
 def run_inspection_report_schedule(schedule, *, trigger=InspectionReportExecution.TRIGGER_SCHEDULER):
     schedule = InspectionReportSchedule.objects.select_related('knowledge_environment').prefetch_related(
         'channels', 'recipients', 'recipient_groups__recipients', 'recipient_groups__users',
@@ -307,7 +479,7 @@ def run_inspection_report_schedule(schedule, *, trigger=InspectionReportExecutio
             previous_execution.report if previous_execution else {}, report,
         )
         report['change_summary'] = change_summary
-        title, body = _format_detailed_report(schedule, report)
+        title, body = _format_skill_style_report(schedule, report)
         should_notify = (
             trigger == InspectionReportExecution.TRIGGER_MANUAL
             or not schedule.notify_changes_only

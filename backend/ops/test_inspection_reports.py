@@ -186,7 +186,7 @@ class InspectionReportScheduleTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(collect.call_args.kwargs['profile'], 'server')
-        self.assertIn('服务器资源指标', send.call_args.kwargs['body'])
+        self.assertIn('服务器资源（来源：Prometheus）', send.call_args.kwargs['body'])
         self.assertNotIn('Pod：', send.call_args.kwargs['body'])
 
     @patch('ops.inspection_reports.send_plain_notification')
@@ -225,11 +225,11 @@ class InspectionReportScheduleTests(TestCase):
         body = send.call_args.kwargs['body']
         self.assertIn('数据源覆盖', body)
         self.assertIn('节点状态', body)
-        self.assertIn('Pod 与重启排行', body)
-        self.assertIn('指标采样', body)
-        self.assertIn('CPU 使用率：未获取', body)
+        self.assertIn('Pod 状态与重启排行', body)
+        self.assertIn('指标巡检（来源：Prometheus）', body)
+        self.assertIn('| CPU 使用率 | 未获取 | ⚪ 数据缺失 |', body)
         self.assertIn('日志与事件', body)
-        self.assertIn('未获取证据及原因', body)
+        self.assertIn('数据质量', body)
 
     @patch('ops.inspection_reports.run_inspection_report_schedule')
     def test_scheduler_advances_next_run_before_execution(self, run_schedule):
