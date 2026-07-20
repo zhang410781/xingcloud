@@ -1529,7 +1529,7 @@ GENERIC_ELK_FIELD_MAP = {
 K8S_ELK_FIELD_MAP = {
     'timestamp': '@timestamp',
     'message': 'message',
-    'level': 'log.level',
+    'level': '__derived__',
     'service': 'kubernetes.labels.app',
     'namespace': 'kubernetes.namespace_name',
     'pod': 'kubernetes.pod_name',
@@ -1563,15 +1563,17 @@ def _recommend_elk_field_map(fields):
         'container': ['kubernetes.container_name', 'container'],
         'host': ['kubernetes.node_name', 'host.name', 'host'],
     }
-    return {
+    recommendation = {
         key: next((candidate for candidate in candidates if candidate in available), '')
         for key, candidates in alternatives.items()
     }
+    recommendation['level'] = recommendation['level'] or '__derived__'
+    return recommendation
 
 
 def _elk_field_value(source, field):
     field = str(field or '').strip()
-    if not field:
+    if not field or field == '__derived__':
         return None
     return source.get(field) if field in source else _get_nested(source, field)
 

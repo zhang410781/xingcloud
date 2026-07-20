@@ -179,7 +179,7 @@
                   </el-select>
                   <el-input v-model="collection.field_map.timestamp" size="small" placeholder="时间字段，例如 @timestamp" />
                   <el-input v-model="collection.field_map.message" size="small" placeholder="消息字段，例如 message" />
-                  <el-input v-model="collection.field_map.level" size="small" placeholder="级别字段，例如 log.level" />
+                  <el-input v-model="collection.field_map.level" size="small" placeholder="级别字段；没有则填 __derived__" />
                   <el-input v-model="collection.field_map.service" size="small" placeholder="服务字段，例如 kubernetes.labels.app" />
                   <el-input v-model="collection.field_map.namespace" size="small" placeholder="命名空间，例如 kubernetes.namespace_name" />
                   <el-input v-model="collection.field_map.pod" size="small" placeholder="Pod，例如 kubernetes.pod_name" />
@@ -432,7 +432,7 @@ function createElkCollection(seed = {}) {
   return {
     key: seed.key || '', name: seed.name || '', index_pattern: seed.index_pattern || 'k8s-*',
     field_map: {
-      timestamp: fieldMap.timestamp || '@timestamp', message: fieldMap.message || 'message', level: fieldMap.level || 'log.level',
+      timestamp: fieldMap.timestamp || '@timestamp', message: fieldMap.message || 'message', level: fieldMap.level || '__derived__',
       service: fieldMap.service || 'kubernetes.labels.app', namespace: fieldMap.namespace || 'kubernetes.namespace_name',
       pod: fieldMap.pod || 'kubernetes.pod_name', container: fieldMap.container || 'kubernetes.container_name', host: fieldMap.host || 'kubernetes.node_name',
     },
@@ -486,7 +486,8 @@ async function recommendElkFields(index) {
     const response = await getLogProviderCatalog('elk', {
       config: elkConnectionConfig(), action: 'recommend_fields', index_pattern: collection.index_pattern,
     })
-    collection.field_map = { ...collection.field_map, ...(response.recommendation || {}) }
+    const detected = Object.fromEntries(Object.entries(response.recommendation || {}).filter(([, value]) => value))
+    collection.field_map = { ...collection.field_map, ...detected }
     if (!collection.key) collection.key = collection.index_pattern.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').toLowerCase()
     if (!collection.name) collection.name = collection.index_pattern
     ElMessage.success('已根据最新日志样本填充字段映射')
