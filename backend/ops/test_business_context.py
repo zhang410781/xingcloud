@@ -67,7 +67,7 @@ class BusinessContextTests(TestCase):
                 'time_field': 'event_time',
                 'message_fields': 'message,log',
                 'level_field': 'level',
-                'source_fields': 'namespace,pod_name,service_name',
+                'source_fields': 'namespace,pod_name',
             }],
         }
         self.logs.save(update_fields=['provider', 'config', 'updated_at'])

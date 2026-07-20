@@ -131,6 +131,10 @@ def _configured_log_field_map(log):
         configured['pod'] = 'configured'
     if any(token in source_fields for token in ('service', 'app', 'application')):
         configured['service'] = 'configured'
+    elif configured.get('pod'):
+        # Container logs commonly have no service column.  The platform can
+        # resolve it from the Pod/workload relationship during diagnosis.
+        configured['service'] = '__derived_from_pod__'
     return {key: value for key, value in configured.items() if value}
 
 
