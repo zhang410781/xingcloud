@@ -13,6 +13,32 @@ from .observability_evidence import collect_observability_evidence, inspection_r
 logger = logging.getLogger(__name__)
 
 
+_SEVERITY_WEIGHT = {'critical': 3, 'warning': 2, 'info': 1}
+
+
+def _finding_key(item):
+    return '|'.join(str(item.get(key) or '') for key in ('code', 'target', 'namespace', 'resource', 'service'))
+
+
+def _inspection_change_summary(previous_report, current_report):
+    previous = {_finding_key(item): item for item in (previous_report or {}).get('findings') or []}
+    current = {_finding_key(item): item for item in (current_report or {}).get('findings') or []}
+    added = [item for key, item in current.items() if key not in previous]
+    resolved = [item for key, item in previous.items() if key not in current]
+    worsened = [
+        item for key, item in current.items()
+        if key in previous and _SEVERITY_WEIGHT.get(str(item.get('severity') or 'info').lower(), 0)
+        > _SEVERITY_WEIGHT.get(str(previous[key].get('severity') or 'info').lower(), 0)
+    ]
+    return {
+        'has_changes': bool(added or resolved or worsened),
+        'added': added,
+        'resolved': resolved,
+        'worsened': worsened,
+        'summary': {'added': len(added), 'resolved': len(resolved), 'worsened': len(worsened)},
+    }
+
+
 def _schedule_timezone(schedule):
     try:
         return ZoneInfo(schedule.timezone or 'Asia/Shanghai')
@@ -94,6 +120,9 @@ def run_inspection_report_schedule(schedule, *, trigger=InspectionReportExecutio
     schedule = InspectionReportSchedule.objects.select_related('knowledge_environment').prefetch_related(
         'channels', 'recipients', 'recipient_groups__recipients', 'recipient_groups__users',
     ).get(pk=schedule.pk)
+    previous_execution = schedule.executions.filter(
+        status__in=[InspectionReportExecution.STATUS_SUCCESS, InspectionReportExecution.STATUS_PARTIAL],
+    ).order_by('-started_at', '-id').first()
     execution = InspectionReportExecution.objects.create(schedule=schedule, trigger=trigger)
     try:
         evidence = collect_observability_evidence(
@@ -103,18 +132,33 @@ def run_inspection_report_schedule(schedule, *, trigger=InspectionReportExecutio
             window_minutes=schedule.window_minutes,
         )
         report = inspection_result(evidence)
-        title, body = _format_report(schedule, report)
-        contacts = build_recipient_contacts(
-            groups=schedule.recipient_groups.filter(is_enabled=True),
-            recipients=schedule.recipients.filter(is_enabled=True),
+        change_summary = _inspection_change_summary(
+            previous_execution.report if previous_execution else {}, report,
         )
-        delivery_results = [
-            send_plain_notification(channel, contacts, title=title, body=body)
-            for channel in schedule.channels.filter(is_enabled=True)
-        ]
+        report['change_summary'] = change_summary
+        title, body = _format_report(schedule, report)
+        should_notify = (
+            trigger == InspectionReportExecution.TRIGGER_MANUAL
+            or not schedule.notify_changes_only
+            or change_summary['has_changes']
+        )
+        if should_notify:
+            contacts = build_recipient_contacts(
+                groups=schedule.recipient_groups.filter(is_enabled=True),
+                recipients=schedule.recipients.filter(is_enabled=True),
+            )
+            delivery_results = [
+                send_plain_notification(channel, contacts, title=title, body=body)
+                for channel in schedule.channels.filter(is_enabled=True)
+            ]
+        else:
+            delivery_results = [{'status': 'skipped', 'reason': '巡检无新增或恶化项，按计划设置不发送'}]
         success_count = sum(1 for item in delivery_results if item.get('status') == 'success')
         failed_count = sum(1 for item in delivery_results if item.get('status') != 'success')
-        if success_count and not failed_count:
+        if not should_notify:
+            execution_status = InspectionReportExecution.STATUS_SUCCESS
+            schedule_status = InspectionReportSchedule.STATUS_SUCCESS
+        elif success_count and not failed_count:
             execution_status = InspectionReportExecution.STATUS_SUCCESS
             schedule_status = InspectionReportSchedule.STATUS_SUCCESS
         elif success_count:
@@ -126,8 +170,9 @@ def run_inspection_report_schedule(schedule, *, trigger=InspectionReportExecutio
         execution.status = execution_status
         execution.report = {**report, 'notification_title': title, 'notification_body': body}
         execution.delivery_results = delivery_results
+        execution.change_summary = change_summary
         execution.completed_at = timezone.now()
-        execution.save(update_fields=['status', 'report', 'delivery_results', 'completed_at'])
+        execution.save(update_fields=['status', 'report', 'delivery_results', 'change_summary', 'completed_at'])
         schedule.last_run_at = execution.completed_at
         schedule.last_status = schedule_status
         schedule.last_error = '; '.join(

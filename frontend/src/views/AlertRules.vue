@@ -100,6 +100,12 @@
           <el-table-column label="最近评估" width="150">
             <template #default="{ row }">{{ formatTime(row.last_evaluated_at) }}</template>
           </el-table-column>
+          <el-table-column label="运行质量" min-width="180">
+            <template #default="{ row }">
+              <el-tag size="small" :type="qualityType(row.runtime_quality?.health)">{{ qualityText(row.runtime_quality) }}</el-tag>
+              <small v-if="row.runtime_quality?.duration_ms" class="quality-detail">{{ row.runtime_quality.duration_ms }}ms · 命中 {{ row.runtime_quality.matched_count || 0 }}</small>
+            </template>
+          </el-table-column>
           <el-table-column label="操作" width="160" fixed="right">
             <template #default="{ row }">
               <el-button link type="primary" @click="runRule(row)">试运行</el-button>
@@ -603,6 +609,14 @@ function sourceLabel(item) { return `${item.cluster_name || item.name}${item.env
 function levelText(value) { return { critical: '严重', warning: '警告', info: '信息' }[value] || value }
 function levelType(value) { return { critical: 'danger', warning: 'warning', info: 'info' }[value] || 'info' }
 function formatTime(value) { return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-' }
+function qualityText(quality) {
+  if (!quality) return '未评估'
+  if (quality.health === 'error') return `查询失败 ${quality.consecutive_error_count || quality.error_count} 次`
+  if (quality.health === 'no_data') return `无数据 ${quality.no_data_count} 次`
+  if (quality.health === 'flapping') return `抖动 ${quality.flap_count} 次`
+  return '健康'
+}
+function qualityType(value) { return { error: 'danger', no_data: 'warning', flapping: 'warning', healthy: 'success' }[value] || 'info' }
 function emptyMatcher() { return { key: '', operator: '=', value: '' } }
 function cloneMatchers(value) { return Array.isArray(value) ? value.map((item) => ({ ...item })) : [] }
 function emptyRuleForm() { return { id: null, metric_datasource: '', name: '', promql: '', operator: '>', threshold: 80, level: 'warning', duration_seconds: 300, interval_seconds: 60, auto_analyze: true, description: '' } }

@@ -1,3 +1,5 @@
+import time
+
 from django.utils import timezone
 
 from ops.log_views import (
@@ -286,6 +288,7 @@ def evaluate_rule(rule, *, dry_run=False, request=None):
         raise ValueError('规则模板不能直接执行，请先创建规则实例')
     if not rule.is_enabled and not dry_run:
         raise ValueError('alert rule is disabled')
+    started = time.perf_counter()
     try:
         if rule.source_type == 'prometheus':
             results = _prometheus_results(rule)
@@ -306,10 +309,41 @@ def evaluate_rule(rule, *, dry_run=False, request=None):
             'source_type': rule.source_type,
             'evaluated_at': timezone.now().isoformat(),
         })
+        if not dry_run:
+            matched = int(processed.get('matched_count') or 0)
+            fired = int(processed.get('would_fire_count') or 0)
+            resources = [
+                item.get('resource') or (item.get('labels') or {}).get('pod') or (item.get('labels') or {}).get('instance')
+                for item in processed.get('results') or []
+            ]
+            rule.last_evaluation_duration_ms = int((time.perf_counter() - started) * 1000)
+            rule.last_result_count = len(processed.get('results') or [])
+            rule.last_matched_count = matched
+            rule.last_matched_resource = str(next((item for item in resources if item), '') or '')[:256]
+            rule.consecutive_error_count = 0
+            rule.last_evaluation_error = ''
+            if not matched:
+                rule.no_data_count += 1
+            if fired:
+                rule.trigger_count += fired
+            if processed.get('resolved_count'):
+                rule.flap_count += int(processed['resolved_count'])
+            rule.save(update_fields=[
+                'last_evaluation_duration_ms', 'last_result_count', 'last_matched_count', 'last_matched_resource',
+                'consecutive_error_count', 'last_evaluation_error', 'no_data_count', 'trigger_count', 'flap_count', 'updated_at',
+            ])
         return processed
     except Exception as exc:
         if not dry_run:
             mark_rule_error(rule, exc)
+            rule.last_evaluation_duration_ms = int((time.perf_counter() - started) * 1000)
+            rule.evaluation_error_count += 1
+            rule.consecutive_error_count += 1
+            rule.last_evaluation_error = str(exc)[:2000]
+            rule.save(update_fields=[
+                'last_evaluation_duration_ms', 'evaluation_error_count', 'consecutive_error_count',
+                'last_evaluation_error', 'updated_at',
+            ])
         return {
             'success': False,
             'dry_run': dry_run,

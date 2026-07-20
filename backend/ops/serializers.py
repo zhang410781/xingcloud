@@ -1495,6 +1495,7 @@ class AlertRuleSerializer(serializers.ModelSerializer):
     metric_datasource_detail = serializers.SerializerMethodField()
     template_detail = serializers.SerializerMethodField()
     needs_binding = serializers.SerializerMethodField()
+    runtime_quality = serializers.SerializerMethodField()
 
     class Meta:
         model = AlertRule
@@ -1528,6 +1529,30 @@ class AlertRuleSerializer(serializers.ModelSerializer):
 
     def get_needs_binding(self, obj):
         return obj.source_type == 'prometheus' and not obj.is_template and not obj.metric_datasource_id
+
+    def get_runtime_quality(self, obj):
+        if obj.is_template:
+            return None
+        health = 'healthy'
+        if obj.consecutive_error_count:
+            health = 'error'
+        elif obj.no_data_count and not obj.last_matched_count:
+            health = 'no_data'
+        elif obj.flap_count:
+            health = 'flapping'
+        return {
+            'health': health,
+            'duration_ms': obj.last_evaluation_duration_ms,
+            'result_count': obj.last_result_count,
+            'matched_count': obj.last_matched_count,
+            'last_resource': obj.last_matched_resource,
+            'error_count': obj.evaluation_error_count,
+            'consecutive_error_count': obj.consecutive_error_count,
+            'no_data_count': obj.no_data_count,
+            'trigger_count': obj.trigger_count,
+            'flap_count': obj.flap_count,
+            'last_error': obj.last_evaluation_error,
+        }
 
     def validate(self, attrs):
         source_type = attrs.get('source_type', getattr(self.instance, 'source_type', ''))

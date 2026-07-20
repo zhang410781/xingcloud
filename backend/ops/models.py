@@ -958,7 +958,10 @@ class AlertRule(models.Model):
         ('prometheus', 'Prometheus 指标'), ('clickhouse', 'ClickHouse 日志'),
         ('k8s', 'K8S 资源/事件'), ('sla', 'SLA'), ('platform', '平台内置'),
     ]
-    CATEGORY_CHOICES = [('server', '服务器'), ('k8s', 'Kubernetes'), ('storage', '存储'), ('database', '数据库')]
+    CATEGORY_CHOICES = [
+        ('server', '服务器'), ('k8s', 'Kubernetes'), ('storage', '存储'), ('database', '数据库'),
+        ('network', '网络'), ('middleware', '中间件'), ('control_plane', '控制面'), ('workload', '工作负载'),
+    ]
 
     name = models.CharField('规则名称', max_length=128)
     code = models.SlugField('规则编码', max_length=96, unique=True, blank=True, default='')
@@ -991,6 +994,16 @@ class AlertRule(models.Model):
     is_enabled = models.BooleanField('启用', default=True)
     last_evaluated_at = models.DateTimeField('最近评估时间', null=True, blank=True)
     last_triggered_at = models.DateTimeField('最近触发时间', null=True, blank=True)
+    last_evaluation_duration_ms = models.PositiveIntegerField('最近评估耗时毫秒', null=True, blank=True)
+    last_result_count = models.PositiveIntegerField('最近结果数', default=0)
+    last_matched_count = models.PositiveIntegerField('最近命中数', default=0)
+    last_matched_resource = models.CharField('最近命中对象', max_length=256, blank=True, default='')
+    evaluation_error_count = models.PositiveIntegerField('评估错误次数', default=0)
+    consecutive_error_count = models.PositiveIntegerField('连续评估错误次数', default=0)
+    no_data_count = models.PositiveIntegerField('无数据次数', default=0)
+    trigger_count = models.PositiveIntegerField('触发次数', default=0)
+    flap_count = models.PositiveIntegerField('抖动次数', default=0)
+    last_evaluation_error = models.TextField('最近评估错误', blank=True, default='')
     description = models.CharField('说明', max_length=255, blank=True, default='')
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
@@ -1245,6 +1258,7 @@ class InspectionReportSchedule(models.Model):
     profile = models.CharField('巡检范围', max_length=32, choices=PROFILE_CHOICES, default='cluster')
     depth = models.CharField('巡检深度', max_length=16, default='full')
     window_minutes = models.PositiveIntegerField('证据时间窗分钟', default=60)
+    notify_changes_only = models.BooleanField('仅推送新增或恶化项', default=True)
     channels = models.ManyToManyField(
         AlertNotificationChannel, related_name='inspection_report_schedules', verbose_name='通知渠道',
     )
@@ -1302,6 +1316,7 @@ class InspectionReportExecution(models.Model):
     status = models.CharField('执行状态', max_length=16, choices=STATUS_CHOICES, default=STATUS_RUNNING)
     report = models.JSONField('巡检报告', default=dict, blank=True)
     delivery_results = models.JSONField('发送结果', default=list, blank=True)
+    change_summary = models.JSONField('与上次巡检差异', default=dict, blank=True)
     error_message = models.TextField('错误信息', blank=True, default='')
     started_at = models.DateTimeField('开始时间', auto_now_add=True)
     completed_at = models.DateTimeField('完成时间', null=True, blank=True)
