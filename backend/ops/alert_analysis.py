@@ -354,7 +354,7 @@ def _is_automatic_pod_analysis(alert, trigger):
     resource_type = str(alert.resource_type or labels.get('resource_type') or '').lower()
     if resource_type and resource_type not in {'pod', 'container', 'k8s'}:
         return False
-    has_pod = bool(alert.namespace and (labels.get('pod') or labels.get('pod_name') or alert.resource))
+    has_pod = bool(alert.namespace and (labels.get('pod') or labels.get('pod_name')))
     text = ' '.join([str(alert.title or ''), str(alert.metric_name or ''), resource_type]).lower()
     return alert.level in {'warning', 'critical'} and (
         resource_type in {'pod', 'container'} or has_pod or any(token in text for token in ('pod', 'container', '容器'))
