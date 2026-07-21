@@ -637,9 +637,7 @@ async function loadAll() {
       getAlertRecipients({ page_size: 200 }),
       getAlertRecipientGroups({ page_size: 200 }),
       getUsers({ page_size: 500 }),
-      currentContextId.value
-        ? getInspectionReportSchedules({ knowledge_environment: currentContextId.value, page_size: 200 })
-        : Promise.resolve([]),
+      getInspectionReportSchedules({ page_size: 200 }),
     ])
     const boundDatasourceId = String(currentContext.value?.metric_datasource || '')
     metricSources.value = listOf(sourceResult).filter((item) => boundDatasourceId && String(item.id) === boundDatasourceId)
@@ -959,7 +957,7 @@ async function saveInspectionReport() {
     if (inspectionReportForm.id) await updateInspectionReportSchedule(inspectionReportForm.id, payload)
     else await createInspectionReportSchedule(payload)
     inspectionReportDialog.value = false
-    inspectionReports.value = listOf(await getInspectionReportSchedules({ knowledge_environment: currentContextId.value, page_size: 200 }))
+    inspectionReports.value = listOf(await getInspectionReportSchedules({ page_size: 200 }))
     await refreshRecipientResources()
     ElMessage.success('巡检报告计划已保存')
   } catch (error) {
@@ -981,7 +979,7 @@ async function runInspectionReport(row) {
 async function removeInspectionReport(row) {
   try {
     await deleteInspectionReportSchedule(row.id)
-    inspectionReports.value = listOf(await getInspectionReportSchedules({ knowledge_environment: currentContextId.value, page_size: 200 }))
+    inspectionReports.value = listOf(await getInspectionReportSchedules({ page_size: 200 }))
     await refreshRecipientResources()
     ElMessage.success('巡检报告计划已删除')
   } catch (error) {
