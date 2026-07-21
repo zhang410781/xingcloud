@@ -171,6 +171,15 @@ def _k8s_evidence(context, depth, target='', profile='cluster'):
     for node in nodes:
         if node.get('status') != 'Ready':
             findings.append({'fingerprint': f"node-not-ready:{node.get('name')}", 'severity': 'critical', 'code': 'node_not_ready', 'target': node.get('name'), 'message': '节点状态不是 Ready'})
+        for condition in node.get('conditions') or []:
+            if condition.get('type') in {'MemoryPressure', 'DiskPressure', 'PIDPressure', 'NetworkUnavailable'} and condition.get('status') == 'True':
+                findings.append({
+                    'fingerprint': f"node-condition:{node.get('name')}:{condition.get('type')}",
+                    'severity': 'critical' if condition.get('type') in {'DiskPressure', 'MemoryPressure'} else 'warning',
+                    'code': 'node_condition',
+                    'target': node.get('name'),
+                    'message': f"节点 {condition.get('type')} 为 True：{condition.get('reason') or condition.get('message') or '-'}",
+                })
     for pod in pods:
         pod_status = str(pod.get('status') or 'Unknown')
         containers = list(pod.get('containers') or [])
@@ -252,7 +261,14 @@ def _deep_k8s_samples(context, findings, limit=5):
         try:
             events = v1.list_namespaced_event(namespace, field_selector=f'involvedObject.name={pod_name}', limit=20)
             item['events'] = [
-                {'type': event.type, 'reason': event.reason, 'message': event.message, 'count': event.count}
+                {
+                    'type': event.type,
+                    'reason': event.reason,
+                    'message': event.message,
+                    'count': event.count,
+                    'first_at': str(getattr(event, 'first_timestamp', '') or ''),
+                    'last_at': str(getattr(event, 'last_timestamp', '') or ''),
+                }
                 for event in events.items if event.type == 'Warning'
             ]
         except Exception as exc:
@@ -260,7 +276,9 @@ def _deep_k8s_samples(context, findings, limit=5):
         requested_container = str(finding.get('container') or '')
         container_name = requested_container or (item.get('containers') or [{}])[0].get('name')
         try:
-            item['current_logs'] = str(v1.read_namespaced_pod_log(pod_name, namespace, tail_lines=80, container=container_name))[-8000:]
+            item['current_logs'] = str(v1.read_namespaced_pod_log(
+                pod_name, namespace, tail_lines=80, since_seconds=300, container=container_name,
+            ))[-8000:]
         except Exception as exc:
             item['current_logs_error'] = str(exc)[:200]
         try:
@@ -282,14 +300,14 @@ def _targeted_alert_labels(alert):
         'namespace': str(getattr(alert, 'namespace', '') or labels.get('namespace') or '').strip(),
         'pod': str(labels.get('pod') or labels.get('pod_name') or (getattr(alert, 'resource', '') if getattr(alert, 'resource_type', '') in {'pod', 'container'} else '')).strip(),
         'container': str(labels.get('container') or labels.get('container_name') or '').strip(),
-        'node': str(labels.get('node') or labels.get('node_name') or '').strip(),
+        'node': str(labels.get('node') or labels.get('node_name') or labels.get('instance') or '').strip(),
     }
 
 
 def _targeted_alert_metrics(context, alert, start_time, end_time):
     target = _targeted_alert_labels(alert)
     namespace, pod, container, node = [target.get(key) for key in ('namespace', 'pod', 'container', 'node')]
-    if not namespace or not pod:
+    if not (namespace and pod) and not node:
         return {'status': 'not_applicable', 'target': target, 'items': []}
 
     def selector(extra=''):
@@ -299,36 +317,63 @@ def _targeted_alert_metrics(context, alert, start_time, end_time):
         return '{' + ','.join(labels + ([extra] if extra else [])) + '}'
 
     definitions = [
-        ('restart_increase', '窗口内重启增量', f'sum by(namespace,pod,container) (increase(kube_pod_container_status_restarts_total{selector()}[15m]))'),
-        ('cpu_peak', 'CPU 使用峰值', f'max_over_time(sum by(namespace,pod,container) (rate(container_cpu_usage_seconds_total{selector()}[5m]))[15m:])'),
-        ('memory_peak', '内存使用峰值', f'max_over_time(sum by(namespace,pod,container) (container_memory_working_set_bytes{selector()} )[15m:])'),
-        ('oom_killed', 'OOMKilled', f'max(kube_pod_container_status_last_terminated_reason{selector("reason=\\\"OOMKilled\\\"")})'),
-        ('resource_requests_cpu', 'CPU Request', f'sum(kube_pod_container_resource_requests{selector("resource=\\\"cpu\\\"")})'),
-        ('resource_limits_memory', '内存 Limit', f'sum(kube_pod_container_resource_limits{selector("resource=\\\"memory\\\"")})'),
-    ]
+        ('restart_increase', '窗口内重启增量', '次', {'warning': 3, 'critical': 10}, f'sum by(namespace,pod,container) (increase(kube_pod_container_status_restarts_total{selector()}[15m]))'),
+        ('cpu_peak', 'CPU 使用峰值', '核', {}, f'max_over_time(sum by(namespace,pod,container) (rate(container_cpu_usage_seconds_total{selector()}[5m]))[15m:])'),
+        ('memory_peak', '内存使用峰值', '字节', {}, f'max_over_time(sum by(namespace,pod,container) (container_memory_working_set_bytes{selector()} )[15m:])'),
+        ('oom_killed', 'OOMKilled', '布尔', {'critical': 0}, f'max(kube_pod_container_status_last_terminated_reason{selector("reason=\\\"OOMKilled\\\"")})'),
+        ('resource_requests_cpu', 'CPU Request', '核', {}, f'sum(kube_pod_container_resource_requests{selector("resource=\\\"cpu\\\"")})'),
+        ('resource_limits_memory', '内存 Limit', '字节', {}, f'sum(kube_pod_container_resource_limits{selector("resource=\\\"memory\\\"")})'),
+    ] if namespace and pod else []
     raw = alert.raw_payload if isinstance(alert.raw_payload, dict) else {}
     raw_rule = raw.get('rule') if isinstance(raw.get('rule'), dict) else {}
     query_config = raw_rule.get('query_config') if isinstance(raw_rule.get('query_config'), dict) else {}
     original_query = str(query_config.get('promql') or query_config.get('query') or '').strip()
-    if original_query:
+    if original_query and namespace and pod:
         exact_guard = f'kube_pod_info{{namespace="{namespace}",pod="{pod}"}}'
-        definitions.insert(0, ('original_alert_metric', '告警规则原始指标', f'({original_query}) and on(namespace,pod) {exact_guard}'))
+        definitions.insert(0, ('original_alert_metric', '告警规则原始指标', '', {}, f'({original_query}) and on(namespace,pod) {exact_guard}'))
+    elif original_query:
+        definitions.insert(0, ('original_alert_metric', '告警规则原始指标', '', {}, original_query))
     if node:
-        node_selector = '{instance="' + node.replace('"', '\\"') + '"}'
+        node_pattern = re.escape(node).replace('\\:', ':')
+        node_selector = '{instance=~"' + node_pattern.replace('"', '\\"') + '(:.*)?"}'
         definitions.extend([
-            ('node_disk_io', '节点磁盘 I/O', f'sum(rate(node_disk_read_bytes_total{node_selector}[5m]) + rate(node_disk_written_bytes_total{node_selector}[5m]))'),
-            ('node_memory_pressure', '节点内存可用率', f'(node_memory_MemAvailable_bytes{node_selector} / node_memory_MemTotal_bytes{node_selector}) * 100'),
+            ('node_cpu', '节点 CPU 使用率', '%', {'warning': 80, 'critical': 95}, f'100 - avg(rate(node_cpu_seconds_total{node_selector[:-1]},mode="idle"}}[5m])) * 100'),
+            ('node_memory', '节点内存使用率', '%', {'warning': 85, 'critical': 95}, f'(1 - node_memory_MemAvailable_bytes{node_selector} / node_memory_MemTotal_bytes{node_selector}) * 100'),
+            ('node_load', '节点一分钟负载', '', {}, f'node_load1{node_selector}'),
+            ('node_disk_usage', '节点磁盘使用率', '%', {'warning': 80, 'critical': 95}, f'max((1 - node_filesystem_avail_bytes{node_selector[:-1]},fstype!~"tmpfs|overlay"}} / node_filesystem_size_bytes{node_selector[:-1]},fstype!~"tmpfs|overlay"}}) * 100)'),
+            ('node_inode_usage', '节点 inode 使用率', '%', {'warning': 80, 'critical': 95}, f'max((1 - node_filesystem_files_free{node_selector[:-1]},fstype!~"tmpfs|overlay"}} / node_filesystem_files{node_selector[:-1]},fstype!~"tmpfs|overlay"}}) * 100)'),
+            ('node_disk_io', '节点磁盘 I/O', '字节/秒', {}, f'sum(rate(node_disk_read_bytes_total{node_selector}[5m]) + rate(node_disk_written_bytes_total{node_selector}[5m]))'),
+            ('node_memory_pressure', '节点内存可用率', '%', {'warning_below': 15, 'critical_below': 5}, f'(node_memory_MemAvailable_bytes{node_selector} / node_memory_MemTotal_bytes{node_selector}) * 100'),
+            ('node_network_errors', '节点网络错误', '次/秒', {'warning': 0}, f'sum(rate(node_network_receive_errs_total{node_selector}[5m]) + rate(node_network_transmit_errs_total{node_selector}[5m]))'),
         ])
     items = []
-    for code, title, promql in definitions:
+    for code, title, unit, thresholds, promql in definitions:
         try:
             from .observability_views import execute_promql_query
             response = execute_promql_query(promql, range_query=True, start_time=start_time, end_time=end_time, step=60, metric_datasource_id=context.metric_datasource_id, environment=context.code, prefer_metric_datasource=True)
             values = _series_values(response)
-            items.append({'code': code, 'title': title, 'status': 'ok', 'query': promql, 'sample_count': len(values), 'peak': max(values) if values else None, 'latest': values[-1] if values else None})
+            latest = values[-1] if values else None
+            health = 'unknown'
+            if latest is not None:
+                health = 'normal'
+                if 'critical' in thresholds and latest > thresholds['critical']:
+                    health = 'critical'
+                elif 'warning' in thresholds and latest > thresholds['warning']:
+                    health = 'warning'
+                elif 'critical_below' in thresholds and latest < thresholds['critical_below']:
+                    health = 'critical'
+                elif 'warning_below' in thresholds and latest < thresholds['warning_below']:
+                    health = 'warning'
+            items.append({
+                'code': code, 'title': title, 'status': 'ok', 'health': health,
+                'query': promql, 'unit': unit, 'thresholds': thresholds,
+                'sample_count': len(values), 'peak': max(values) if values else None, 'latest': latest,
+            })
         except Exception as exc:
-            items.append({'code': code, 'title': title, 'status': 'error', 'query': promql, 'error': str(exc)[:300]})
-    return {'status': 'ok', 'target': target, 'window': {'start_at': start_time.isoformat(), 'end_at': end_time.isoformat()}, 'items': items}
+            items.append({'code': code, 'title': title, 'status': 'error', 'health': 'unknown', 'query': promql, 'unit': unit, 'thresholds': thresholds, 'error': str(exc)[:300]})
+    succeeded = sum(1 for item in items if item['status'] == 'ok')
+    status = 'ok' if succeeded == len(items) else ('partial' if succeeded else 'error')
+    return {'status': status, 'target': target, 'window': {'start_at': start_time.isoformat(), 'end_at': end_time.isoformat()}, 'items': items}
 
 
 def _log_dimensions(alert=None, target=''):
@@ -445,7 +490,7 @@ def _log_evidence(context, *, alert=None, target='', window_minutes=60, profile=
     alert_started_at = getattr(alert, 'starts_at', None) if alert else None
     if alert_started_at:
         primary_start = alert_started_at
-        primary_end = max(now, primary_start)
+        primary_end = min(max(now, primary_start + timedelta(seconds=1)), primary_start + timedelta(minutes=5))
         baseline_start = alert_started_at - timedelta(minutes=30)
         baseline_end = primary_start
         fallback_minutes = []
@@ -492,6 +537,8 @@ def _log_evidence(context, *, alert=None, target='', window_minutes=60, profile=
             if dimensions.get('pod') and item.get('pod') != dimensions['pod']:
                 continue
             if dimensions.get('service') and item.get('service') != dimensions['service']:
+                continue
+            if dimensions.get('container') and item.get('container') != dimensions['container']:
                 continue
             filtered.append(raw)
         raw_logs = filtered

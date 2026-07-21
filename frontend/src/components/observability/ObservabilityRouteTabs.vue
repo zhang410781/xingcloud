@@ -79,4 +79,25 @@ function goTab(tab) {
 .observability-route-tabs {
   margin: 0;
 }
+
+@media (max-width: 900px) {
+  .observability-route-tabs {
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: thin;
+  }
+
+  .observability-route-tabs .neo-tab-btn {
+    flex: 0 0 40px;
+    gap: 0;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .observability-route-tabs .neo-tab-btn span {
+    display: none;
+  }
+}
 </style>

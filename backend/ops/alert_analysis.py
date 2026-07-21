@@ -19,7 +19,6 @@ SECRET_PATTERN = re.compile(
 BEARER_PATTERN = re.compile(r'(?i)\bBearer\s+[A-Za-z0-9._~+/-]+=*')
 PHONE_PATTERN = re.compile(r'(?<!\d)1[3-9]\d{9}(?!\d)')
 LEVEL_RANK = {'info': 1, 'warning': 2, 'critical': 3}
-AUTO_ANALYSIS_DELAY = timedelta(minutes=2)
 
 PATTERNS = [
     ('oom_killed', re.compile(r'(?i)\b(oomkilled|out of memory|cannot allocate memory)\b'), '进程或容器可能因内存不足退出'),
@@ -109,13 +108,71 @@ def _window_minutes(alert, rule=None):
     return max(15, min(int(max(values or [15])), 60))
 
 
+def _analysis_depth(alert, rule=None):
+    if alert.level == 'critical':
+        return 'full'
+    if alert.level == 'info':
+        return 'light'
+    text = ' '.join([
+        str(alert.title or ''), str(alert.metric_name or ''), str(alert.service or ''),
+        str(alert.resource_type or ''), str(_dict(alert.labels).get('component') or ''),
+    ]).lower()
+    core_tokens = ('apiserver', 'api server', 'etcd', 'coredns', 'scheduler', 'controller-manager', '控制面')
+    known_types = {'pod', 'container', 'node', 'k8s', 'deployment', 'statefulset', 'daemonset', 'pvc', 'service', 'host', 'server'}
+    resource_type = str(alert.resource_type or '').lower()
+    if any(token in text for token in core_tokens) or (resource_type and resource_type not in known_types):
+        return 'full'
+    since = timezone.now() - timedelta(minutes=5)
+    scope = Q()
+    for field, value in [('namespace', alert.namespace), ('service', alert.service), ('cluster', alert.cluster)]:
+        if value:
+            scope |= Q(**{field: value})
+    related = 1
+    if scope:
+        related = Alert.objects.filter(
+            environment=alert.environment,
+            starts_at__gte=since,
+        ).filter(scope).count()
+    if related >= 3:
+        return 'full'
+    profile = str(_dict(getattr(rule, 'query_config', None)).get('evidence_profile') or '')
+    return profile if profile in {'light', 'targeted', 'full'} else 'targeted'
+
+
+def _attach_evidence_ids(evidence):
+    groups = [
+        ('M', evidence.get('metrics') or []),
+        ('T', _dict(evidence.get('targeted_metrics')).get('items') or []),
+        ('K', evidence.get('k8s_findings') or []),
+        ('D', evidence.get('k8s_samples') or []),
+        ('E', evidence.get('event_findings') or []),
+        ('L', _dict(evidence.get('logs')).get('samples') or []),
+        ('F', evidence.get('log_findings') or []),
+        ('C', evidence.get('change_findings') or []),
+        ('G', evidence.get('topology_findings') or []),
+    ]
+    index = {}
+    for prefix, items in groups:
+        for position, item in enumerate(items, 1):
+            if not isinstance(item, dict):
+                continue
+            evidence_id = item.setdefault('evidence_id', f'{prefix}{position:03d}')
+            index[evidence_id] = {
+                'type': prefix,
+                'status': item.get('status') or item.get('severity') or 'observed',
+                'target': item.get('target') or item.get('pod') or item.get('title') or item.get('code') or '',
+            }
+    evidence['evidence_index'] = index
+    return evidence
+
+
 def collect_alert_evidence(alert):
     rule = _alert_rule(alert)
     raw_payload = _dict(alert.raw_payload)
     raw_event = _dict(raw_payload.get('event'))
     raw_rule = _dict(raw_payload.get('rule'))
     environment, metric_ids, _log_ids, config_error = _resolve_environment(alert, rule=rule)
-    depth = {'critical': 'full', 'warning': 'targeted', 'info': 'light'}.get(alert.level, 'targeted')
+    depth = _analysis_depth(alert, rule=rule)
     evidence = {
         'profile': 'alert_analysis',
         'depth': depth,
@@ -151,7 +208,7 @@ def collect_alert_evidence(alert):
     if config_error:
         evidence['diagnostics'].append({'code': 'environment_configuration_error', 'message': config_error})
         evidence['logs'] = {'status': 'configuration_error', 'error': config_error, 'samples': []}
-        return evidence
+        return _attach_evidence_ids(evidence)
     metric = MetricDataSource.objects.filter(pk=metric_ids[0], is_enabled=True).first() if metric_ids else None
     if not metric:
         message = '知识环境绑定的 Prometheus 不存在或已停用'
@@ -180,19 +237,22 @@ def collect_alert_evidence(alert):
         except Exception as exc:
             evidence['stage_status']['observability'] = 'failed'
             evidence['diagnostics'].append({'code': 'observability_collection_failed', 'message': str(exc)[:300]})
-    return evidence
+    return _attach_evidence_ids(evidence)
 
 
 def _deterministic_candidates(evidence):
     samples = _dict(evidence.get('logs')).get('samples') or []
     matches = Counter()
     examples = {}
+    example_refs = {}
     for sample in samples:
         message = str(sample.get('message') or '')
         for code, pattern, title in PATTERNS:
             if pattern.search(message):
                 matches[code] += 1
                 examples.setdefault(code, message[:240])
+                if sample.get('evidence_id'):
+                    example_refs.setdefault(code, sample['evidence_id'])
     candidates = []
     titles = {code: title for code, _, title in PATTERNS}
     for code, count in matches.most_common(5):
@@ -201,6 +261,7 @@ def _deterministic_candidates(evidence):
             'title': titles[code],
             'score': min(0.85, 0.35 + count * 0.1),
             'evidence': [examples[code]],
+            'evidence_refs': [example_refs[code]] if example_refs.get(code) else [],
         })
     grouped = {item['code']: item for item in candidates}
     for sample in evidence.get('k8s_samples') or []:
@@ -219,8 +280,10 @@ def _deterministic_candidates(evidence):
                 code, title, score = 'container_config_failed', f'{pod_name} 容器配置错误', 0.9
             else:
                 continue
-            item = grouped.setdefault(code, {'code': code, 'title': title, 'score': score, 'evidence': []})
+            item = grouped.setdefault(code, {'code': code, 'title': title, 'score': score, 'evidence': [], 'evidence_refs': []})
             item['evidence'].append(f"{container.get('name') or 'container'}: {reason}")
+            if sample.get('evidence_id'):
+                item['evidence_refs'].append(sample['evidence_id'])
         for event in sample.get('events') or []:
             reason = str(event.get('reason') or '')
             event_map = {
@@ -232,8 +295,10 @@ def _deterministic_candidates(evidence):
             }
             if reason in event_map:
                 code, title = event_map[reason]
-                item = grouped.setdefault(code, {'code': code, 'title': title, 'score': 0.86, 'evidence': []})
+                item = grouped.setdefault(code, {'code': code, 'title': title, 'score': 0.86, 'evidence': [], 'evidence_refs': []})
                 item['evidence'].append(str(event.get('message') or reason)[:240])
+                if event.get('evidence_id'):
+                    item['evidence_refs'].append(event['evidence_id'])
     for finding in evidence.get('k8s_findings') or []:
         code = finding.get('code') or 'k8s_abnormal'
         item = grouped.setdefault(code, {
@@ -241,8 +306,11 @@ def _deterministic_candidates(evidence):
             'title': finding.get('message') or 'K8s 资源状态异常',
             'score': 0.72 if finding.get('severity') == 'critical' else 0.58,
             'evidence': [],
+            'evidence_refs': [],
         })
         item['evidence'].append(finding.get('message'))
+        if finding.get('evidence_id'):
+            item['evidence_refs'].append(finding['evidence_id'])
         item['score'] = min(0.9, item['score'] + 0.04)
     for metric in evidence.get('metric_anomalies') or []:
         code = f"metric_{metric.get('code')}"
@@ -251,6 +319,7 @@ def _deterministic_candidates(evidence):
             'title': f"{metric.get('title')}偏离历史基线",
             'score': min(0.85, 0.45 + float((metric.get('anomaly') or {}).get('confidence') or 0) * 0.35),
             'evidence': [f"{(metric.get('anomaly') or {}).get('vote_count', 0)} 个算法判定异常"],
+            'evidence_refs': [metric['evidence_id']] if metric.get('evidence_id') else [],
         })
     candidates = sorted(grouped.values(), key=lambda item: item.get('score', 0), reverse=True)[:5]
     return candidates
@@ -325,6 +394,7 @@ def _llm_synthesis(evidence, candidates):
                 'content': (
                     '你是生产运维告警研判器。只依据给出的告警与日志证据判断，不得臆测。'
                     '日志仅相关但不能证明因果时必须标记为关联现象。证据不足时不要给出确定根因。'
+                    '每个候选根因必须引用输入中已有的 evidence_id，不得生成不存在的证据编号。'
                     'confidence 不得高于输入中的 confidence_cap。'
                     '仅输出 JSON：summary, root_cause, confidence(0到1), candidates(array), suggestions(array), evidence_notes(array)。'
                 ),
@@ -361,26 +431,6 @@ def _is_automatic_pod_analysis(alert, trigger):
     )
 
 
-def _cancel_analysis_on_resolve(analysis):
-    analysis.status = AlertAnalysis.STATUS_CANCELLED
-    analysis.completed_at = timezone.now()
-    analysis.next_retry_at = None
-    analysis.last_error = '告警在持续 2 分钟前恢复，精准研判已取消'
-    analysis.result = {
-        'summary': '告警已在 2 分钟内恢复，未执行深度研判',
-        'cancelled_reason': 'resolved_before_persistence_window',
-    }
-    analysis.evidence = {
-        **_dict(analysis.evidence),
-        'stage_status': {'waiting_persistence': 'cancelled_on_resolve'},
-    }
-    analysis.save(update_fields=[
-        'status', 'completed_at', 'next_retry_at', 'last_error', 'result', 'evidence', 'updated_at',
-    ])
-    _project_compatibility(analysis)
-    return analysis
-
-
 def _project_compatibility(analysis):
     alert = analysis.alert
     payload = _dict(alert.raw_payload)
@@ -401,20 +451,20 @@ def _project_compatibility(analysis):
 
 def execute_alert_analysis(analysis):
     analysis.alert.refresh_from_db()
-    if analysis.trigger != AlertAnalysis.TRIGGER_MANUAL and analysis.alert.status != Alert.STATUS_ACTIVE:
-        return _cancel_analysis_on_resolve(analysis)
     evidence = collect_alert_evidence(analysis.alert)
+    evidence['alert_status_at_analysis'] = analysis.alert.status
     confidence_policy = _confidence_policy(evidence)
     evidence['evidence_quality'] = confidence_policy
     evidence['confidence_cap'] = confidence_policy['confidence_cap']
     evidence['confidence_reasons'] = confidence_policy['reasons']
     evidence['stage_status'] = {
         **_dict(evidence.get('stage_status')),
-        'waiting_persistence': 'completed',
+        'queued_after_first_notification': 'completed',
         'collecting_metrics': 'completed' if evidence.get('metrics') or evidence.get('targeted_metrics') else 'partial',
         'collecting_k8s': _dict(evidence.get('stage_status')).get('k8s', 'partial'),
         'collecting_logs': _dict(evidence.get('stage_status')).get('logs', 'partial'),
-        'synthesizing': 'completed',
+        'collecting_changes': _dict(evidence.get('stage_status')).get('changes', 'partial'),
+        'synthesizing': 'running',
     }
     candidates = _deterministic_candidates(evidence)
     provider_name = ''
@@ -434,6 +484,8 @@ def execute_alert_analysis(analysis):
             'evidence_notes': [item.get('message') for item in evidence.get('diagnostics') or []],
         }
         status = AlertAnalysis.STATUS_PARTIAL
+    evidence['stage_status']['synthesizing'] = 'completed' if not model_error else 'partial'
+    evidence['stage_status']['completed'] = 'completed' if status == AlertAnalysis.STATUS_COMPLETED else 'partial'
     confidence = result.get('confidence')
     try:
         confidence = max(0.0, min(float(confidence), confidence_policy['confidence_cap'])) if confidence is not None else None
@@ -461,7 +513,7 @@ def execute_alert_analysis(analysis):
     if analysis.alert.status in {Alert.STATUS_ACTIVE, Alert.STATUS_RESOLVED}:
         try:
             from .alerting import dispatch_alert_notifications
-            dispatch_alert_notifications(analysis.alert, action='analysis')
+            dispatch_alert_notifications(analysis.alert, action='analysis', force=True)
         except Exception:
             logger.exception('failed to dispatch analysis notification for alert %s', analysis.alert_id)
     return analysis
@@ -473,12 +525,8 @@ def enqueue_alert_analysis(alert, trigger=AlertAnalysis.TRIGGER_FIRST_ACTIVE, re
     active = alert.analyses.filter(status__in=[AlertAnalysis.STATUS_PENDING, AlertAnalysis.STATUS_RUNNING]).order_by('-id').first()
     if active:
         return active, False
-    automatic = _is_automatic_pod_analysis(alert, trigger)
-    if trigger != AlertAnalysis.TRIGGER_MANUAL and not automatic:
-        return None, False
-    next_retry_at = None
-    if automatic:
-        next_retry_at = max(timezone.now(), (alert.starts_at or timezone.now()) + AUTO_ANALYSIS_DELAY)
+    automatic = trigger != AlertAnalysis.TRIGGER_MANUAL
+    next_retry_at = timezone.now()
     analysis = AlertAnalysis.objects.create(
         alert=alert,
         trigger=trigger,
@@ -491,7 +539,7 @@ def enqueue_alert_analysis(alert, trigger=AlertAnalysis.TRIGGER_FIRST_ACTIVE, re
                 'container': _dict(alert.labels).get('container') or _dict(alert.labels).get('container_name'),
                 'node': _dict(alert.labels).get('node') or _dict(alert.labels).get('node_name'),
             },
-            'stage_status': {'waiting_persistence': 'waiting'},
+            'stage_status': {'queued_after_first_notification': 'waiting'},
         },
     )
     payload = _dict(alert.raw_payload)
@@ -499,7 +547,7 @@ def enqueue_alert_analysis(alert, trigger=AlertAnalysis.TRIGGER_FIRST_ACTIVE, re
         **_dict(payload.get('ai_analysis')),
         'id': analysis.id,
         'status': AlertAnalysis.STATUS_PENDING,
-        'stage': 'waiting_persistence' if automatic else 'collecting_metrics',
+        'stage': 'queued_after_first_notification' if automatic else 'collecting_metrics',
         'scheduled_at': next_retry_at.isoformat() if next_retry_at else None,
     }
     alert.raw_payload = payload
@@ -510,11 +558,30 @@ def enqueue_alert_analysis(alert, trigger=AlertAnalysis.TRIGGER_FIRST_ACTIVE, re
 def enqueue_for_rule_alert(alert, rule, created=False, previous_level=''):
     if not rule.auto_analyze or alert.status != Alert.STATUS_ACTIVE:
         return None, False
-    if created:
+    # Existing active alerts may predate automatic analysis. Queue them once
+    # instead of leaving the compatibility payload permanently at "pending".
+    if created or not alert.analyses.exists():
         return enqueue_alert_analysis(alert, AlertAnalysis.TRIGGER_FIRST_ACTIVE, requested_by='alert-engine')
     if LEVEL_RANK.get(alert.level, 0) > LEVEL_RANK.get(previous_level, 0):
         return enqueue_alert_analysis(alert, AlertAnalysis.TRIGGER_SEVERITY_ESCALATION, requested_by='alert-engine')
     return None, False
+
+
+def enqueue_missing_active_analyses(limit=100):
+    """Repair active rule alerts left with a pending compatibility marker only."""
+    queued = []
+    queryset = Alert.objects.filter(
+        status=Alert.STATUS_ACTIVE,
+        analyses__isnull=True,
+    ).order_by('created_at', 'id')[:max(1, int(limit or 100))]
+    for alert in queryset:
+        rule = _alert_rule(alert)
+        if not rule or not rule.auto_analyze:
+            continue
+        analysis, created = enqueue_for_rule_alert(alert, rule, created=False)
+        if created and analysis:
+            queued.append(analysis.id)
+    return {'queued': len(queued), 'ids': queued}
 
 
 def claim_due_analysis():
@@ -540,12 +607,6 @@ def run_due_alert_analyses(limit=20):
         if not analysis:
             break
         try:
-            analysis.alert.refresh_from_db(fields=['status'])
-            if analysis.trigger != AlertAnalysis.TRIGGER_MANUAL and analysis.alert.status != Alert.STATUS_ACTIVE:
-                _cancel_analysis_on_resolve(analysis)
-                cancelled += 1
-                processed.append(analysis.id)
-                continue
             execute_alert_analysis(analysis)
             analysis.refresh_from_db(fields=['status'])
             completed += analysis.status == AlertAnalysis.STATUS_COMPLETED

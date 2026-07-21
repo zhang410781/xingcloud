@@ -419,7 +419,7 @@
       </section>
     </template>
 
-    <el-drawer v-model="detailVisible" class="alert-detail-drawer" size="640px" title="&#x544A;&#x8B66;&#x8BE6;&#x60C5;">
+    <el-drawer v-model="detailVisible" class="alert-detail-drawer" size="min(640px, 100vw)" title="&#x544A;&#x8B66;&#x8BE6;&#x60C5;">
       <template v-if="selectedAlert">
         <div class="alert-detail-body">
           <div class="detail-head">
@@ -499,10 +499,21 @@
               <div v-if="analysisTargetMetrics.length" class="analysis-evidence analysis-table-wrap">
                 <strong>指标证据</strong>
                 <el-table :data="analysisTargetMetrics" size="small" border>
+                  <el-table-column prop="evidence_id" label="证据" width="76" />
                   <el-table-column prop="title" label="指标" min-width="150" />
+                  <el-table-column prop="health" label="状态" width="90" />
                   <el-table-column label="峰值" width="110"><template #default="{ row }">{{ analysisMetricValue(row.peak) }}</template></el-table-column>
-                  <el-table-column label="当前值" width="110"><template #default="{ row }">{{ analysisMetricValue(row.latest) }}</template></el-table-column>
+                  <el-table-column label="当前值" width="130"><template #default="{ row }">{{ analysisMetricValue(row.latest) }} {{ row.unit || '' }}</template></el-table-column>
                   <el-table-column prop="sample_count" label="采样数" width="80" />
+                </el-table>
+              </div>
+              <div v-if="analysisNodes.length" class="analysis-evidence analysis-table-wrap">
+                <strong>节点状态与 Conditions</strong>
+                <el-table :data="analysisNodes" size="small" border>
+                  <el-table-column prop="name" label="节点" min-width="140" />
+                  <el-table-column prop="status" label="Ready" width="90" />
+                  <el-table-column label="压力状态" min-width="260"><template #default="{ row }">{{ analysisNodeConditions(row) }}</template></el-table-column>
+                  <el-table-column prop="internal_ip" label="内网地址" min-width="130" />
                 </el-table>
               </div>
               <div v-if="analysisContainers.length" class="analysis-evidence analysis-table-wrap">
@@ -518,15 +529,30 @@
                 <strong>日志与事件</strong>
                 <ol><li v-for="(item, index) in analysisEventAndLogItems" :key="index">{{ item }}</li></ol>
               </div>
+              <div v-if="analysisK8sLogSamples.length" class="analysis-evidence">
+                <strong>Pod 当前日志与 previous 崩溃日志</strong>
+                <el-collapse>
+                  <el-collapse-item v-for="item in analysisK8sLogSamples" :key="`${item.namespace}/${item.pod}`" :title="`${item.namespace}/${item.pod}`">
+                    <p class="analysis-log-label">当前日志</p>
+                    <pre class="analysis-log-text">{{ item.current_logs || item.current_logs_error || '未获取到当前日志' }}</pre>
+                    <p class="analysis-log-label">previous 日志</p>
+                    <pre class="analysis-log-text">{{ item.previous_logs || item.previous_logs_error || '未获取到 previous 日志' }}</pre>
+                  </el-collapse-item>
+                </el-collapse>
+              </div>
               <div v-if="analysisCandidates.length" class="analysis-evidence">
                 <strong>候选根因</strong>
-                <ol><li v-for="item in analysisCandidates" :key="item.code || item.title">{{ item.title || item.code }}（{{ analysisConfidenceText(item.score) }}）</li></ol>
+                <ol><li v-for="item in analysisCandidates" :key="item.code || item.title">{{ item.title || item.code }}（{{ analysisConfidenceText(item.score) }}；证据 {{ (item.evidence_refs || []).join('、') || '-' }}）</li></ol>
               </div>
               <div v-if="analysisEvidenceItems.length" class="analysis-evidence">
                 <strong>关键证据</strong>
                 <ol>
                   <li v-for="(item, index) in analysisEvidenceItems" :key="index">{{ item }}</li>
                 </ol>
+              </div>
+              <div v-if="analysisMissingEvidence.length" class="analysis-evidence missing-evidence">
+                <strong>未获取证据及原因</strong>
+                <ol><li v-for="item in analysisMissingEvidence" :key="item.code || item.message">{{ item.code || 'unknown' }}：{{ item.message || '-' }}</li></ol>
               </div>
             </template>
           </section>
@@ -893,6 +919,7 @@ import {
   evaluateAlertRule,
   escalateAlert,
   getAlertAggregationRules,
+  getAlert,
   getAlertEscalationPolicies,
   getAlertGroups,
   getAlertAnalysis,
@@ -1274,6 +1301,9 @@ const analysisCandidates = computed(() => alertAnalysisLatest.value?.candidates 
 const analysisTargeted = computed(() => alertAnalysisLatest.value?.evidence?.targeted_metrics || {})
 const analysisTargetMetrics = computed(() => (analysisTargeted.value?.items || []).filter((item) => item.status === 'ok'))
 const analysisK8sSample = computed(() => alertAnalysisLatest.value?.evidence?.k8s_samples?.[0] || {})
+const analysisK8sLogSamples = computed(() => alertAnalysisLatest.value?.evidence?.k8s_samples || [])
+const analysisNodes = computed(() => alertAnalysisLatest.value?.evidence?.k8s?.nodes || [])
+const analysisMissingEvidence = computed(() => alertAnalysisLatest.value?.evidence?.diagnostics || [])
 const analysisContainers = computed(() => analysisK8sSample.value?.containers || [])
 const analysisWindowText = computed(() => {
   const value = analysisTargeted.value?.window || alertAnalysisLatest.value?.evidence?.logs?.window || {}
@@ -1385,6 +1415,11 @@ function analysisMetricValue(value) {
 
 function analysisContainerState(row) {
   return row?.waiting?.reason || row?.terminated?.reason || (row?.ready ? 'Ready' : 'NotReady')
+}
+
+function analysisNodeConditions(row) {
+  const abnormal = (row?.conditions || []).filter((item) => item.type !== 'Ready' && item.status === 'True')
+  return abnormal.length ? abnormal.map((item) => `${item.type}: ${item.reason || item.message || 'True'}`).join('；') : '无压力状态'
 }
 
 function analysisConfidenceText(value) {
@@ -1605,6 +1640,16 @@ function openDetail(row) {
   detailVisible.value = true
   fetchAlertLogEvidence(row)
   fetchAlertAnalysis(row)
+}
+
+async function openRouteAlertDetail() {
+  const id = Number(route.params.id)
+  if (!id || !canViewAlerts.value) return
+  try {
+    openDetail(await getAlert(id))
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || '告警详情加载失败')
+  }
 }
 
 function handleSelectionChange(rows) {
@@ -2249,7 +2294,10 @@ onMounted(async () => {
   applyRouteFilters()
   users.value = listOf(await getUsers())
   await refreshAll()
+  await openRouteAlertDetail()
 })
+
+watch(() => route.params.id, openRouteAlertDetail)
 </script>
 
 <style scoped>
@@ -2708,6 +2756,7 @@ onMounted(async () => {
   margin-top: 7px;
   min-width: 520px;
 }
+.analysis-log-label { margin: 10px 0 6px; color: #52677d; font-size: 12px; font-weight: 600; }.analysis-log-text { max-height: 280px; margin: 0; padding: 10px; overflow: auto; color: #dbeafe; background: #172334; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.55; }.missing-evidence { border-color: #f2d6a2; background: #fffbeb; }
 
 .log-evidence-list {
   display: grid;

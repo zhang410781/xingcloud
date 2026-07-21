@@ -17,6 +17,7 @@ from cmdb.models import ResourceNode
 from ops.models import (
     Alert,
     AlertAction,
+    AlertInteractionToken,
     AlertRule,
     AlertNotificationChannel,
     AlertNotificationLog,
@@ -2722,6 +2723,25 @@ class AlertActionApiTests(TestCase):
         self.assertEqual(self.alert.status, Alert.STATUS_MUTED)
         self.assertTrue(self.alert.is_suppressed)
 
+    def test_card_action_get_only_previews_and_post_executes(self):
+        token = AlertInteractionToken.objects.create(
+            alert=self.alert,
+            action=AlertAction.ACTION_CLAIM,
+            provider='feishu',
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        url = f'/api/alerts/card-actions/{token.token}/'
+
+        preview = self.client.get(url)
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(preview.json()['action'], 'claim')
+        self.assertEqual(self.alert.claim_records.count(), 0)
+
+        confirmed = self.client.post(url)
+        self.assertEqual(confirmed.status_code, 200)
+        self.assertEqual(self.alert.claim_records.count(), 1)
+        self.assertEqual(self.alert.claim_records.first().claimant, self.user.username)
+
     def test_multiple_users_can_claim_same_alert(self):
         first_claim_response = self.client.post(f'/api/alerts/{self.alert.id}/claim/')
         self.assertEqual(first_claim_response.status_code, 200)
@@ -2894,7 +2914,7 @@ class AlertActionApiTests(TestCase):
         send_alert_notification(channel, self.alert, {'names': ['ops']}, action='fire')
 
         payload = mock_post.call_args.kwargs['json']
-        self.assertEqual(payload['card']['header']['title']['content'], f'【告警】{self.alert.title}')
+        self.assertEqual(payload['card']['header']['title']['content'], f'🔥 🟡 告警中: {self.alert.title}')
 
     def test_feishu_secret_is_masked_and_empty_update_keeps_existing_secret(self):
         channel = AlertNotificationChannel.objects.create(

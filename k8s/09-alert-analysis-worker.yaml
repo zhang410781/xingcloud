@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xing-cloud-alert-analysis
+  namespace: xing-cloud
+  labels:
+    app: xing-cloud
+    component: alert-analysis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: xing-cloud
+      component: alert-analysis
+  template:
+    metadata:
+      labels:
+        app: xing-cloud
+        component: alert-analysis
+    spec:
+      containers:
+        - name: xing-cloud-alert-analysis
+          image: registry.cn-hangzhou.aliyuncs.com/xinghaik8s/ops-agent:inspection-reports-20260717-2325
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: xing-cloud-config
+            - secretRef:
+                name: xing-cloud-secret
+          env:
+            - name: XING_CLOUD_MIGRATE
+              value: "0"
+            - name: XING_CLOUD_SEED_TEMPLATES
+              value: "0"
+          command:
+            - python
+            - manage.py
+            - run_alert_analysis_worker
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi

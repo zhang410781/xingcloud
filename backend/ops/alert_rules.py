@@ -87,7 +87,7 @@ def build_platform_alert_payload(rule, payload=None, status=None):
         'external_id': f'alert-rule:{rule.id}',
         'fingerprint': build_rule_fingerprint(rule, labels),
         'group_key': _first(payload.get('group_key')),
-        'message': _first(payload.get('message'), annotations.get('description'), rule.description, title),
+        'message': _first(payload.get('message'), annotations.get('message'), annotations.get('description'), rule.description, title),
         'service': _first(payload.get('service'), labels.get('service'), labels.get('app'), labels.get('job_name')),
         'environment': _first(payload.get('environment'), labels.get('environment'), labels.get('env')),
         'cluster': _first(payload.get('cluster'), labels.get('cluster')),
@@ -151,12 +151,12 @@ def trigger_alert_rule(rule, payload=None, status=None, request=None):
         )
         apply_alert_suppression(alert)
         apply_escalation_policy(alert, request=request)
-        if rule.auto_analyze and alert.status == Alert.STATUS_ACTIVE:
-            from .alert_analysis import enqueue_for_rule_alert
-            enqueue_for_rule_alert(alert, rule, created=created, previous_level=previous_level)
         notification_action = 'resolved' if alert.status == Alert.STATUS_RESOLVED else 'fire'
 
     logs = []
     if rule.notify_enabled:
         logs = dispatch_alert_notifications(alert, action=notification_action, request=request)
+    if rule.auto_analyze and alert.status == Alert.STATUS_ACTIVE:
+        from .alert_analysis import enqueue_for_rule_alert
+        enqueue_for_rule_alert(alert, rule, created=created, previous_level=previous_level)
     return {'alert': alert, 'created': created, 'notification_logs': logs}

@@ -228,6 +228,18 @@ const routes = [
         meta: { title: '告警中心', icon: 'Bell', anyPermissions: ['ops.alert.view', 'ops.alert.config.view'] },
       },
       {
+        path: 'observability/alerts/:id',
+        name: 'ObservabilityAlertDetail',
+        component: () => import('@/views/Alerts.vue'),
+        meta: { hidden: true, title: '告警详情', permission: 'ops.alert.view' },
+      },
+      {
+        path: 'alert-actions/:token',
+        name: 'AlertActionConfirm',
+        component: () => import('@/views/AlertActionConfirm.vue'),
+        meta: { hidden: true, title: '确认告警操作', permission: 'ops.alert.view' },
+      },
+      {
         path: 'observability/rules',
         name: 'ObservabilityAlertRules',
         component: () => import('@/views/AlertRules.vue'),

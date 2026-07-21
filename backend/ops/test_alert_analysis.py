@@ -9,12 +9,17 @@ from rest_framework.test import APIClient
 
 from aiops.models import AIOpsKnowledgeEnvironment
 from ops.alert_analysis import (
+    _analysis_depth,
     collect_alert_evidence,
     enqueue_alert_analysis,
+    enqueue_for_rule_alert,
+    enqueue_missing_active_analyses,
     execute_alert_analysis,
     run_due_alert_analyses,
 )
-from ops.alerting import _default_body, dispatch_alert_notifications
+from ops.alerting import _default_body, _policy_inhibits_alert, dispatch_alert_notifications, upsert_alert
+from ops.alert_rules import trigger_alert_rule
+from ops.alert_rule_presets import ensure_builtin_alert_rule_templates
 from ops.observability_evidence import _targeted_alert_metrics
 from ops.models import (
     Alert,
@@ -154,7 +159,7 @@ class AlertAnalysisTests(TestCase):
         self.assertEqual(analysis.evidence['logs']['sample_count'], 1)
         self.assertEqual(analysis.candidates[0]['code'], 'oom_killed')
         self.assertEqual(self.alert.raw_payload['ai_analysis']['status'], AlertAnalysis.STATUS_PARTIAL)
-        dispatch.assert_called_once_with(analysis.alert, action='analysis')
+        dispatch.assert_called_once_with(analysis.alert, action='analysis', force=True)
 
     @patch('ops.alerting.dispatch_alert_notifications')
     @patch('ops.alert_analysis._llm_synthesis')
@@ -168,7 +173,7 @@ class AlertAnalysisTests(TestCase):
 
         execute_alert_analysis(analysis)
 
-        dispatch.assert_called_once_with(analysis.alert, action='analysis')
+        dispatch.assert_called_once_with(analysis.alert, action='analysis', force=True)
 
     @patch('ops.alerting.send_alert_notification', return_value='sent')
     def test_notification_dispatch_allows_resolved_analysis(self, send_notification):
@@ -205,7 +210,7 @@ class AlertAnalysisTests(TestCase):
         self.assertEqual(analysis.status, AlertAnalysis.STATUS_PENDING)
         self.assertEqual(analysis.retry_count, 1)
 
-    def test_automatic_pod_analysis_waits_two_minutes_and_deduplicates(self):
+    def test_automatic_analysis_is_immediately_due_and_deduplicates(self):
         self.alert.starts_at = timezone.now()
         self.alert.save(update_fields=['starts_at'])
 
@@ -215,11 +220,97 @@ class AlertAnalysisTests(TestCase):
         self.assertTrue(created)
         self.assertFalse(duplicate_created)
         self.assertEqual(duplicate.id, analysis.id)
-        self.assertGreaterEqual(analysis.next_retry_at, self.alert.starts_at + timedelta(minutes=2))
-        self.assertEqual(analysis.evidence['stage_status']['waiting_persistence'], 'waiting')
+        self.assertLessEqual(analysis.next_retry_at, timezone.now())
+        self.assertEqual(analysis.evidence['stage_status']['queued_after_first_notification'], 'waiting')
+
+    def test_existing_active_alert_without_analysis_is_backfilled_once(self):
+        rule = AlertRule.objects.create(
+            name='existing active rule', source_type='prometheus', category='k8s',
+            metric_datasource=self.metric, is_template=False, auto_analyze=True,
+        )
+
+        analysis, created = enqueue_for_rule_alert(self.alert, rule, created=False)
+        duplicate, duplicate_created = enqueue_for_rule_alert(self.alert, rule, created=False)
+
+        self.assertTrue(created)
+        self.assertFalse(duplicate_created)
+        self.assertEqual(duplicate.id, analysis.id)
+        self.assertEqual(self.alert.analyses.count(), 1)
+
+    def test_worker_repairs_active_alert_with_pending_marker_only(self):
+        rule = AlertRule.objects.create(
+            name='repair rule', source_type='prometheus', category='k8s',
+            metric_datasource=self.metric, is_template=False, auto_analyze=True,
+        )
+        self.alert.raw_payload = {
+            **self.alert.raw_payload,
+            'rule': {'id': rule.id, 'metric_datasource_id': self.metric.id},
+            'ai_analysis': {'status': 'pending'},
+        }
+        self.alert.save(update_fields=['raw_payload'])
+
+        first = enqueue_missing_active_analyses()
+        second = enqueue_missing_active_analyses()
+
+        self.assertEqual(first['queued'], 1)
+        self.assertEqual(second['queued'], 0)
+        self.assertEqual(self.alert.analyses.count(), 1)
+
+    def test_legacy_k8s_templates_and_instances_are_deleted(self):
+        legacy = AlertRule.objects.create(
+            name='legacy pod restart', code='k8s-abnormal-pods', source='builtin',
+            source_type='prometheus', category='k8s', is_template=True,
+        )
+        instance = AlertRule.objects.create(
+            name='legacy pod restart instance', source='k8s-abnormal-pods',
+            source_type='prometheus', category='k8s', is_template=False,
+            template=legacy, metric_datasource=self.metric,
+        )
+
+        ensure_builtin_alert_rule_templates()
+
+        self.assertFalse(AlertRule.objects.filter(pk=legacy.pk).exists())
+        self.assertFalse(AlertRule.objects.filter(pk=instance.pk).exists())
+
+    def test_resolve_does_not_cancel_queued_analysis(self):
+        self.alert.fingerprint = 'resolve-keeps-analysis'
+        self.alert.save(update_fields=['fingerprint'])
+        analysis, _ = enqueue_alert_analysis(self.alert, requested_by='alert-engine')
+        upsert_alert({
+            'title': self.alert.title,
+            'level': self.alert.level,
+            'status': Alert.STATUS_RESOLVED,
+            'source': self.alert.source,
+            'source_type': self.alert.source_type,
+            'fingerprint': self.alert.fingerprint,
+            'message': self.alert.message,
+            'environment': self.alert.environment,
+            'labels': self.alert.labels,
+            'raw_payload': self.alert.raw_payload,
+            'ends_at': timezone.now(),
+        })
+
+        analysis.refresh_from_db()
+        self.assertEqual(analysis.status, AlertAnalysis.STATUS_PENDING)
+
+    @patch('ops.alert_analysis.enqueue_for_rule_alert')
+    @patch('ops.alert_rules.dispatch_alert_notifications')
+    def test_direct_rule_trigger_notifies_before_enqueue(self, dispatch, enqueue):
+        order = []
+        dispatch.side_effect = lambda *args, **kwargs: order.append('notify') or []
+        enqueue.side_effect = lambda *args, **kwargs: order.append('enqueue') or (None, False)
+        rule = AlertRule.objects.create(
+            name='ordered rule', code='ordered-rule', source_type='prometheus', category='k8s',
+            metric_datasource=self.metric, is_template=False, is_enabled=True,
+            notify_enabled=True, auto_analyze=True,
+        )
+
+        trigger_alert_rule(rule, payload={'title': 'ordered alert', 'labels': {'pod': 'api-0'}})
+
+        self.assertEqual(order, ['notify', 'enqueue'])
 
     @patch('ops.alert_analysis.execute_alert_analysis')
-    def test_recovered_before_persistence_window_cancels_analysis(self, execute):
+    def test_recovered_alert_still_executes_queued_analysis(self, execute):
         analysis, _ = enqueue_alert_analysis(self.alert, requested_by='alert-engine')
         analysis.next_retry_at = timezone.now() - timedelta(seconds=1)
         analysis.save(update_fields=['next_retry_at'])
@@ -229,12 +320,10 @@ class AlertAnalysisTests(TestCase):
         outcome = run_due_alert_analyses(limit=1)
         analysis.refresh_from_db()
 
-        self.assertEqual(outcome['cancelled'], 1)
-        self.assertEqual(analysis.status, AlertAnalysis.STATUS_CANCELLED)
-        self.assertEqual(analysis.result['cancelled_reason'], 'resolved_before_persistence_window')
-        execute.assert_not_called()
+        self.assertEqual(outcome['cancelled'], 0)
+        execute.assert_called_once()
 
-    def test_non_pod_alert_does_not_enqueue_automatic_analysis(self):
+    def test_non_pod_alert_can_enqueue_automatic_analysis(self):
         self.alert.resource_type = 'database'
         self.alert.resource = 'mysql-primary'
         self.alert.namespace = ''
@@ -243,8 +332,37 @@ class AlertAnalysisTests(TestCase):
 
         analysis, created = enqueue_alert_analysis(self.alert, requested_by='alert-engine')
 
-        self.assertIsNone(analysis)
-        self.assertFalse(created)
+        self.assertIsNotNone(analysis)
+        self.assertTrue(created)
+
+    def test_related_alert_burst_uses_full_analysis(self):
+        for index in range(2):
+            Alert.objects.create(
+                title=f'related-{index}', level='warning', status=Alert.STATUS_ACTIVE,
+                source='test', source_type=Alert.SOURCE_PLATFORM,
+                environment='prod', namespace='ops', starts_at=timezone.now(),
+            )
+
+        self.assertEqual(_analysis_depth(self.alert), 'full')
+
+    def test_agent4_policy_inhibits_lower_level_same_object(self):
+        self.alert.labels = {**self.alert.labels, 'alert_rule_code': 'pod-restarts'}
+        self.alert.save(update_fields=['labels'])
+        Alert.objects.create(
+            title='critical source', level='critical', status=Alert.STATUS_ACTIVE,
+            source='test', source_type=Alert.SOURCE_PLATFORM,
+            environment='prod', namespace='ops',
+            labels={'alert_rule_code': 'pod-restarts'}, starts_at=timezone.now(),
+        )
+        policy = AlertNotificationPolicy.objects.create(
+            name='agent4', inhibition_matchers=[{
+                'source_level': 'critical',
+                'target_levels': ['warning', 'info'],
+                'equal': ['environment', 'namespace', 'alert_rule_code'],
+            }],
+        )
+
+        self.assertTrue(_policy_inhibits_alert(policy, self.alert))
 
     @patch('ops.observability_views.execute_promql_query')
     def test_targeted_metrics_use_exact_pod_dimensions_and_alert_window(self, query):
@@ -266,6 +384,17 @@ class AlertAnalysisTests(TestCase):
         self.assertEqual(first_kwargs['start_time'], start_at)
         self.assertEqual(first_kwargs['end_time'], end_at)
 
+    @patch('ops.observability_evidence._run_query')
+    def test_delayed_analysis_caps_primary_log_window_at_five_minutes(self, run_query):
+        run_query.return_value = {'total': 0, 'logs': []}
+        self.alert.starts_at = timezone.now() - timedelta(minutes=30)
+        self.alert.save(update_fields=['starts_at'])
+
+        collect_alert_evidence(self.alert)
+
+        primary = run_query.call_args_list[0].args[2]
+        self.assertLessEqual(primary['end_ms'] - primary['start_ms'], 5 * 60 * 1000)
+
     def test_notification_policy_exposes_analysis_switch_default(self):
         policy = AlertNotificationPolicy.objects.create(name='analysis policy')
         self.assertTrue(policy.notify_on_analysis)
@@ -283,7 +412,7 @@ class AlertAnalysisTests(TestCase):
 
         body = _default_body(self.alert, action='analysis')
 
-        self.assertIn('告警状态：** 已恢复', body)
+        self.assertIn('研判状态：** 研判期间已恢复', body)
 
 
 class AlertAnalysisApiTests(TestCase):

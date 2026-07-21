@@ -84,14 +84,16 @@ if ! kubectl wait --for=condition=complete job/xing-cloud-init -n "${NAMESPACE}"
   exit 1
 fi
 
-echo "==> Applying app NodePort service, ingress and scheduler"
+echo "==> Applying app NodePort service, ingress and workers"
 kubectl apply -f "$(render_manifest 05-app.yaml)"
 kubectl apply -f 06-ingress.yaml
 kubectl apply -f "$(render_manifest 07-scheduler.yaml)"
+kubectl apply -f "$(render_manifest 09-alert-analysis-worker.yaml)"
 
 echo "==> Waiting for rollouts"
 kubectl rollout status deployment/xing-cloud-app -n "${NAMESPACE}" --timeout=300s
 kubectl rollout status deployment/xing-cloud-scheduler -n "${NAMESPACE}" --timeout=180s
+kubectl rollout status deployment/xing-cloud-alert-analysis -n "${NAMESPACE}" --timeout=180s
 
 echo "==> Done"
 echo "Image: ${IMAGE}"

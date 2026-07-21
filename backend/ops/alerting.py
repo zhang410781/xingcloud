@@ -224,17 +224,6 @@ def upsert_alert(normalized, actor='system', action=None, action_note=None):
             alert.ends_at = None
         alert.save()
 
-    if status_value == Alert.STATUS_RESOLVED:
-        # Cancel the two-minute persistence gate immediately on recovery.
-        try:
-            from .alert_analysis import _cancel_analysis_on_resolve
-            for analysis in alert.analyses.filter(
-                status__in=[AlertAnalysis.STATUS_PENDING, AlertAnalysis.STATUS_RUNNING],
-            ).exclude(trigger=AlertAnalysis.TRIGGER_MANUAL):
-                _cancel_analysis_on_resolve(analysis)
-        except Exception:
-            logger.exception('failed to cancel pending analysis for resolved alert %s', alert.id)
-
     if not alert.group_key:
         alert.group_key = compute_group_key(alert)
         alert.save(update_fields=['group_key'])
@@ -310,6 +299,31 @@ def match_matchers(alert, matchers):
     return True
 
 
+def _policy_inhibits_alert(policy, alert):
+    definitions = [
+        item for item in _list(policy.inhibition_matchers)
+        if isinstance(item, dict) and item.get('source_level') and item.get('target_levels')
+    ]
+    if not definitions:
+        return bool(policy.inhibition_matchers) and match_matchers(alert, policy.inhibition_matchers)
+    target_values = _alert_value_map(alert)
+    for definition in definitions:
+        if alert.level not in {_text(item) for item in _list(definition.get('target_levels'))}:
+            continue
+        source_level = _text(definition.get('source_level'))
+        equal_keys = [_text(item) for item in _list(definition.get('equal')) if _text(item)]
+        candidates = Alert.objects.filter(
+            status=Alert.STATUS_ACTIVE,
+            level=source_level,
+            environment=alert.environment,
+        ).exclude(pk=alert.pk).order_by('-starts_at')[:200]
+        for candidate in candidates:
+            source_values = _alert_value_map(candidate)
+            if all(source_values.get(key, '') == target_values.get(key, '') for key in equal_keys):
+                return True
+    return False
+
+
 def apply_alert_suppression(alert):
     now = timezone.now()
     matched_silence = None
@@ -366,7 +380,7 @@ def _interaction_url(alert, action, provider='', request=None):
     base = _base_url(request)
     if not base:
         return ''
-    return f'{base}/api/alerts/card-actions/{token.token}/'
+    return f'{base}/alert-actions/{token.token}'
 
 
 def _alert_context(alert, action='fire'):
@@ -408,11 +422,12 @@ def _render(value, alert, action='fire'):
 
 
 def _default_title(alert, action='fire'):
-    prefix = {
-        'resolved': '【恢复】',
-        'analysis': '【智能研判】',
-    }.get(action, '【告警】')
-    return f'{prefix}{alert.title}'
+    if action == 'resolved':
+        return f'✅ 🟢 已恢复: {alert.title}'
+    if action == 'analysis':
+        return f'🎯 智能告警研判: {alert.title}'
+    level = {'critical': '🔴', 'warning': '🟡', 'info': '🔵'}.get(alert.level, '🟡')
+    return f'🔥 {level} 告警中: {alert.title}'
 
 
 def _notification_payload(alert):
@@ -699,7 +714,17 @@ def _analysis_markdown(alert, raw):
 def _default_body(alert, action='fire'):
     raw, event, rule, evidence = _notification_payload(alert)
     if action == 'analysis':
-        return _analysis_markdown(alert, raw)
+        confidence, root_cause, evidence_text, suggestion = _analysis_content(alert, raw)
+        status_text = '告警仍活跃' if alert.status == Alert.STATUS_ACTIVE else '研判期间已恢复'
+        return '\n'.join([
+            f'**研判状态：** {status_text}',
+            f'**研判结论：** {root_cause}',
+            f'**置信度：** {confidence}',
+            f'**关键证据：** {evidence_text}',
+            f'**优先建议：** {suggestion}',
+            '',
+            '完整指标、K8S状态、事件、日志、反向证据和处置建议请点击“查看详情”。',
+        ])
 
     value = _first_number(evidence.get('value'), event.get('value'), _dict(event.get('evidence')).get('value'))
     unit = _metric_unit(alert, rule)
@@ -708,14 +733,18 @@ def _default_body(alert, action='fire'):
     if window and value is not None:
         value_text = f'{value_text} / {window}'
     object_name = alert.resource or (alert.host.hostname if alert.host else '') or '-'
+    level_icon = {'critical': '🔴', 'warning': '🟡', 'info': '🔵'}.get(alert.level, '🟡')
+    status_text = '🟢 已恢复' if action == 'resolved' else '🔥 告警中'
+    description = _text(_dict(alert.annotations).get('description')) or '无描述'
     lines = [
-        f'**告警级别：** {alert.get_level_display()}',
-        f'**集群：** {alert.cluster or "-"}',
-        f'**命名空间：** {alert.namespace or "-"}',
-        f'**告警对象：** {object_name}',
-        f'**当前值：** {value_text}',
-        f'**触发条件：** {_condition_text(alert, rule, unit)}',
-        f'**告警详情：** {_human_description(alert, event)}',
+        f'📛 **告警名称：** {alert.title}',
+        f'⚡ **严重程度：** {level_icon} {str(alert.level or "warning").upper()}',
+        f'📍 **当前状态：** {status_text}',
+        f'🎯 **影响范围：** {alert.namespace or "-"}/{object_name}',
+        f'📝 **告警摘要：** {alert.message or _human_description(alert, event)}',
+        f'📋 **详细描述：** {description}',
+        f'📊 **当前值：** {value_text}',
+        f'📐 **触发条件：** {_condition_text(alert, rule, unit)}',
     ]
     if action == 'resolved':
         resolved_at = alert.ends_at or alert.last_received_at or timezone.now()
@@ -724,10 +753,10 @@ def _default_body(alert, action='fire'):
             f'**持续时间：** {_format_duration(alert.starts_at, resolved_at)}',
         ])
     else:
-        lines.append(f'**发生时间：** {_format_datetime(alert.starts_at)}')
+        lines.append(f'🕐 **发生时间：** {_format_datetime(alert.starts_at)}')
         ai_status = _dict(raw.get('ai_analysis')).get('status')
         if ai_status in {'pending', 'running'}:
-            lines.append('**智能研判：** 告警持续 2 分钟后执行精准研判，完成后另行通知')
+            lines.append('⏳ **智能研判：** 正在执行精准研判，完成后将发送独立结果通知。')
         title_text = f'{alert.title} {alert.message}'.lower()
         if any(token in title_text for token in ('重启', 'crashloop', 'pod', '容器')):
             lines.append('**简要建议：** 优先查看目标 Pod 的状态、Warning Event、当前日志和上次崩溃日志。')
@@ -831,6 +860,13 @@ def _card_buttons(alert, provider, request=None):
         'escalate': '升级',
     }
     buttons = []
+    detail_url = _base_url(request)
+    if detail_url:
+        buttons.append({
+            'action': 'detail',
+            'title': '查看详情',
+            'url': f'{detail_url}/observability/alerts/{alert.id}',
+        })
     for action in CARD_ACTIONS:
         url = _interaction_url(alert, action, provider=provider, request=request)
         if url:
@@ -1003,7 +1039,7 @@ def send_alert_notification(channel, alert, recipients, action='fire', rule=None
                         'elements': [
                             {'tag': 'markdown', 'content': body},
                             {'tag': 'action', 'actions': [
-                                {'tag': 'button', 'text': {'tag': 'plain_text', 'content': item['title']}, 'url': item['url'], 'type': 'primary' if item['action'] == 'acknowledge' else 'default'}
+                                {'tag': 'button', 'text': {'tag': 'plain_text', 'content': item['title']}, 'url': item['url'], 'type': 'primary' if item['action'] == 'detail' else 'default'}
                                 for item in buttons
                             ]},
                         ],
@@ -1147,7 +1183,7 @@ def dispatch_alert_notifications(alert, action='fire', request=None, force=False
         for policy in policies:
             if not _policy_action_enabled(policy, action) or _policy_is_muted(policy, timezone.localtime(now)):
                 continue
-            if policy.inhibition_matchers and match_matchers(alert, policy.inhibition_matchers):
+            if _policy_inhibits_alert(policy, alert):
                 continue
             channels = list(policy.channels.filter(is_enabled=True))
             if action == 'resolved':
@@ -1411,18 +1447,23 @@ def apply_alert_action(alert, action, actor='', note='', metadata=None, request=
     return action_record
 
 
-def handle_interaction_token(token_value, request=None):
+def handle_interaction_token(token_value, request=None, execute=False):
     token = AlertInteractionToken.objects.select_related('alert').filter(token=token_value).first()
     if not token:
-        return False, '交互令牌不存在', None
+        return False, '交互令牌不存在', None, None
     if not token.is_available:
-        return False, '交互令牌已过期或已使用', token.alert
-    actor = f'card:{token.provider or "unknown"}'
-    note = '卡片按钮操作'
+        return False, '交互令牌已过期或已使用', token.alert, token
+    if not execute:
+        return True, '请确认告警操作', token.alert, token
+    user = getattr(request, 'user', None)
+    if not user or not user.is_authenticated:
+        return False, '请登录后执行告警操作', token.alert, token
+    actor = user.username
+    note = f'{token.provider or "通知卡片"}按钮确认操作'
     apply_alert_action(token.alert, token.action, actor=actor, note=note, metadata={'token': str(token.token)}, request=request)
     token.used_at = timezone.now()
     token.save(update_fields=['used_at'])
-    return True, '告警操作已处理', token.alert
+    return True, '告警操作已处理', token.alert, token
 
 
 def alert_group_summary(queryset, group_by=None, limit=5000):

@@ -2,6 +2,7 @@ import time
 
 from django.utils import timezone
 
+from ..alert_annotation_templates import render_rule_annotations
 from ops.log_views import (
     _clickhouse_data_rows,
     _clickhouse_identifier,
@@ -121,6 +122,7 @@ def _prometheus_results(rule):
             labels.setdefault('cluster', rule.metric_datasource.cluster_name)
         resource = labels.get('pod') or labels.get('instance') or labels.get('node') or labels.get('job') or ''
         matched = _compare(value, condition)
+        rendered_annotations, template_diagnostics = render_rule_annotations(rule, labels=labels, value=value)
         results.append({
             'source_type': 'prometheus',
             'matched': matched,
@@ -129,8 +131,10 @@ def _prometheus_results(rule):
             'resource': resource,
             'resource_type': labels.get('resource_type') or 'metric',
             'metric_name': labels.get('__name__') or query,
-            'title': rule.name if matched else '',
-            'message': f'{query} value {value}',
+            'title': rendered_annotations['summary'] if matched else '',
+            'message': rendered_annotations['message'],
+            'annotations': rendered_annotations,
+            'template_diagnostics': template_diagnostics,
             'evidence': result_evidence('prometheus', query=query, value=value, labels=labels, raw=item),
         })
     return results

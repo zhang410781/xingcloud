@@ -2,6 +2,12 @@ from copy import deepcopy
 
 from django.db import transaction
 
+from .alert_rule_catalog import (
+    K8S_AGENT_RULE_TEMPLATES,
+    NORMALIZED_RULE_COUNT,
+    REFERENCE_RULE_COUNT,
+    REFERENCE_RULE_NAMES,
+)
 from .models import AlertRule, MetricDataSource
 
 
@@ -315,221 +321,86 @@ BUILTIN_ALERT_RULE_TEMPLATES = [
 ]
 
 
-def _ops_agent_k8s_template(group, code, name, level, query, condition, duration_seconds,
-                            description='', sort_order=600, auto_analyze=True):
-    group_labels = {
-        'apiserver': 'API Server',
-        'workload': '工作负载',
-        'network': '节点网络',
-        'storage': '集群存储',
-        'system': '节点系统',
-    }
-    return _template(
-        'k8s', code, name, 'prometheus', level,
-        {'query': query, 'value_path': 'value'}, condition,
-        {
-            'integration': 'kubernetes',
-            'service': 'kubernetes',
-            'rule_group': group,
-            'rule_group_label': group_labels[group],
-            'template_source': 'xing-cloud-ops-agent',
-        },
-        {'summary': name},
-        interval_seconds=30 if duration_seconds < 60 else 60,
-        duration_seconds=duration_seconds,
-        notify_enabled=True,
-        auto_analyze=auto_analyze,
-        description=description or f'参考 xing-cloud-ops-agent {group_labels[group]} 告警规则。',
-        sort_order=sort_order,
-    )
 
+LEGACY_K8S_TEMPLATE_CODES = {
+    'k8s-node-not-ready', 'k8s-abnormal-pods', 'k8s-events-warning',
+    'k8s-high-cpu-pod', 'k8s-high-memory-pod', 'k8s-pvc-usage',
+}
 
-OPS_AGENT_K8S_ALERT_RULE_TEMPLATES = [
-    # API Server
-    _ops_agent_k8s_template(
-        'apiserver', 'k8s-apiserver-latency', 'API Server 请求延迟过高', 'warning',
-        'histogram_quantile(0.99, sum(rate(apiserver_request_duration_seconds_bucket{job="apiserver",verb!~"WATCH|CONNECT"}[5m])) by (verb, le))',
-        {'levels': [
-            {'level': 'warning', 'operator': '>', 'threshold': 1, 'duration_seconds': 300},
-            {'level': 'critical', 'operator': '>', 'threshold': 4, 'duration_seconds': 300},
-        ]}, 300, 'API Server 非 WATCH/CONNECT 请求 P99 延迟监控。', 600),
-    _ops_agent_k8s_template(
-        'apiserver', 'k8s-apiserver-error-rate', 'API Server 5XX 错误率过高', 'warning',
-        'sum(rate(apiserver_request_total{job="apiserver",code=~"5.."}[5m])) / sum(rate(apiserver_request_total{job="apiserver"}[5m]))',
-        {'levels': [
-            {'level': 'warning', 'operator': '>', 'threshold': 0.01, 'duration_seconds': 300},
-            {'level': 'critical', 'operator': '>', 'threshold': 0.03, 'duration_seconds': 300},
-        ]}, 300, 'API Server 全局 5XX 请求比例监控。', 610),
-    _ops_agent_k8s_template(
-        'apiserver', 'k8s-apiserver-resource-error-rate', 'API Server 资源请求错误率过高', 'warning',
-        'sum(rate(apiserver_request_total{job="apiserver",code=~"5.."}[5m])) by (resource,subresource,verb,cluster) / sum(rate(apiserver_request_total{job="apiserver"}[5m])) by (resource,subresource,verb,cluster)',
-        {'levels': [
-            {'level': 'warning', 'operator': '>', 'threshold': 0.05, 'duration_seconds': 300},
-            {'level': 'critical', 'operator': '>', 'threshold': 0.10, 'duration_seconds': 300},
-        ]}, 300, '按资源、子资源和请求动作统计 API Server 5XX 比例。', 620),
-    _ops_agent_k8s_template(
-        'apiserver', 'k8s-client-certificate-expiring', 'K8S 客户端证书即将过期', 'warning',
-        'histogram_quantile(0.01, sum by (job, le) (rate(apiserver_client_certificate_expiration_seconds_bucket{job="apiserver"}[5m])))',
-        {'levels': [
-            {'level': 'warning', 'operator': '<', 'threshold': 604800, 'duration_seconds': 300},
-            {'level': 'critical', 'operator': '<', 'threshold': 86400, 'duration_seconds': 300},
-        ]}, 300, 'Kubernetes 客户端证书 7 天和 24 小时到期双阈值监控。', 630),
-    _ops_agent_k8s_template(
-        'apiserver', 'k8s-apiserver-down', 'API Server 掉线', 'critical',
-        'absent(up{job="apiserver"} == 1)',
-        {'operator': '>', 'threshold': 0}, 300, 'Prometheus 无法发现可用 API Server target。', 640),
-
-    # 工作负载
-    _ops_agent_k8s_template(
-        'workload', 'k8s-pod-waiting', 'Pod 长时间 Waiting', 'critical',
-        'max_over_time(kube_pod_container_status_waiting_reason{reason!="ContainerCreating"}[5m])',
-        {'operator': '>', 'threshold': 0}, 180, 'Pod 因非 ContainerCreating 原因持续等待。', 700),
-    _ops_agent_k8s_template(
-        'workload', 'k8s-pod-unschedulable', 'Pod 调度失败', 'critical',
-        'sum by (cluster,namespace,pod) (kube_pod_status_unschedulable)',
-        {'operator': '>', 'threshold': 0}, 300, 'Pod 没有符合条件的工作节点。', 710),
-    _ops_agent_k8s_template(
-        'workload', 'k8s-pod-not-ready-long', 'Pod 长时间 NotReady', 'critical',
-        'sum by (namespace, pod, cluster) (max by(namespace, pod, cluster) (kube_pod_status_phase{job="kube-state-metrics",phase=~"Pending|Unknown"}) * on(namespace,pod,cluster) group_left(owner_kind) max by(namespace,pod,owner_kind,cluster) (kube_pod_owner{owner_kind!="Job"}))',
-        {'operator': '>', 'threshold': 0}, 900, '非 Job Pod 持续处于 Pending 或 Unknown。', 720),
-    _ops_agent_k8s_template(
-        'workload', 'k8s-deployment-unavailable', 'Deployment 存在不可用副本', 'warning',
-        'kube_deployment_status_replicas_unavailable{job="kube-state-metrics"}',
-        {'operator': '>', 'threshold': 0}, 900, 'Deployment 部分副本持续不可用。', 730),
-    _ops_agent_k8s_template(
-        'workload', 'k8s-deployment-generation-mismatch', 'Deployment 版本未完成观测', 'critical',
-        'kube_deployment_status_observed_generation{job="kube-state-metrics"} != kube_deployment_metadata_generation{job="kube-state-metrics"}',
-        {'operator': '>', 'threshold': 0}, 900, 'Deployment observed generation 与 metadata generation 不一致。', 740),
-    _ops_agent_k8s_template(
-        'workload', 'k8s-deployment-replicas-mismatch', 'Deployment 实际副本与期望不一致', 'critical',
-        'kube_deployment_spec_replicas{job="kube-state-metrics"} != kube_deployment_status_replicas_available{job="kube-state-metrics"}',
-        {'operator': '>', 'threshold': 0}, 900, 'Deployment 可用副本数持续未达到期望。', 750),
-    _ops_agent_k8s_template(
-        'workload', 'k8s-statefulset-replicas-mismatch', 'StatefulSet 就绪副本与期望不一致', 'critical',
-        'kube_statefulset_status_replicas_ready{job="kube-state-metrics"} != kube_statefulset_status_replicas{job="kube-state-metrics"}',
-        {'operator': '>', 'threshold': 0}, 900, 'StatefulSet 就绪副本数持续不足。', 760),
-    _ops_agent_k8s_template(
-        'workload', 'k8s-statefulset-generation-mismatch', 'StatefulSet 版本未完成观测', 'critical',
-        'kube_statefulset_status_observed_generation{job="kube-state-metrics"} != kube_statefulset_metadata_generation{job="kube-state-metrics"}',
-        {'operator': '>', 'threshold': 0}, 900, 'StatefulSet observed generation 与 metadata generation 不一致。', 770),
-    _ops_agent_k8s_template(
-        'workload', 'k8s-daemonset-rollout-failed', 'DaemonSet 展开失败', 'critical',
-        'kube_daemonset_status_number_ready{job="kube-state-metrics"} / kube_daemonset_status_desired_number_scheduled{job="kube-state-metrics"}',
-        {'operator': '<', 'threshold': 1}, 900, 'DaemonSet 就绪比例持续低于 100%。', 780),
-    _ops_agent_k8s_template(
-        'workload', 'k8s-daemonset-unscheduled', 'DaemonSet 存在未调度 Pod', 'warning',
-        'kube_daemonset_status_desired_number_scheduled{job="kube-state-metrics"} - kube_daemonset_status_current_number_scheduled{job="kube-state-metrics"}',
-        {'operator': '>', 'threshold': 0}, 600, 'DaemonSet 期望调度数大于当前调度数。', 790),
-    _ops_agent_k8s_template(
-        'workload', 'k8s-daemonset-misscheduled', 'DaemonSet 调度到非预期节点', 'warning',
-        'kube_daemonset_status_number_misscheduled{job="kube-state-metrics"}',
-        {'operator': '>', 'threshold': 0}, 600, 'DaemonSet 有 Pod 被调度到非预期节点。', 800),
-    _ops_agent_k8s_template(
-        'workload', 'k8s-job-failed', 'K8S Job 执行失败', 'warning',
-        'kube_job_failed{job="kube-state-metrics"}',
-        {'operator': '>', 'threshold': 0}, 900, 'Kubernetes Job 出现失败状态。', 810),
-    _ops_agent_k8s_template(
-        'workload', 'k8s-hpa-replicas-mismatch', 'HPA 当前副本与期望不一致', 'warning',
-        '(kube_hpa_status_desired_replicas{job="kube-state-metrics"} != kube_hpa_status_current_replicas{job="kube-state-metrics"}) and changes(kube_hpa_status_current_replicas[15m]) == 0',
-        {'operator': '>', 'threshold': 0}, 900, 'HPA 副本数不一致且 15 分钟内没有变化。', 820),
-
-    # 节点网络
-    _ops_agent_k8s_template(
-        'network', 'k8s-node-network-flapping', '节点网卡状态频繁变化', 'warning',
-        'changes(node_network_up{job="node-exporter",device!~"lo|veth.*|cali.*|flannel.*|vxlan.*|docker.*|br-.*"}[2m])',
-        {'operator': '>', 'threshold': 2}, 120, '物理网卡在两分钟内多次上下线。', 900),
-    _ops_agent_k8s_template(
-        'network', 'k8s-node-network-receive-errors', '节点下行网络错误', 'warning',
-        'rate(node_network_receive_errs_total{device!~"lo|veth.*|cali.*|flannel.*|vxlan.*|docker.*|br-.*"}[5m])',
-        {'operator': '>', 'threshold': 0}, 300, '节点物理网卡持续出现接收错误。', 910),
-    _ops_agent_k8s_template(
-        'network', 'k8s-node-network-transmit-errors', '节点上行网络错误', 'warning',
-        'rate(node_network_transmit_errs_total{device!~"lo|veth.*|cali.*|flannel.*|vxlan.*|docker.*|br-.*"}[5m])',
-        {'operator': '>', 'threshold': 0}, 300, '节点物理网卡持续出现发送错误。', 920),
-    _ops_agent_k8s_template(
-        'network', 'k8s-node-network-receive-drops', '节点下行丢包', 'warning',
-        'rate(node_network_receive_drop_total{device!~"lo|veth.*|cali.*|flannel.*|vxlan.*|docker.*|br-.*"}[5m])',
-        {'operator': '>', 'threshold': 10}, 300, '节点物理网卡接收丢包速率过高。', 930),
-    _ops_agent_k8s_template(
-        'network', 'k8s-node-network-transmit-drops', '节点上行丢包', 'warning',
-        'rate(node_network_transmit_drop_total{device!~"lo|veth.*|cali.*|flannel.*|vxlan.*|docker.*|br-.*"}[5m])',
-        {'operator': '>', 'threshold': 10}, 300, '节点物理网卡发送丢包速率过高。', 940),
-    _ops_agent_k8s_template(
-        'network', 'k8s-node-network-receive-bandwidth', '节点下行带宽过高', 'warning',
-        'irate(node_network_receive_bytes_total{device!~"lo|veth.*|cali.*|flannel.*|vxlan.*|docker.*|br-.*"}[10s]) / 1024 / 1024',
-        {'operator': '>', 'threshold': 100}, 10, '节点物理网卡下载带宽持续超过 100MB/s。', 950),
-    _ops_agent_k8s_template(
-        'network', 'k8s-node-network-transmit-bandwidth', '节点上行带宽过高', 'warning',
-        'irate(node_network_transmit_bytes_total{device!~"lo|veth.*|cali.*|flannel.*|vxlan.*|docker.*|br-.*"}[10s]) / 1024 / 1024',
-        {'operator': '>', 'threshold': 100}, 10, '节点物理网卡上传带宽持续超过 100MB/s。', 960),
-
-    # 集群存储
-    _ops_agent_k8s_template(
-        'storage', 'k8s-pv-available-low', 'PV 可用空间低于 10%', 'critical',
-        'kubelet_volume_stats_available_bytes{job="kubelet",metrics_path="/metrics"} / kubelet_volume_stats_capacity_bytes{job="kubelet",metrics_path="/metrics"} * 100',
-        {'operator': '<', 'threshold': 10}, 10, 'PVC 所属持久卷可用空间不足。', 1000),
-    _ops_agent_k8s_template(
-        'storage', 'k8s-pv-full-in-four-days', 'PV 预计四天内用尽', 'critical',
-        '(kubelet_volume_stats_available_bytes{job="kubelet",metrics_path="/metrics"} / kubelet_volume_stats_capacity_bytes{job="kubelet",metrics_path="/metrics"} * 100 < 15) and predict_linear(kubelet_volume_stats_available_bytes{job="kubelet",metrics_path="/metrics"}[6h], 4 * 24 * 3600) < 0',
-        {'operator': '>', 'threshold': 0}, 3600, '基于近六小时增长趋势预测 PV 四天内耗尽。', 1010),
-    _ops_agent_k8s_template(
-        'storage', 'k8s-pv-phase-error', 'PV 状态异常', 'critical',
-        'kube_persistentvolume_status_phase{phase=~"Failed|Pending",job="kube-state-metrics"}',
-        {'operator': '>', 'threshold': 0}, 300, 'PV 持续处于 Failed 或 Pending。', 1020),
-
-    # 节点系统
-    _ops_agent_k8s_template(
-        'system', 'k8s-node-filesystem-full-24h', '节点文件系统预计 24 小时内用尽', 'warning',
-        '(node_filesystem_avail_bytes{job="node-exporter",fstype!=""} / node_filesystem_size_bytes{job="node-exporter",fstype!=""} * 100 < 40) and predict_linear(node_filesystem_avail_bytes{job="node-exporter",fstype!=""}[6h], 24*60*60) < 0 and node_filesystem_readonly{job="node-exporter",fstype!=""} == 0',
-        {'operator': '>', 'threshold': 0}, 3600, '根据近六小时趋势预测可写文件系统 24 小时内耗尽。', 1100),
-    _ops_agent_k8s_template(
-        'system', 'k8s-node-filesystem-full-4h', '节点文件系统预计 4 小时内用尽', 'critical',
-        '(node_filesystem_avail_bytes{job="node-exporter",fstype!=""} / node_filesystem_size_bytes{job="node-exporter",fstype!=""} * 100 < 20) and predict_linear(node_filesystem_avail_bytes{job="node-exporter",fstype!=""}[6h], 4*60*60) < 0 and node_filesystem_readonly{job="node-exporter",fstype!=""} == 0',
-        {'operator': '>', 'threshold': 0}, 3600, '根据近六小时趋势预测可写文件系统 4 小时内耗尽。', 1110),
-    _ops_agent_k8s_template(
-        'system', 'k8s-node-filesystem-available-low', '节点文件系统可用空间过低', 'warning',
-        'node_filesystem_avail_bytes{job="node-exporter",fstype!=""} / node_filesystem_size_bytes{job="node-exporter",fstype!=""} * 100',
-        {'levels': [
-            {'level': 'warning', 'operator': '<', 'threshold': 5, 'duration_seconds': 3600},
-            {'level': 'critical', 'operator': '<', 'threshold': 3, 'duration_seconds': 3600},
-        ]}, 3600, '可写文件系统剩余空间 5%/3% 双阈值监控。', 1120),
-    _ops_agent_k8s_template(
-        'system', 'k8s-node-inodes-full-24h', '节点 inode 预计 24 小时内用尽', 'warning',
-        '(node_filesystem_files_free{job="node-exporter",fstype!=""} / node_filesystem_files{job="node-exporter",fstype!=""} * 100 < 40) and predict_linear(node_filesystem_files_free{job="node-exporter",fstype!=""}[6h], 24*60*60) < 0 and node_filesystem_readonly{job="node-exporter",fstype!=""} == 0',
-        {'operator': '>', 'threshold': 0}, 3600, '根据近六小时趋势预测 inode 24 小时内耗尽。', 1130),
-    _ops_agent_k8s_template(
-        'system', 'k8s-node-inodes-full-4h', '节点 inode 预计 4 小时内用尽', 'critical',
-        '(node_filesystem_files_free{job="node-exporter",fstype!=""} / node_filesystem_files{job="node-exporter",fstype!=""} * 100 < 20) and predict_linear(node_filesystem_files_free{job="node-exporter",fstype!=""}[6h], 4*60*60) < 0 and node_filesystem_readonly{job="node-exporter",fstype!=""} == 0',
-        {'operator': '>', 'threshold': 0}, 3600, '根据近六小时趋势预测 inode 4 小时内耗尽。', 1140),
-    _ops_agent_k8s_template(
-        'system', 'k8s-node-inodes-available-low', '节点 inode 可用率过低', 'warning',
-        'node_filesystem_files_free{job="node-exporter",fstype!=""} / node_filesystem_files{job="node-exporter",fstype!=""} * 100',
-        {'levels': [
-            {'level': 'warning', 'operator': '<', 'threshold': 5, 'duration_seconds': 3600},
-            {'level': 'critical', 'operator': '<', 'threshold': 3, 'duration_seconds': 3600},
-        ]}, 3600, '可写文件系统 inode 剩余 5%/3% 双阈值监控。', 1150),
-    _ops_agent_k8s_template(
-        'system', 'k8s-node-oom-kill', '节点发生 OOM Kill', 'critical',
-        'increase(node_vmstat_oom_kill[10s])',
-        {'operator': '>', 'threshold': 0}, 10, '节点内核在近十秒内发生 OOM Kill。', 1160),
+_agent_rule_codes = {item['code'] for item in K8S_AGENT_RULE_TEMPLATES}
+BUILTIN_ALERT_RULE_TEMPLATES = [
+    item for item in BUILTIN_ALERT_RULE_TEMPLATES
+    if item['code'] not in (_agent_rule_codes | LEGACY_K8S_TEMPLATE_CODES)
 ]
+BUILTIN_ALERT_RULE_TEMPLATES.extend(K8S_AGENT_RULE_TEMPLATES)
 
-BUILTIN_ALERT_RULE_TEMPLATES.extend(OPS_AGENT_K8S_ALERT_RULE_TEMPLATES)
+if len(K8S_AGENT_RULE_TEMPLATES) != NORMALIZED_RULE_COUNT or len(REFERENCE_RULE_NAMES) != REFERENCE_RULE_COUNT:
+    raise RuntimeError('Agent1-4 K8S规则目录不完整')
+
+SYNCABLE_TEMPLATE_FIELDS = (
+    'name', 'category', 'source_type', 'level', 'query_config', 'condition',
+    'annotations', 'interval_seconds', 'duration_seconds', 'notify_enabled',
+    'auto_analyze', 'description',
+)
+
+
+def _catalog_payload(item):
+    payload = deepcopy(item)
+    source_rule_names = list(payload.pop('source_rule_names', ()) or ())
+    payload['labels'] = payload.pop('default_labels', {})
+    if source_rule_names:
+        payload['labels']['reference_rule_names'] = source_rule_names
+    payload['source'] = item['code']
+    payload['is_template'] = True
+    payload['is_enabled'] = False
+    payload.pop('sort_order', None)
+    return payload
+
+
+def _sync_template_and_unmodified_instances(rule, payload):
+    old_values = {field: deepcopy(getattr(rule, field)) for field in SYNCABLE_TEMPLATE_FIELDS}
+    changed_fields = []
+    for field in SYNCABLE_TEMPLATE_FIELDS:
+        value = deepcopy(payload[field])
+        if getattr(rule, field) != value:
+            setattr(rule, field, value)
+            changed_fields.append(field)
+    labels = deepcopy(payload.get('labels') or {})
+    if rule.labels != labels:
+        rule.labels = labels
+        changed_fields.append('labels')
+    if rule.source != payload['source']:
+        rule.source = payload['source']
+        changed_fields.append('source')
+    if changed_fields:
+        rule.save(update_fields=[*changed_fields, 'updated_at'])
+
+    for instance in rule.instances.all():
+        instance_changed = []
+        for field in SYNCABLE_TEMPLATE_FIELDS:
+            if getattr(instance, field) == old_values[field]:
+                value = deepcopy(payload[field])
+                if getattr(instance, field) != value:
+                    setattr(instance, field, value)
+                    instance_changed.append(field)
+        if instance_changed:
+            instance.save(update_fields=[*instance_changed, 'updated_at'])
 
 
 def ensure_builtin_alert_rule_templates():
-    """确保所有内置模板存在于数据库中（有则更新、无则创建）。"""
+    """同步当前内置目录，并清除被 Agent1-4 目录取代的旧 K8S 规则。"""
     rules = []
-    for item in BUILTIN_ALERT_RULE_TEMPLATES:
-        payload = dict(item)
-        payload['labels'] = payload.pop('default_labels', {})
-        payload['source'] = item['code']
-        payload['is_template'] = True
-        payload['is_enabled'] = False
-        payload.pop('sort_order', None)
-        # Seed the catalog once; subsequent edits/deletions are user-owned data.
-        rule, _ = AlertRule.objects.get_or_create(code=item['code'], defaults=payload)
-        rules.append(rule)
+    with transaction.atomic():
+        legacy_templates = AlertRule.objects.filter(is_template=True, code__in=LEGACY_K8S_TEMPLATE_CODES)
+        AlertRule.objects.filter(is_template=False, template__in=legacy_templates).delete()
+        AlertRule.objects.filter(is_template=False, source__in=LEGACY_K8S_TEMPLATE_CODES).delete()
+        legacy_templates.delete()
+        for item in BUILTIN_ALERT_RULE_TEMPLATES:
+            payload = _catalog_payload(item)
+            rule, created = AlertRule.objects.get_or_create(code=item['code'], defaults=payload)
+            if not created and rule.is_template:
+                _sync_template_and_unmodified_instances(rule, payload)
+            rules.append(rule)
     k8s_templates = [item for item in rules if item.is_template and item.source_type == 'prometheus' and item.category == 'k8s']
     for datasource in MetricDataSource.objects.filter(provider=MetricDataSource.PROVIDER_PROMETHEUS, is_enabled=True):
         for template in k8s_templates:
@@ -615,7 +486,7 @@ def install_rules_from_templates(template_codes, metric_datasource_id=None, over
             datasource = MetricDataSource.objects.get(pk=metric_datasource_id)
         except (MetricDataSource.DoesNotExist, TypeError, ValueError) as exc:
             raise ValueError('指标数据源不存在') from exc
-    templates = AlertRule.objects.filter(is_template=True, code__in=template_codes)
+    templates = AlertRule.objects.filter(is_template=True, code__in=template_codes).exclude(code__in=LEGACY_K8S_TEMPLATE_CODES)
     template_map = {item.code: item for item in templates}
     if datasource is None and any(item.source_type == 'prometheus' for item in template_map.values()):
         raise ValueError('安装 Prometheus 规则时必须选择指标数据源')

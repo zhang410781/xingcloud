@@ -409,7 +409,18 @@ def _serialize_deployment_item(dep):
 
 
 def _serialize_node_item(node):
-    conditions = {condition.type: condition.status for condition in (node.status.conditions or [])}
+    condition_items = [
+        {
+            'type': condition.type,
+            'status': condition.status,
+            'reason': condition.reason or '',
+            'message': condition.message or '',
+            'last_transition_time': condition.last_transition_time.isoformat()
+            if condition.last_transition_time else '',
+        }
+        for condition in (node.status.conditions or [])
+    ]
+    conditions = {item['type']: item['status'] for item in condition_items}
     roles = ','.join([
         label.replace('node-role.kubernetes.io/', '')
         for label in (node.metadata.labels or {})
@@ -425,6 +436,7 @@ def _serialize_node_item(node):
         'os_image': node.status.node_info.os_image if node.status.node_info else '',
         'cpu': capacity.get('cpu', ''),
         'memory': capacity.get('memory', ''),
+        'conditions': condition_items,
         'pods_count': 0,
         'age': '',
         'created': node.metadata.creation_timestamp.isoformat() if node.metadata.creation_timestamp else '',

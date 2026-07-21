@@ -18,6 +18,7 @@ from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from . import deployer
 from .alert_engine import engine_status as alert_engine_status
 from .alert_engine import evaluate_rule
+from .alert_annotation_templates import notification_preview
 from .host_task_schedules import (
     build_schedule_snapshot,
     preview_next_runs,
@@ -95,7 +96,7 @@ from .alerting import (
 )
 from .alert_log_evidence import build_alert_log_evidence
 from .alert_analysis import enqueue_alert_analysis, serialize_analysis
-from .alert_rule_presets import instantiate_rule_from_template
+from .alert_rule_presets import LEGACY_K8S_TEMPLATE_CODES, instantiate_rule_from_template
 from .alert_rules import trigger_alert_rule
 from .sla import build_dashboard_sla as build_sla_dashboard_summary
 
@@ -2376,6 +2377,7 @@ class AlertRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets
         'trigger': ['ops.alert.config.manage'],
         'evaluate': ['ops.alert.config.manage'],
         'dry_run_draft': ['ops.alert.config.manage'],
+        'preview_notification': ['ops.alert.config.view'],
         'engine_status': ['ops.alert.config.view'],
         'instantiate': ['ops.alert.config.manage'],
     }
@@ -2384,7 +2386,7 @@ class AlertRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets
         queryset = super().get_queryset().select_related('metric_datasource', 'template')
         is_template = str(self.request.query_params.get('is_template', '')).lower()
         if is_template in {'1', 'true', 'yes'}:
-            queryset = queryset.filter(is_template=True)
+            queryset = queryset.filter(is_template=True).exclude(code__in=LEGACY_K8S_TEMPLATE_CODES)
         elif is_template in {'0', 'false', 'no'}:
             queryset = queryset.filter(is_template=False)
         else:
@@ -2417,7 +2419,7 @@ class AlertRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets
         overrides = request.data.get('overrides') or {}
         if not isinstance(overrides, dict):
             return Response({'detail': 'overrides 必须是对象'}, status=status.HTTP_400_BAD_REQUEST)
-        template_query = AlertRule.objects.filter(is_template=True)
+        template_query = AlertRule.objects.filter(is_template=True).exclude(code__in=LEGACY_K8S_TEMPLATE_CODES)
         template = template_query.filter(pk=template_id).first() if template_id else template_query.filter(code=template_code).first()
         if not template:
             return Response({'detail': '规则模板不存在'}, status=status.HTTP_404_NOT_FOUND)
@@ -2487,6 +2489,19 @@ class AlertRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets
         result = evaluate_rule(rule, dry_run=True, request=request)
         response_status = status.HTTP_200_OK if result.get('success') else status.HTTP_502_BAD_GATEWAY
         return Response(result, status=response_status)
+
+    @action(detail=False, methods=['post'], url_path='preview-notification')
+    def preview_notification(self, request):
+        labels = request.data.get('labels') if isinstance(request.data.get('labels'), dict) else {}
+        annotations = request.data.get('annotations') if isinstance(request.data.get('annotations'), dict) else {}
+        return Response(notification_preview(
+            name=request.data.get('name') or '',
+            annotations=annotations,
+            labels=labels,
+            value=request.data.get('value'),
+            level=request.data.get('level') or 'warning',
+            resource=request.data.get('resource') or '',
+        ))
 
     @action(detail=False, methods=['get'], url_path='engine-status')
     def engine_status(self, request):
@@ -2644,6 +2659,7 @@ class AlertNotificationPolicyViewSet(EventWallModelViewSetMixin, RBACPermissionM
         'partial_update': ['ops.alert.config.manage'],
         'destroy': ['ops.alert.config.manage'],
         'preview': ['ops.alert.config.view'],
+        'agent4_preset': ['ops.alert.config.view'],
     }
 
     def get_queryset(self):
@@ -2679,6 +2695,31 @@ class AlertNotificationPolicyViewSet(EventWallModelViewSetMixin, RBACPermissionM
         return Response({
             'matched_count': len(policies),
             'policies': self.get_serializer(policies, many=True).data,
+        })
+
+    @action(detail=False, methods=['get'], url_path='agent4-preset')
+    def agent4_preset(self, request):
+        return Response({
+            'name': 'Agent-4 标准通知策略',
+            'priority': 100,
+            'continue_matching': False,
+            'min_level': 'warning',
+            'matchers': [],
+            'group_by': ['environment', 'metric_datasource_id', 'namespace', 'alert_rule_code'],
+            'group_wait_seconds': 10,
+            'group_interval_seconds': 60,
+            'repeat_interval_minutes': 720,
+            'storm_threshold': 3,
+            'inhibition_matchers': [
+                {'source_level': 'critical', 'target_levels': ['warning', 'info'], 'equal': ['environment', 'namespace', 'alert_rule_code']},
+                {'source_level': 'warning', 'target_levels': ['info'], 'equal': ['environment', 'namespace', 'alert_rule_code']},
+            ],
+            'escalation_steps': [],
+            'notify_on_fire': True,
+            'notify_on_resolved': True,
+            'notify_on_analysis': True,
+            'is_enabled': True,
+            'description': 'Agent-4规范：10秒聚合等待、1分钟同组间隔、12小时重复通知，并发送研判与恢复通知。',
         })
 
 
@@ -2778,11 +2819,25 @@ class AlertActionViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
 
 
 @api_view(['GET', 'POST'])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated, build_rbac_permission('ops.alert.view')])
 def alert_card_action(request, token):
-    ok, message, alert = handle_interaction_token(token, request=request)
+    ok, message, alert, interaction = handle_interaction_token(
+        token,
+        request=request,
+        execute=request.method == 'POST',
+    )
     http_status = status.HTTP_200_OK if ok else status.HTTP_400_BAD_REQUEST
-    return Response({'success': ok, 'message': message, 'alert_id': alert.id if alert else None}, status=http_status)
+    return Response({
+        'success': ok,
+        'message': message,
+        'alert_id': alert.id if alert else None,
+        'alert_title': alert.title if alert else '',
+        'alert_level': alert.level if alert else '',
+        'action': interaction.action if interaction else '',
+        'provider': interaction.provider if interaction else '',
+        'expires_at': interaction.expires_at if interaction else None,
+        'used_at': interaction.used_at if interaction else None,
+    }, status=http_status)
 
 
 class LogEntryViewSet(RBACPermissionMixin, viewsets.ModelViewSet):

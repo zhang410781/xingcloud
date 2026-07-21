@@ -67,9 +67,7 @@ def _emit_alert(rule, result, request=None, status=Alert.STATUS_ACTIVE):
     )
     apply_alert_suppression(alert)
     apply_escalation_policy(alert, request=request)
-    from ops.alert_analysis import enqueue_for_rule_alert
-    enqueue_for_rule_alert(alert, rule, created=created, previous_level=previous_level)
-    return alert, created
+    return alert, created, previous_level
 
 
 def process_rule_results(rule, results, *, dry_run=False, request=None):
@@ -83,6 +81,15 @@ def process_rule_results(rule, results, *, dry_run=False, request=None):
         for item in results:
             item['fingerprint'] = _result_fingerprint(rule, item)
             item['would_fire'] = True
+            labels = item.get('labels') or {}
+            annotations = item.get('annotations') or {}
+            target = item.get('resource') or labels.get('pod') or labels.get('node') or labels.get('instance') or '-'
+            item['rendered_notification'] = {
+                'title': item.get('title') or rule.name,
+                'summary': item.get('message') or annotations.get('message') or rule.name,
+                'description': annotations.get('description') or '无描述',
+                'impact_scope': f'{labels.get("namespace") or "-"}/{target}',
+            }
             would_fire.append(item)
         return {
             'dry_run': True,
@@ -102,6 +109,7 @@ def process_rule_results(rule, results, *, dry_run=False, request=None):
     created_count = 0
     updated_count = 0
     resolved_count = 0
+    analysis_candidates = []
 
     with transaction.atomic():
         for item in results:
@@ -132,8 +140,9 @@ def process_rule_results(rule, results, *, dry_run=False, request=None):
             if item['would_fire']:
                 previous_status = state.status
                 state.status = AlertRuleState.STATUS_ACTIVE
-                alert, created = _emit_alert(rule, item, request=request, status=Alert.STATUS_ACTIVE)
+                alert, created, previous_level = _emit_alert(rule, item, request=request, status=Alert.STATUS_ACTIVE)
                 alerts_to_notify.append(alert)
+                analysis_candidates.append((alert, created, previous_level))
                 created_count += 1 if created else 0
                 updated_count += 0 if created else 1
                 if previous_status != AlertRuleState.STATUS_ACTIVE:
@@ -153,7 +162,7 @@ def process_rule_results(rule, results, *, dry_run=False, request=None):
                     'message': f'{rule.name} recovered',
                     'evidence': {'state': 'resolved', 'last_value': state.last_value},
                 }
-                alert, _ = _emit_alert(rule, result, request=request, status=Alert.STATUS_RESOLVED)
+                alert, _, _ = _emit_alert(rule, result, request=request, status=Alert.STATUS_RESOLVED)
                 resolved_to_notify.append(alert)
                 resolved_count += 1
             state.status = AlertRuleState.STATUS_RESOLVED
@@ -168,6 +177,10 @@ def process_rule_results(rule, results, *, dry_run=False, request=None):
     notification_result = {'notification_logs': [], 'storm_batches': []}
     if rule.notify_enabled and alerts_to_notify:
         notification_result = dispatch_alert_batch_notifications(alerts_to_notify, action='fire', request=request)
+    if analysis_candidates:
+        from ops.alert_analysis import enqueue_for_rule_alert
+        for alert, created, previous_level in analysis_candidates:
+            enqueue_for_rule_alert(alert, rule, created=created, previous_level=previous_level)
     resolved_notification_result = {'notification_logs': [], 'storm_batches': []}
     if rule.notify_enabled and resolved_to_notify:
         resolved_notification_result = dispatch_alert_batch_notifications(resolved_to_notify, action='resolved', request=request)
