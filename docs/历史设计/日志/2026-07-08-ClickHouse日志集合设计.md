@@ -1,5 +1,7 @@
 # ClickHouse Log Collections Implementation Plan
 
+> **历史实施计划，不代表当前配置状态。** 当前日志源和集合配置以可观测性数据源页面及后端 `LogDataSource` 配置为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Split ClickHouse log source configuration into one reusable connection with multiple queryable log collections.
@@ -44,7 +46,7 @@
 ### Task 4: Verification and Deployment
 
 **Files:**
-- Deploy changed files to `/xing/devops`
+- Deploy changed files to the repository deployment directory used by that historical environment.
 
 - [ ] Run `python backend/manage.py check`.
 - [ ] Run `python backend/manage.py test ops.tests.LogViewsTests --noinput`.

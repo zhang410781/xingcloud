@@ -1,6 +1,6 @@
-# PostgreSQL 测试服务与监控模板
+# PostgreSQL 接入 Prometheus 模板
 
-本文参考 `4. 部署postgresql服务并监控postgresql.md`，用于后续在 `/xing` 或独立 namespace 创建 PostgreSQL 测试服务并接入 Prometheus。当前不会默认部署 PostgreSQL 到 Xing-Cloud 业务 namespace。
+本文用于把已有或新部署的 PostgreSQL 接入 Prometheus。Xing-Cloud 不会默认创建 PostgreSQL 或伪造数据库资产，所有 namespace、凭据和资源参数都应替换为目标生产环境的真实配置。
 
 ## 建议结构
 

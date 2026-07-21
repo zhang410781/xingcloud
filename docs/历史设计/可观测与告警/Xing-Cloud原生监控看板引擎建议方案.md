@@ -1,5 +1,7 @@
 # Xing-Cloud 看板引擎 — 建设方案建议
 
+> **历史设计，不代表当前产品能力。** 当前前端只开放固定五类原生看板，不开放拖拽或 JSON 导入编辑器。
+
 ## 1. 背景
 
 当前 Xing-Cloud 的原生看板（`/observability/dashboards`）是**后端硬编码**的，3 类看板（服务器/K8S/日志）的 PromQL/SQL 写在 `observability_views.py` 中，用户无法创建、编辑或自定义看板。参考 Nightingale 和 Grafana 的看板引擎设计，建议建设一套**JSON 驱动的轻量看板引擎**。

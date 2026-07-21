@@ -1,5 +1,7 @@
 # Xing-Cloud Observability Alert UI Redesign Implementation Plan
 
+> **历史实施计划，不代表当前产品状态。** 当前菜单和页面以仓库现有路由为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the new Xing-Cloud observability frontend around monitoring integrations, explicit alert sources, guided alert rule creation, a rule template catalog, and a JSON-dashboard-only monitoring dashboard experience.
@@ -40,7 +42,7 @@ Frontend files:
 
 Docs:
 
-- Update `docs/监控告警/方案设计/Xing-Cloud可观测告警前端重设计方案.md` if implementation changes the agreed API names.
+- Update `docs/历史设计/可观测与告警/Xing-Cloud可观测告警前端重设计方案.md` if implementation changes the agreed API names.
 
 ---
 
@@ -175,7 +177,7 @@ INTEGRATIONS = [
         source_types=['prometheus', 'clickhouse'],
         tags=['k8s', 'cluster'],
         icon='Histogram',
-        guide_path='docs/监控告警/方案设计/',
+        guide_path='docs/历史设计/可观测与告警/',
         template_codes=['k8s-node-not-ready', 'k8s-abnormal-pods', 'k8s-pod-restarts'],
         dashboard_titles=['Kubernetes Cluster Health', 'ClickHouse K8S Events'],
         metric_probe_queries=['kube_node_info', 'kube_pod_info'],
@@ -188,7 +190,7 @@ INTEGRATIONS = [
         source_types=['prometheus'],
         tags=['server', 'linux'],
         icon='Monitor',
-        guide_path='docs/监控告警/方案设计/',
+        guide_path='docs/历史设计/可观测与告警/',
         template_codes=['linux-node-down', 'linux-high-cpu', 'linux-high-memory', 'linux-high-disk'],
         dashboard_titles=['Linux Server Resources'],
         metric_probe_queries=['node_uname_info', 'node_cpu_seconds_total'],
@@ -200,7 +202,7 @@ INTEGRATIONS = [
         source_types=['clickhouse'],
         tags=['logs', 'clickhouse', 'container'],
         icon='Search',
-        guide_path='docs/监控告警/方案设计/',
+        guide_path='docs/历史设计/可观测与告警/',
         template_codes=['container-error-spike'],
         dashboard_titles=['ClickHouse Container Logs'],
         log_collections=['container-logs'],
@@ -212,7 +214,7 @@ INTEGRATIONS = [
         source_types=['clickhouse'],
         tags=['ingress', 'web'],
         icon='TrendCharts',
-        guide_path='docs/监控告警/方案设计/',
+        guide_path='docs/历史设计/可观测与告警/',
         template_codes=['ingress-5xx-spike', 'ingress-latency-high'],
         dashboard_titles=['Ingress Access Logs'],
         log_collections=['ingress-access'],
@@ -224,7 +226,7 @@ INTEGRATIONS = [
         source_types=['sla'],
         tags=['sla', 'risk'],
         icon='Odometer',
-        guide_path='docs/监控告警/方案设计/可观测告警引擎设计方案.md',
+        guide_path='docs/历史设计/可观测与告警/可观测告警引擎设计方案.md',
         template_codes=['sla-monthly-risk'],
         dashboard_titles=['SLA Risk Cockpit'],
     ),
@@ -1871,7 +1873,7 @@ Expected:
 Run:
 
 ```bash
-rg -n "<legacy-brand-keywords>" frontend/src docs/监控告警/方案设计
+rg -n "<legacy-brand-keywords>" frontend/src docs/历史设计/可观测与告警
 ```
 
 Expected: no matches.

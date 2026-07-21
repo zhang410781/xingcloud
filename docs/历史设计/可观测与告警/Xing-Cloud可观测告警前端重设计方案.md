@@ -1,5 +1,7 @@
 # Xing-Cloud 可观测告警前端重设计方案
 
+> **历史设计，不代表当前产品能力。** 当前说明见 [可观测性](../../产品定义/04-可观测性.md)和[告警规则与通知](../../产品定义/05-告警规则与通知.md)。
+
 ## Status
 
 Approved for design by the product owner on 2026-07-10. This document defines the first implementation phase for redesigning observability alert sources, alert rules, rule templates, and monitoring dashboards in Xing-Cloud.

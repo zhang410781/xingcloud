@@ -2,7 +2,7 @@
 
 ## 目标
 
-让 Xing-Cloud 自带的 MySQL 和 Redis 被 Prometheus 原生采集，并作为后续平台中间件观测、告警规则 dry-run、SLA/AIOps 证据包的测试对象。
+让当前部署中的 Xing-Cloud MySQL 和 Redis 被 Prometheus 原生采集，用于数据库/中间件看板、告警规则试运行和 AIOps 证据。
 
 本文参考 `2. 部署mysql服务并监控mysql.md` 的结构，但适配当前 Xing-Cloud 已存在的 `xing-cloud` namespace，不重新创建业务数据库，也不把密码写入 exporter manifest。
 
@@ -30,7 +30,7 @@ kubectl get sc
 - MySQL Service：`xing-cloud-mysql:3306`
 - Redis Service：`xing-cloud-redis:6379`
 - Prometheus Service：`monitoring/prometheus-k8s:9090`
-- 外部访问 Prometheus：`http://10.132.46.52:30003/`
+- Prometheus 查询地址：以当前环境在 `可观测性 / 数据源` 中登记的地址为准。
 
 ## 资源设计
 
@@ -50,10 +50,10 @@ kubectl get sc
 
 ## 部署
 
-在服务器上执行：
+在仓库根目录执行：
 
 ```bash
-cd /xing/devops/k8s
+cd <仓库目录>/k8s
 kubectl apply -f 08-monitoring.yaml
 ```
 
@@ -112,7 +112,7 @@ Prometheus UI 中打开 `Status -> Rules`，应能看到：
 - Redis 存活：`redis_up == 0`
 - Redis 内存：`redis_memory_used_bytes / redis_memory_max_bytes > 0.85`
 
-后续再把中间件实例、指标规则、日志样本和 AIOps 证据包打通到统一的中间件管理页面。
+在平台 `资产管理 / 中间件资产` 登记真实实例，并在 `可观测性 / 监控看板` 选择数据库或中间件类型验证数据。
 
 ## 和参考教程的差异
 
