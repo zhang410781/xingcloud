@@ -4,6 +4,7 @@ import re
 from collections import Counter
 from datetime import timedelta
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -450,6 +451,8 @@ def _project_compatibility(analysis):
 
 
 def execute_alert_analysis(analysis):
+    claimed_started_at = analysis.started_at
+    lease_owned = analysis.status == AlertAnalysis.STATUS_RUNNING and claimed_started_at is not None
     analysis.alert.refresh_from_db()
     evidence = collect_alert_evidence(analysis.alert)
     evidence['alert_status_at_analysis'] = analysis.alert.status
@@ -504,6 +507,11 @@ def execute_alert_analysis(analysis):
     analysis.last_error = model_error
     analysis.completed_at = timezone.now()
     analysis.next_retry_at = None
+    if lease_owned:
+        current = AlertAnalysis.objects.only('status', 'started_at').get(pk=analysis.pk)
+        if current.status != AlertAnalysis.STATUS_RUNNING or current.started_at != claimed_started_at:
+            logger.warning('discarding late result for alert analysis %s after lease changed', analysis.id)
+            return current
     analysis.save(update_fields=[
         'status', 'evidence', 'candidates', 'confidence', 'result', 'root_cause', 'suggestion',
         'provider', 'model', 'last_error', 'completed_at', 'next_retry_at', 'updated_at',
@@ -599,7 +607,41 @@ def claim_due_analysis():
         return analysis
 
 
+def recover_stale_running_analyses(now=None, limit=100):
+    """Return analyses abandoned by a stopped worker to the durable queue."""
+    now = now or timezone.now()
+    lease_seconds = max(300, int(getattr(settings, 'ALERT_ANALYSIS_LEASE_SECONDS', 900)))
+    cutoff = now - timedelta(seconds=lease_seconds)
+    recovered = failed = 0
+    ids = []
+    with transaction.atomic():
+        queryset = AlertAnalysis.objects.select_for_update().filter(
+            status=AlertAnalysis.STATUS_RUNNING,
+            updated_at__lt=cutoff,
+        ).order_by('updated_at', 'id')[:max(1, int(limit or 100))]
+        for analysis in queryset:
+            analysis.last_error = f'研判 Worker 超过 {lease_seconds} 秒未更新，任务已回收'
+            if analysis.retry_count < analysis.max_retries:
+                analysis.retry_count += 1
+                analysis.status = AlertAnalysis.STATUS_PENDING
+                analysis.next_retry_at = now
+                analysis.started_at = None
+                recovered += 1
+            else:
+                analysis.status = AlertAnalysis.STATUS_FAILED
+                analysis.next_retry_at = None
+                analysis.completed_at = now
+                failed += 1
+            analysis.save(update_fields=[
+                'retry_count', 'status', 'next_retry_at', 'started_at', 'completed_at',
+                'last_error', 'updated_at',
+            ])
+            ids.append(analysis.id)
+    return {'recovered': recovered, 'failed': failed, 'ids': ids}
+
+
 def run_due_alert_analyses(limit=20):
+    recovery = recover_stale_running_analyses(limit=max(20, int(limit or 20)))
     completed = partial = failed = retried = cancelled = 0
     processed = []
     for _ in range(max(1, int(limit or 20))):
@@ -627,7 +669,11 @@ def run_due_alert_analyses(limit=20):
                 failed += 1
             analysis.save(update_fields=['retry_count', 'status', 'next_retry_at', 'completed_at', 'last_error', 'updated_at'])
         processed.append(analysis.id)
-    return {'processed': len(processed), 'completed': completed, 'partial': partial, 'retried': retried, 'failed': failed, 'cancelled': cancelled, 'ids': processed}
+    return {
+        'processed': len(processed), 'completed': completed, 'partial': partial,
+        'retried': retried, 'failed': failed, 'cancelled': cancelled, 'ids': processed,
+        'recovered': recovery['recovered'], 'recovery_failed': recovery['failed'],
+    }
 
 
 def serialize_analysis(analysis):

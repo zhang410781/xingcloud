@@ -712,7 +712,7 @@ def _analysis_markdown(alert, raw):
 
 
 def _default_body(alert, action='fire'):
-    raw, event, rule, evidence = _notification_payload(alert)
+    raw, event, _rule, _evidence = _notification_payload(alert)
     if action == 'analysis':
         confidence, root_cause, evidence_text, suggestion = _analysis_content(alert, raw)
         status_text = '告警仍活跃' if alert.status == Alert.STATUS_ACTIVE else '研判期间已恢复'
@@ -726,12 +726,6 @@ def _default_body(alert, action='fire'):
             '完整指标、K8S状态、事件、日志、反向证据和处置建议请点击“查看详情”。',
         ])
 
-    value = _first_number(evidence.get('value'), event.get('value'), _dict(event.get('evidence')).get('value'))
-    unit = _metric_unit(alert, rule)
-    window = _window_text(rule)
-    value_text = f'{_format_number(value)}{unit}' if value is not None else '-'
-    if window and value is not None:
-        value_text = f'{value_text} / {window}'
     object_name = alert.resource or (alert.host.hostname if alert.host else '') or '-'
     level_icon = {'critical': '🔴', 'warning': '🟡', 'info': '🔵'}.get(alert.level, '🟡')
     status_text = '🟢 已恢复' if action == 'resolved' else '🔥 告警中'
@@ -743,8 +737,6 @@ def _default_body(alert, action='fire'):
         f'🎯 **影响范围：** {alert.namespace or "-"}/{object_name}',
         f'📝 **告警摘要：** {alert.message or _human_description(alert, event)}',
         f'📋 **详细描述：** {description}',
-        f'📊 **当前值：** {value_text}',
-        f'📐 **触发条件：** {_condition_text(alert, rule, unit)}',
     ]
     if action == 'resolved':
         resolved_at = alert.ends_at or alert.last_received_at or timezone.now()

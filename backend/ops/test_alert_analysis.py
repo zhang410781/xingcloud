@@ -15,6 +15,7 @@ from ops.alert_analysis import (
     enqueue_for_rule_alert,
     enqueue_missing_active_analyses,
     execute_alert_analysis,
+    recover_stale_running_analyses,
     run_due_alert_analyses,
 )
 from ops.alerting import _default_body, _policy_inhibits_alert, dispatch_alert_notifications, upsert_alert
@@ -399,13 +400,40 @@ class AlertAnalysisTests(TestCase):
         policy = AlertNotificationPolicy.objects.create(name='analysis policy')
         self.assertTrue(policy.notify_on_analysis)
 
-    def test_default_notification_formats_value_threshold_and_hides_promql(self):
+    def test_default_notification_hides_value_threshold_and_promql(self):
         body = _default_body(self.alert, action='fire')
 
-        self.assertIn('4.13次 / 15分钟', body)
-        self.assertIn('> 3次', body)
         self.assertIn('Pod 15 分钟内重启超过阈值', body)
+        self.assertNotIn('当前值', body)
+        self.assertNotIn('触发条件', body)
         self.assertNotIn('increase(restarts[15m])', body)
+
+    @patch('ops.alert_analysis.execute_alert_analysis')
+    def test_stale_running_analysis_is_recovered_and_retried(self, execute):
+        analysis, _ = enqueue_alert_analysis(self.alert, trigger=AlertAnalysis.TRIGGER_MANUAL, force=True)
+        analysis.status = AlertAnalysis.STATUS_RUNNING
+        analysis.started_at = timezone.now() - timedelta(minutes=20)
+        analysis.save(update_fields=['status', 'started_at', 'updated_at'])
+        AlertAnalysis.objects.filter(pk=analysis.pk).update(updated_at=timezone.now() - timedelta(minutes=20))
+
+        outcome = run_due_alert_analyses(limit=1)
+        analysis.refresh_from_db()
+
+        self.assertEqual(outcome['recovered'], 1)
+        self.assertEqual(analysis.retry_count, 1)
+        execute.assert_called_once()
+
+    def test_fresh_running_analysis_is_not_recovered(self):
+        analysis, _ = enqueue_alert_analysis(self.alert, trigger=AlertAnalysis.TRIGGER_MANUAL, force=True)
+        analysis.status = AlertAnalysis.STATUS_RUNNING
+        analysis.started_at = timezone.now()
+        analysis.save(update_fields=['status', 'started_at', 'updated_at'])
+
+        outcome = recover_stale_running_analyses()
+
+        analysis.refresh_from_db()
+        self.assertEqual(outcome['recovered'], 0)
+        self.assertEqual(analysis.status, AlertAnalysis.STATUS_RUNNING)
 
     def test_analysis_notification_includes_current_alert_status(self):
         self.alert.status = Alert.STATUS_RESOLVED
