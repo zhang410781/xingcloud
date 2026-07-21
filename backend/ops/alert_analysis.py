@@ -19,6 +19,7 @@ SECRET_PATTERN = re.compile(
 BEARER_PATTERN = re.compile(r'(?i)\bBearer\s+[A-Za-z0-9._~+/-]+=*')
 PHONE_PATTERN = re.compile(r'(?<!\d)1[3-9]\d{9}(?!\d)')
 LEVEL_RANK = {'info': 1, 'warning': 2, 'critical': 3}
+AUTO_ANALYSIS_DELAY = timedelta(minutes=2)
 
 PATTERNS = [
     ('oom_killed', re.compile(r'(?i)\b(oomkilled|out of memory|cannot allocate memory)\b'), '进程或容器可能因内存不足退出'),
@@ -171,7 +172,7 @@ def collect_alert_evidence(alert):
             for key in [
                 'stage_status', 'source_coverage', 'metrics', 'metric_anomalies', 'k8s',
                 'k8s_findings', 'k8s_samples', 'event_findings', 'change_findings',
-                'topology_findings', 'assets', 'logs', 'log_findings',
+                'topology_findings', 'assets', 'logs', 'log_findings', 'targeted_metrics',
             ]:
                 if key in observed:
                     evidence[key] = observed[key]
@@ -202,6 +203,37 @@ def _deterministic_candidates(evidence):
             'evidence': [examples[code]],
         })
     grouped = {item['code']: item for item in candidates}
+    for sample in evidence.get('k8s_samples') or []:
+        pod_name = sample.get('pod') or 'Pod'
+        for container in sample.get('containers') or []:
+            waiting = _dict(container.get('waiting'))
+            terminated = _dict(container.get('terminated'))
+            reason = str(waiting.get('reason') or terminated.get('reason') or '')
+            if reason == 'OOMKilled':
+                code, title, score = 'oom_killed', f'{pod_name} 容器因 OOMKilled 退出', 0.92
+            elif reason in {'CrashLoopBackOff', 'Error'}:
+                code, title, score = 'crash_loop', f'{pod_name} 容器启动或运行失败', 0.86
+            elif reason in {'ImagePullBackOff', 'ErrImagePull'}:
+                code, title, score = 'image_pull_failed', f'{pod_name} 镜像拉取失败', 0.9
+            elif reason in {'CreateContainerConfigError', 'CreateContainerError'}:
+                code, title, score = 'container_config_failed', f'{pod_name} 容器配置错误', 0.9
+            else:
+                continue
+            item = grouped.setdefault(code, {'code': code, 'title': title, 'score': score, 'evidence': []})
+            item['evidence'].append(f"{container.get('name') or 'container'}: {reason}")
+        for event in sample.get('events') or []:
+            reason = str(event.get('reason') or '')
+            event_map = {
+                'Unhealthy': ('probe_failed', '容器健康检查失败'),
+                'FailedScheduling': ('scheduling_failed', 'Pod 调度失败'),
+                'FailedMount': ('volume_mount_failed', '存储卷挂载失败'),
+                'FailedAttachVolume': ('volume_attach_failed', '存储卷挂载失败'),
+                'FailedCreatePodSandBox': ('pod_network_failed', 'Pod 网络初始化失败'),
+            }
+            if reason in event_map:
+                code, title = event_map[reason]
+                item = grouped.setdefault(code, {'code': code, 'title': title, 'score': 0.86, 'evidence': []})
+                item['evidence'].append(str(event.get('message') or reason)[:240])
     for finding in evidence.get('k8s_findings') or []:
         code = finding.get('code') or 'k8s_abnormal'
         item = grouped.setdefault(code, {
@@ -308,12 +340,45 @@ def _llm_synthesis(evidence, candidates):
 
 
 def _summary_without_model(evidence, candidates):
-    logs = _dict(evidence.get('logs'))
+    alert_status = _dict(evidence.get('alert')).get('status')
+    unresolved = '告警仍活跃但无法确诊' if alert_status == Alert.STATUS_ACTIVE else '已恢复但无法确诊'
     if candidates:
-        return '已完成告警与日志证据关联，模型综合判断暂不可用。'
-    if logs.get('status') == 'ok' and logs.get('sample_count'):
-        return '已关联日志样本，但当前证据不足以确定根因。'
-    return '未获得足够的关联日志证据，暂不能确定根因。'
+        return f'已形成确定性候选根因；模型综合整理不可用。{unresolved if not candidates[0].get("evidence") else ""}'.strip()
+    return unresolved
+
+
+def _is_automatic_pod_analysis(alert, trigger):
+    if trigger == AlertAnalysis.TRIGGER_MANUAL:
+        return False
+    labels = _dict(alert.labels)
+    resource_type = str(alert.resource_type or labels.get('resource_type') or '').lower()
+    if resource_type and resource_type not in {'pod', 'container', 'k8s'}:
+        return False
+    has_pod = bool(alert.namespace and (labels.get('pod') or labels.get('pod_name') or alert.resource))
+    text = ' '.join([str(alert.title or ''), str(alert.metric_name or ''), resource_type]).lower()
+    return alert.level in {'warning', 'critical'} and (
+        resource_type in {'pod', 'container'} or has_pod or any(token in text for token in ('pod', 'container', '容器'))
+    )
+
+
+def _cancel_analysis_on_resolve(analysis):
+    analysis.status = AlertAnalysis.STATUS_CANCELLED
+    analysis.completed_at = timezone.now()
+    analysis.next_retry_at = None
+    analysis.last_error = '告警在持续 2 分钟前恢复，精准研判已取消'
+    analysis.result = {
+        'summary': '告警已在 2 分钟内恢复，未执行深度研判',
+        'cancelled_reason': 'resolved_before_persistence_window',
+    }
+    analysis.evidence = {
+        **_dict(analysis.evidence),
+        'stage_status': {'waiting_persistence': 'cancelled_on_resolve'},
+    }
+    analysis.save(update_fields=[
+        'status', 'completed_at', 'next_retry_at', 'last_error', 'result', 'evidence', 'updated_at',
+    ])
+    _project_compatibility(analysis)
+    return analysis
 
 
 def _project_compatibility(analysis):
@@ -335,11 +400,22 @@ def _project_compatibility(analysis):
 
 
 def execute_alert_analysis(analysis):
+    analysis.alert.refresh_from_db()
+    if analysis.trigger != AlertAnalysis.TRIGGER_MANUAL and analysis.alert.status != Alert.STATUS_ACTIVE:
+        return _cancel_analysis_on_resolve(analysis)
     evidence = collect_alert_evidence(analysis.alert)
     confidence_policy = _confidence_policy(evidence)
     evidence['evidence_quality'] = confidence_policy
     evidence['confidence_cap'] = confidence_policy['confidence_cap']
     evidence['confidence_reasons'] = confidence_policy['reasons']
+    evidence['stage_status'] = {
+        **_dict(evidence.get('stage_status')),
+        'waiting_persistence': 'completed',
+        'collecting_metrics': 'completed' if evidence.get('metrics') or evidence.get('targeted_metrics') else 'partial',
+        'collecting_k8s': _dict(evidence.get('stage_status')).get('k8s', 'partial'),
+        'collecting_logs': _dict(evidence.get('stage_status')).get('logs', 'partial'),
+        'synthesizing': 'completed',
+    }
     candidates = _deterministic_candidates(evidence)
     provider_name = ''
     model_name = ''
@@ -397,12 +473,34 @@ def enqueue_alert_analysis(alert, trigger=AlertAnalysis.TRIGGER_FIRST_ACTIVE, re
     active = alert.analyses.filter(status__in=[AlertAnalysis.STATUS_PENDING, AlertAnalysis.STATUS_RUNNING]).order_by('-id').first()
     if active:
         return active, False
-    analysis = AlertAnalysis.objects.create(alert=alert, trigger=trigger, requested_by=requested_by)
+    automatic = _is_automatic_pod_analysis(alert, trigger)
+    if trigger != AlertAnalysis.TRIGGER_MANUAL and not automatic:
+        return None, False
+    next_retry_at = None
+    if automatic:
+        next_retry_at = max(timezone.now(), (alert.starts_at or timezone.now()) + AUTO_ANALYSIS_DELAY)
+    analysis = AlertAnalysis.objects.create(
+        alert=alert,
+        trigger=trigger,
+        requested_by=requested_by,
+        next_retry_at=next_retry_at,
+        evidence={
+            'target_labels': {
+                'namespace': alert.namespace or _dict(alert.labels).get('namespace'),
+                'pod': _dict(alert.labels).get('pod') or _dict(alert.labels).get('pod_name') or alert.resource,
+                'container': _dict(alert.labels).get('container') or _dict(alert.labels).get('container_name'),
+                'node': _dict(alert.labels).get('node') or _dict(alert.labels).get('node_name'),
+            },
+            'stage_status': {'waiting_persistence': 'waiting'},
+        },
+    )
     payload = _dict(alert.raw_payload)
     payload['ai_analysis'] = {
         **_dict(payload.get('ai_analysis')),
         'id': analysis.id,
         'status': AlertAnalysis.STATUS_PENDING,
+        'stage': 'waiting_persistence' if automatic else 'collecting_metrics',
+        'scheduled_at': next_retry_at.isoformat() if next_retry_at else None,
     }
     alert.raw_payload = payload
     alert.save(update_fields=['raw_payload', 'updated_at'])
@@ -435,13 +533,19 @@ def claim_due_analysis():
 
 
 def run_due_alert_analyses(limit=20):
-    completed = partial = failed = retried = 0
+    completed = partial = failed = retried = cancelled = 0
     processed = []
     for _ in range(max(1, int(limit or 20))):
         analysis = claim_due_analysis()
         if not analysis:
             break
         try:
+            analysis.alert.refresh_from_db(fields=['status'])
+            if analysis.trigger != AlertAnalysis.TRIGGER_MANUAL and analysis.alert.status != Alert.STATUS_ACTIVE:
+                _cancel_analysis_on_resolve(analysis)
+                cancelled += 1
+                processed.append(analysis.id)
+                continue
             execute_alert_analysis(analysis)
             analysis.refresh_from_db(fields=['status'])
             completed += analysis.status == AlertAnalysis.STATUS_COMPLETED
@@ -462,7 +566,7 @@ def run_due_alert_analyses(limit=20):
                 failed += 1
             analysis.save(update_fields=['retry_count', 'status', 'next_retry_at', 'completed_at', 'last_error', 'updated_at'])
         processed.append(analysis.id)
-    return {'processed': len(processed), 'completed': completed, 'partial': partial, 'retried': retried, 'failed': failed, 'ids': processed}
+    return {'processed': len(processed), 'completed': completed, 'partial': partial, 'retried': retried, 'failed': failed, 'cancelled': cancelled, 'ids': processed}
 
 
 def serialize_analysis(analysis):

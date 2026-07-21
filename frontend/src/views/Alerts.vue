@@ -491,10 +491,33 @@
             <template v-else-if="alertAnalysisLatest">
               <el-descriptions class="alert-detail-summary analysis-summary" :column="1" size="small" border>
                 <el-descriptions-item label="置信度">{{ analysisConfidenceText(alertAnalysisLatest.confidence) }}</el-descriptions-item>
-                <el-descriptions-item label="证据覆盖">{{ analysisSourceCoverageText }}</el-descriptions-item>
+                <el-descriptions-item label="研判窗口">{{ analysisWindowText }}</el-descriptions-item>
+                <el-descriptions-item label="目标">{{ analysisTargetText }}</el-descriptions-item>
                 <el-descriptions-item label="根因">{{ alertAnalysisLatest.root_cause || alertAnalysisLatest.summary || '尚未形成明确结论' }}</el-descriptions-item>
                 <el-descriptions-item label="建议">{{ analysisSuggestionText(alertAnalysisLatest) }}</el-descriptions-item>
               </el-descriptions>
+              <div v-if="analysisTargetMetrics.length" class="analysis-evidence analysis-table-wrap">
+                <strong>指标证据</strong>
+                <el-table :data="analysisTargetMetrics" size="small" border>
+                  <el-table-column prop="title" label="指标" min-width="150" />
+                  <el-table-column label="峰值" width="110"><template #default="{ row }">{{ analysisMetricValue(row.peak) }}</template></el-table-column>
+                  <el-table-column label="当前值" width="110"><template #default="{ row }">{{ analysisMetricValue(row.latest) }}</template></el-table-column>
+                  <el-table-column prop="sample_count" label="采样数" width="80" />
+                </el-table>
+              </div>
+              <div v-if="analysisContainers.length" class="analysis-evidence analysis-table-wrap">
+                <strong>K8S Describe</strong>
+                <el-table :data="analysisContainers" size="small" border>
+                  <el-table-column prop="name" label="容器" min-width="120" />
+                  <el-table-column label="状态" min-width="130"><template #default="{ row }">{{ analysisContainerState(row) }}</template></el-table-column>
+                  <el-table-column prop="restart_count" label="累计重启" width="90" />
+                  <el-table-column prop="image" label="镜像" min-width="220" show-overflow-tooltip />
+                </el-table>
+              </div>
+              <div v-if="analysisEventAndLogItems.length" class="analysis-evidence">
+                <strong>日志与事件</strong>
+                <ol><li v-for="(item, index) in analysisEventAndLogItems" :key="index">{{ item }}</li></ol>
+              </div>
               <div v-if="analysisCandidates.length" class="analysis-evidence">
                 <strong>候选根因</strong>
                 <ol><li v-for="item in analysisCandidates" :key="item.code || item.title">{{ item.title || item.code }}（{{ analysisConfidenceText(item.score) }}）</li></ol>
@@ -1248,13 +1271,24 @@ const alertAnalysisLatest = computed(() => {
 })
 const analysisEvidenceItems = computed(() => normalizeEvidence(alertAnalysisLatest.value?.evidence))
 const analysisCandidates = computed(() => alertAnalysisLatest.value?.candidates || [])
-const analysisSourceCoverageText = computed(() => {
-  const coverage = alertAnalysisLatest.value?.evidence?.source_coverage || {}
-  const labels = { metrics: '指标', k8s: 'K8S', logs: '日志', events: '事件', changes: '变更', topology: '拓扑' }
-  const ready = Object.entries(coverage).filter(([, value]) => value).map(([key]) => labels[key] || key)
-  return ready.length ? ready.join('、') : '暂无有效证据源'
+const analysisTargeted = computed(() => alertAnalysisLatest.value?.evidence?.targeted_metrics || {})
+const analysisTargetMetrics = computed(() => (analysisTargeted.value?.items || []).filter((item) => item.status === 'ok'))
+const analysisK8sSample = computed(() => alertAnalysisLatest.value?.evidence?.k8s_samples?.[0] || {})
+const analysisContainers = computed(() => analysisK8sSample.value?.containers || [])
+const analysisWindowText = computed(() => {
+  const value = analysisTargeted.value?.window || alertAnalysisLatest.value?.evidence?.logs?.window || {}
+  return value.start_at && value.end_at ? `${formatTime(value.start_at)} 至 ${formatTime(value.end_at)}` : '-'
 })
-
+const analysisTargetText = computed(() => {
+  const target = analysisTargeted.value?.target || {}
+  return [target.namespace, target.pod, target.container].filter(Boolean).join(' / ') || selectedAlert.value?.resource || '-'
+})
+const analysisEventAndLogItems = computed(() => {
+  const evidence = alertAnalysisLatest.value?.evidence || {}
+  const events = (evidence.event_findings || []).slice(0, 8).map((item) => `Warning Event / ${item.reason || '-'}：${item.message || '-'}`)
+  const logs = (evidence.log_findings || []).slice(0, 8).map((item) => `异常日志 / ${item.target || '-'}：${item.message || '-'}`)
+  return [...events, ...logs]
+})
 const environmentOptions = computed(() => {
   const values = new Set()
   for (const item of alerts.value || []) {
@@ -1337,11 +1371,20 @@ function groupDimensionEntries(row) {
 }
 
 function analysisStatusText(value) {
-  return { pending: '等待研判', running: '研判中', completed: '已完成', partial: '部分完成', failed: '研判失败', disabled: '未启用' }[value] || value || '未知'
+  return { pending: '等待研判', running: '研判中', completed: '已完成', partial: '部分完成', failed: '研判失败', cancelled: '恢复后取消', disabled: '未启用' }[value] || value || '未知'
 }
 
 function analysisStatusType(value) {
-  return { completed: 'success', partial: 'warning', failed: 'danger', disabled: 'info' }[value] || 'primary'
+  return { completed: 'success', partial: 'warning', failed: 'danger', cancelled: 'info', disabled: 'info' }[value] || 'primary'
+}
+
+function analysisMetricValue(value) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number.toLocaleString('zh-CN', { maximumFractionDigits: 3 }) : '-'
+}
+
+function analysisContainerState(row) {
+  return row?.waiting?.reason || row?.terminated?.reason || (row?.ready ? 'Ready' : 'NotReady')
 }
 
 function analysisConfidenceText(value) {
@@ -2655,6 +2698,15 @@ onMounted(async () => {
 .analysis-evidence li {
   line-height: 1.55;
   margin-bottom: 3px;
+}
+
+.analysis-table-wrap {
+  overflow-x: auto;
+}
+
+.analysis-table-wrap :deep(.el-table) {
+  margin-top: 7px;
+  min-width: 520px;
 }
 
 .log-evidence-list {

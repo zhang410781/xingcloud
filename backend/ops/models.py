@@ -1340,12 +1340,14 @@ class AlertAnalysis(models.Model):
     STATUS_COMPLETED = 'completed'
     STATUS_PARTIAL = 'partial'
     STATUS_FAILED = 'failed'
+    STATUS_CANCELLED = 'cancelled'
     STATUS_CHOICES = [
         (STATUS_PENDING, '待研判'),
         (STATUS_RUNNING, '研判中'),
         (STATUS_COMPLETED, '已完成'),
         (STATUS_PARTIAL, '部分完成'),
         (STATUS_FAILED, '失败'),
+        (STATUS_CANCELLED, '已取消'),
     ]
 
     TRIGGER_FIRST_ACTIVE = 'first_active'

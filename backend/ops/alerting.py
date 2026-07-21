@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import re
 import time
 from collections import Counter, defaultdict
@@ -15,6 +16,7 @@ from django.utils import timezone
 
 from .models import (
     Alert,
+    AlertAnalysis,
     AlertAction,
     AlertClaim,
     AlertInteractionToken,
@@ -27,6 +29,9 @@ from .models import (
     AlertSilence,
     Host,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 LEVEL_RANK = {'info': 1, 'warning': 2, 'critical': 3}
@@ -218,6 +223,17 @@ def upsert_alert(normalized, actor='system', action=None, action_note=None):
             alert.acknowledged_at = None
             alert.ends_at = None
         alert.save()
+
+    if status_value == Alert.STATUS_RESOLVED:
+        # Cancel the two-minute persistence gate immediately on recovery.
+        try:
+            from .alert_analysis import _cancel_analysis_on_resolve
+            for analysis in alert.analyses.filter(
+                status__in=[AlertAnalysis.STATUS_PENDING, AlertAnalysis.STATUS_RUNNING],
+            ).exclude(trigger=AlertAnalysis.TRIGGER_MANUAL):
+                _cancel_analysis_on_resolve(analysis)
+        except Exception:
+            logger.exception('failed to cancel pending analysis for resolved alert %s', alert.id)
 
     if not alert.group_key:
         alert.group_key = compute_group_key(alert)
@@ -607,19 +623,83 @@ def _analysis_content(alert, raw):
     return confidence_text, root_cause, evidence_text, suggestion_text
 
 
+def _analysis_markdown(alert, raw):
+    confidence, root_cause, _evidence_text, suggestion = _analysis_content(alert, raw)
+    latest = alert.analyses.order_by('-created_at').first()
+    evidence = _dict(latest.evidence) if latest else {}
+    result = _dict(latest.result) if latest else {}
+    target = _dict(_dict(evidence.get('targeted_metrics')).get('target'))
+    target_metrics = _dict(evidence.get('targeted_metrics')).get('items') or []
+    k8s_sample = (evidence.get('k8s_samples') or [{}])[0]
+    events = k8s_sample.get('events') or []
+    log_findings = evidence.get('log_findings') or []
+    changes = evidence.get('change_findings') or []
+    missing = [str(item.get('message') or '') for item in evidence.get('diagnostics') or [] if item.get('message')]
+    candidates = latest.candidates if latest and isinstance(latest.candidates, list) else []
+    suggestions = result.get('suggestions') if isinstance(result.get('suggestions'), list) else []
+    status_text = alert.get_status_display()
+    lines = [
+        '## 告警精准研判报告',
+        '',
+        '### 告警概览',
+        '| 告警 | 级别 | 状态 | 命名空间 | Pod | 容器 |',
+        '| :--- | :--- | :--- | :--- | :--- | :--- |',
+        f'| {alert.title} | {alert.get_level_display()} | {status_text} | {target.get("namespace") or alert.namespace or "-"} | {target.get("pod") or alert.resource or "-"} | {target.get("container") or "-"} |',
+        '',
+        f'**告警状态：** {status_text}',
+        f'**结论：** {root_cause}',
+        f'**置信度：** {confidence}',
+    ]
+    metric_rows = [item for item in target_metrics if item.get('status') == 'ok']
+    if metric_rows:
+        lines.extend(['', '### 指标证据', '| 指标 | 峰值 | 当前值 | 采样数 |', '| :--- | ---: | ---: | ---: |'])
+        for item in metric_rows[:10]:
+            lines.append(f'| {item.get("title") or item.get("code")} | {_format_number(item.get("peak"))} | {_format_number(item.get("latest"))} | {item.get("sample_count") or 0} |')
+    if k8s_sample:
+        lines.extend(['', '### K8s Describe', f'- Pod 阶段：{k8s_sample.get("phase") or "未获取"}', f'- 所在节点：{k8s_sample.get("node") or "未获取"}'])
+        for container in (k8s_sample.get('containers') or [])[:5]:
+            state = _dict(container.get('waiting')).get('reason') or _dict(container.get('terminated')).get('reason') or ('Ready' if container.get('ready') else 'NotReady')
+            lines.append(f'- 容器 {container.get("name") or "-"}：{state}，重启 {container.get("restart_count") or 0} 次，镜像 {container.get("image") or "-"}')
+    lines.extend(['', '### 日志与事件'])
+    if events:
+        for item in events[:8]:
+            lines.append(f'- Warning Event / {item.get("reason") or "-"}：{str(item.get("message") or "")[:240]}')
+    if log_findings:
+        for item in log_findings[:8]:
+            lines.append(f'- 异常日志 / {item.get("target") or "-"}：{str(item.get("message") or "")[:240]}')
+    if not events and not log_findings:
+        lines.append('- 未发现可作为关键证据的 Warning Event 或异常日志；普通访问日志已排除。')
+    lines.extend(['', '### 候选根因'])
+    if candidates:
+        for item in candidates[:5]:
+            lines.append(f'- {item.get("title") or item.get("code")}（{float(item.get("score") or 0) * 100:.0f}%）')
+    else:
+        lines.append(f'- {"告警仍活跃但无法确诊" if alert.status == Alert.STATUS_ACTIVE else "已恢复但无法确诊"}')
+    lines.extend(['', '### 反向证据'])
+    if not events:
+        lines.append('- 未获取到目标 Pod 的 Warning Event。')
+    if not log_findings:
+        lines.append('- 告警窗口内未命中异常日志模式。')
+    if changes:
+        lines.append(f'- 告警窗口附近发现 {len(changes)} 项发布或配置变更，需人工核对相关性。')
+    else:
+        lines.append('- 未发现与目标匹配的近期发布或配置变更。')
+    lines.extend(['', '### 处置建议'])
+    action_items = suggestions or [suggestion]
+    for index, item in enumerate(action_items[:6]):
+        priority = 'P0' if index == 0 else ('P1' if index < 3 else 'P2')
+        lines.append(f'- **{priority}** {item}')
+    if missing:
+        lines.extend(['', '### 缺失证据'])
+        lines.extend(f'- {item}' for item in missing[:8])
+    lines.extend(['', '### 总结', f'- {result.get("summary") or root_cause}', '- 报告仅基于 Prometheus、K8s API、日志和变更证据，不包含模型思维链。'])
+    return '\n'.join(lines)
+
+
 def _default_body(alert, action='fire'):
     raw, event, rule, evidence = _notification_payload(alert)
     if action == 'analysis':
-        confidence, root_cause, evidence_text, suggestion = _analysis_content(alert, raw)
-        return '\n'.join([
-            f'**告警状态：** {alert.get_status_display()}',
-            f'**告警对象：** {alert.resource or (alert.host.hostname if alert.host else "-")}',
-            f'**研判置信度：** {confidence}',
-            f'**根因结论：** {root_cause}',
-            f'**关键证据：** {evidence_text}',
-            f'**处理建议：** {suggestion}',
-            f'**完成时间：** {_format_datetime(timezone.now())}',
-        ])
+        return _analysis_markdown(alert, raw)
 
     value = _first_number(evidence.get('value'), event.get('value'), _dict(event.get('evidence')).get('value'))
     unit = _metric_unit(alert, rule)
@@ -647,7 +727,10 @@ def _default_body(alert, action='fire'):
         lines.append(f'**发生时间：** {_format_datetime(alert.starts_at)}')
         ai_status = _dict(raw.get('ai_analysis')).get('status')
         if ai_status in {'pending', 'running'}:
-            lines.append('**智能研判：** 正在分析，完成后另行通知')
+            lines.append('**智能研判：** 告警持续 2 分钟后执行精准研判，完成后另行通知')
+        title_text = f'{alert.title} {alert.message}'.lower()
+        if any(token in title_text for token in ('重启', 'crashloop', 'pod', '容器')):
+            lines.append('**简要建议：** 优先查看目标 Pod 的状态、Warning Event、当前日志和上次崩溃日志。')
     if alert.runbook_url:
         lines.append(f'**处理手册：** {alert.runbook_url}')
     return '\n'.join(lines)

@@ -214,7 +214,41 @@ def _deep_k8s_samples(context, findings, limit=5):
         if not namespace or not pod_name or key in seen:
             continue
         seen.add(key)
-        item = {'namespace': namespace, 'pod': pod_name, 'events': [], 'current_logs': '', 'previous_logs': ''}
+        item = {'namespace': namespace, 'pod': pod_name, 'events': [], 'current_logs': '', 'previous_logs': '', 'containers': []}
+        pod_obj = None
+        try:
+            pod_obj = v1.read_namespaced_pod(pod_name, namespace)
+            status = pod_obj.status
+            spec = pod_obj.spec
+            item['phase'] = getattr(status, 'phase', '') or ''
+            item['node'] = getattr(spec, 'node_name', '') or ''
+            statuses = {getattr(value, 'name', ''): value for value in (getattr(status, 'container_statuses', None) or [])}
+            for container_spec in getattr(spec, 'containers', None) or []:
+                name = getattr(container_spec, 'name', '')
+                container_status = statuses.get(name)
+                state = getattr(container_status, 'state', None)
+                waiting = getattr(state, 'waiting', None)
+                terminated = getattr(state, 'terminated', None)
+                item['containers'].append({
+                    'name': name,
+                    'ready': bool(getattr(container_status, 'ready', False)),
+                    'restart_count': int(getattr(container_status, 'restart_count', 0) or 0),
+                    'image': getattr(container_spec, 'image', '') or '',
+                    'requests': dict(getattr(getattr(container_spec, 'resources', None), 'requests', None) or {}),
+                    'limits': dict(getattr(getattr(container_spec, 'resources', None), 'limits', None) or {}),
+                    'waiting': {'reason': getattr(waiting, 'reason', ''), 'message': getattr(waiting, 'message', '')} if waiting else None,
+                    'terminated': {
+                        'reason': getattr(terminated, 'reason', ''), 'exit_code': getattr(terminated, 'exit_code', None),
+                        'message': getattr(terminated, 'message', ''), 'finished_at': str(getattr(terminated, 'finished_at', '') or ''),
+                    } if terminated else None,
+                    'probes': {
+                        'liveness': bool(getattr(container_spec, 'liveness_probe', None)),
+                        'readiness': bool(getattr(container_spec, 'readiness_probe', None)),
+                        'startup': bool(getattr(container_spec, 'startup_probe', None)),
+                    },
+                })
+        except Exception as exc:
+            item['describe_error'] = str(exc)[:300]
         try:
             events = v1.list_namespaced_event(namespace, field_selector=f'involvedObject.name={pod_name}', limit=20)
             item['events'] = [
@@ -223,19 +257,78 @@ def _deep_k8s_samples(context, findings, limit=5):
             ]
         except Exception as exc:
             item['events_error'] = str(exc)[:200]
+        requested_container = str(finding.get('container') or '')
+        container_name = requested_container or (item.get('containers') or [{}])[0].get('name')
         try:
-            item['current_logs'] = str(v1.read_namespaced_pod_log(pod_name, namespace, tail_lines=50))[-8000:]
+            item['current_logs'] = str(v1.read_namespaced_pod_log(pod_name, namespace, tail_lines=80, container=container_name))[-8000:]
         except Exception as exc:
             item['current_logs_error'] = str(exc)[:200]
-        if finding.get('code') == 'pod_restarts':
+        try:
             try:
-                item['previous_logs'] = str(v1.read_namespaced_pod_log(pod_name, namespace, tail_lines=50, previous=True))[-8000:]
+                item['previous_logs'] = str(v1.read_namespaced_pod_log(pod_name, namespace, tail_lines=80, previous=True, container=container_name))[-8000:]
             except Exception as exc:
                 item['previous_logs_error'] = str(exc)[:200]
+        except Exception:
+            pass
         samples.append(item)
         if len(samples) >= limit:
             break
     return samples
+
+
+def _targeted_alert_labels(alert):
+    labels = alert.labels if alert and isinstance(alert.labels, dict) else {}
+    return {
+        'namespace': str(getattr(alert, 'namespace', '') or labels.get('namespace') or '').strip(),
+        'pod': str(labels.get('pod') or labels.get('pod_name') or (getattr(alert, 'resource', '') if getattr(alert, 'resource_type', '') in {'pod', 'container'} else '')).strip(),
+        'container': str(labels.get('container') or labels.get('container_name') or '').strip(),
+        'node': str(labels.get('node') or labels.get('node_name') or '').strip(),
+    }
+
+
+def _targeted_alert_metrics(context, alert, start_time, end_time):
+    target = _targeted_alert_labels(alert)
+    namespace, pod, container, node = [target.get(key) for key in ('namespace', 'pod', 'container', 'node')]
+    if not namespace or not pod:
+        return {'status': 'not_applicable', 'target': target, 'items': []}
+
+    def selector(extra=''):
+        labels = [f'namespace="{namespace.replace(chr(34), chr(92)+chr(34))}"', f'pod="{pod.replace(chr(34), chr(92)+chr(34))}"']
+        if container:
+            labels.append(f'container="{container.replace(chr(34), chr(92)+chr(34))}"')
+        return '{' + ','.join(labels + ([extra] if extra else [])) + '}'
+
+    definitions = [
+        ('restart_increase', '窗口内重启增量', f'sum by(namespace,pod,container) (increase(kube_pod_container_status_restarts_total{selector()}[15m]))'),
+        ('cpu_peak', 'CPU 使用峰值', f'max_over_time(sum by(namespace,pod,container) (rate(container_cpu_usage_seconds_total{selector()}[5m]))[15m:])'),
+        ('memory_peak', '内存使用峰值', f'max_over_time(sum by(namespace,pod,container) (container_memory_working_set_bytes{selector()} )[15m:])'),
+        ('oom_killed', 'OOMKilled', f'max(kube_pod_container_status_last_terminated_reason{selector("reason=\\\"OOMKilled\\\"")})'),
+        ('resource_requests_cpu', 'CPU Request', f'sum(kube_pod_container_resource_requests{selector("resource=\\\"cpu\\\"")})'),
+        ('resource_limits_memory', '内存 Limit', f'sum(kube_pod_container_resource_limits{selector("resource=\\\"memory\\\"")})'),
+    ]
+    raw = alert.raw_payload if isinstance(alert.raw_payload, dict) else {}
+    raw_rule = raw.get('rule') if isinstance(raw.get('rule'), dict) else {}
+    query_config = raw_rule.get('query_config') if isinstance(raw_rule.get('query_config'), dict) else {}
+    original_query = str(query_config.get('promql') or query_config.get('query') or '').strip()
+    if original_query:
+        exact_guard = f'kube_pod_info{{namespace="{namespace}",pod="{pod}"}}'
+        definitions.insert(0, ('original_alert_metric', '告警规则原始指标', f'({original_query}) and on(namespace,pod) {exact_guard}'))
+    if node:
+        node_selector = '{instance="' + node.replace('"', '\\"') + '"}'
+        definitions.extend([
+            ('node_disk_io', '节点磁盘 I/O', f'sum(rate(node_disk_read_bytes_total{node_selector}[5m]) + rate(node_disk_written_bytes_total{node_selector}[5m]))'),
+            ('node_memory_pressure', '节点内存可用率', f'(node_memory_MemAvailable_bytes{node_selector} / node_memory_MemTotal_bytes{node_selector}) * 100'),
+        ])
+    items = []
+    for code, title, promql in definitions:
+        try:
+            from .observability_views import execute_promql_query
+            response = execute_promql_query(promql, range_query=True, start_time=start_time, end_time=end_time, step=60, metric_datasource_id=context.metric_datasource_id, environment=context.code, prefer_metric_datasource=True)
+            values = _series_values(response)
+            items.append({'code': code, 'title': title, 'status': 'ok', 'query': promql, 'sample_count': len(values), 'peak': max(values) if values else None, 'latest': values[-1] if values else None})
+        except Exception as exc:
+            items.append({'code': code, 'title': title, 'status': 'error', 'query': promql, 'error': str(exc)[:300]})
+    return {'status': 'ok', 'target': target, 'window': {'start_at': start_time.isoformat(), 'end_at': end_time.isoformat()}, 'items': items}
 
 
 def _log_dimensions(alert=None, target=''):
@@ -351,12 +444,11 @@ def _log_evidence(context, *, alert=None, target='', window_minutes=60, profile=
     now = timezone.now()
     alert_started_at = getattr(alert, 'starts_at', None) if alert else None
     if alert_started_at:
-        primary_start = alert_started_at - timedelta(minutes=5)
-        expected_end = alert_started_at + timedelta(minutes=2)
-        primary_end = min(now, expected_end) if now >= alert_started_at else expected_end
+        primary_start = alert_started_at
+        primary_end = max(now, primary_start)
         baseline_start = alert_started_at - timedelta(minutes=30)
         baseline_end = primary_start
-        fallback_minutes = [15, 60]
+        fallback_minutes = []
     else:
         primary_end = now
         primary_minutes = max(5, min(int(window_minutes or 60), 360))
@@ -388,7 +480,22 @@ def _log_evidence(context, *, alert=None, target='', window_minutes=60, profile=
             if result.get('logs') or minutes == 60:
                 break
 
-    logs = _dedupe_logs((result or {}).get('logs') or [])
+    raw_logs = (result or {}).get('logs') or []
+    # The backend query is intentionally broad for ES/ClickHouse compatibility;
+    # enforce the alert dimensions before evidence is persisted.
+    if alert_started_at:
+        filtered = []
+        for raw in raw_logs:
+            item = _sanitize_log(raw)
+            if dimensions.get('namespace') and item.get('namespace') != dimensions['namespace']:
+                continue
+            if dimensions.get('pod') and item.get('pod') != dimensions['pod']:
+                continue
+            if dimensions.get('service') and item.get('service') != dimensions['service']:
+                continue
+            filtered.append(raw)
+        raw_logs = filtered
+    logs = _dedupe_logs(raw_logs)
     levels = Counter(item.get('level') or 'unknown' for item in logs)
     error_count = sum(count for level, count in levels.items() if level in {'warning', 'warn', 'error', 'critical', 'fatal'})
     baseline = None
@@ -436,6 +543,10 @@ def _log_findings(logs):
         if level not in {'warning', 'warn', 'error', 'critical', 'fatal'}:
             continue
         message = str(item.get('message') or '')
+        if re.search(r'"(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+\S+\s+HTTP/[\d.]+"\s+[123]\d\d\b', message, re.I):
+            continue
+        if not re.search(r'(?i)(error|exception|traceback|warning|warn|oom|killed|gc\b|timeout|refused|reset|unavailable|failed|failure|panic|fatal|crash|back-?off|no space|disk|volume|mount|network|dns|probe|unhealthy)', message):
+            continue
         normalized = re.sub(r'\b\d+\b', '#', message.casefold())[:300]
         findings.append({
             'fingerprint': f"log:{item.get('source')}:{normalized}",
@@ -485,15 +596,17 @@ def _asset_and_topology_evidence(context):
     return resources, middleware, topology
 
 
-def _change_evidence(context, *, window_minutes=60, target=''):
+def _change_evidence(context, *, window_minutes=60, target='', start_time=None, end_time=None):
     from .models import Deployment
 
     if not context.k8s_cluster_id:
         return []
-    start_time = timezone.now() - timedelta(minutes=max(60, min(int(window_minutes or 60) * 2, 1440)))
+    end_time = end_time or timezone.now()
+    start_time = start_time or (end_time - timedelta(minutes=max(60, min(int(window_minutes or 60) * 2, 1440))))
     queryset = Deployment.objects.filter(
         cluster_id=context.k8s_cluster_id,
         deployed_at__gte=start_time,
+        deployed_at__lte=end_time,
     ).order_by('-deployed_at')
     if target:
         from django.db.models import Q
@@ -552,11 +665,14 @@ def collect_observability_evidence(context, profile='inspection', depth='full', 
         'diagnostics': [],
     }
     if alert:
-        evidence['alert'] = {'id': alert.id, 'title': alert.title, 'level': alert.level, 'resource': alert.resource, 'namespace': alert.namespace, 'service': alert.service}
+        evidence['alert'] = {'id': alert.id, 'title': alert.title, 'level': alert.level, 'status': alert.status, 'resource': alert.resource, 'namespace': alert.namespace, 'service': alert.service, 'starts_at': alert.starts_at.isoformat() if alert.starts_at else None}
 
     if context.metric_datasource_id and context.metric_datasource.is_enabled:
-        start_time = timezone.now() - timedelta(minutes=max(15, min(int(window_minutes or 60), 360)))
         end_time = timezone.now()
+        if alert and alert.starts_at:
+            start_time = alert.starts_at - timedelta(minutes=10)
+        else:
+            start_time = end_time - timedelta(minutes=max(15, min(int(window_minutes or 60), 360)))
         allowed_metric_codes = INSPECTION_PROFILE_METRICS.get(profile_for_collection) or INSPECTION_PROFILE_METRICS['cluster']
         definitions = [item for item in METRIC_MATRIX if item[0] in allowed_metric_codes][:DEPTH_METRIC_LIMIT[depth]]
         with ThreadPoolExecutor(max_workers=min(6, len(definitions))) as executor:
@@ -573,6 +689,12 @@ def collect_observability_evidence(context, profile='inspection', depth='full', 
         successful = sum(1 for item in evidence['metrics'] if item.get('status') == 'ok')
         evidence['stage_status']['metrics'] = 'completed' if successful == len(definitions) else ('partial' if successful else 'failed')
         evidence['source_coverage']['metrics'] = successful > 0
+        if alert:
+            try:
+                evidence['targeted_metrics'] = _targeted_alert_metrics(context, alert, start_time, end_time)
+            except Exception as exc:
+                evidence['targeted_metrics'] = {'status': 'error', 'error': str(exc)[:300], 'items': []}
+                evidence['diagnostics'].append({'code': 'targeted_metric_query_failed', 'message': str(exc)[:300]})
     else:
         evidence['stage_status']['metrics'] = 'unavailable'
         evidence['source_coverage']['metrics'] = False
@@ -587,8 +709,12 @@ def collect_observability_evidence(context, profile='inspection', depth='full', 
             k8s = _k8s_evidence(context, depth, target=target, profile=profile_for_collection)
             evidence['k8s'] = k8s
             evidence['k8s_findings'] = k8s['findings']
-            if depth in {'targeted', 'full'} and k8s['findings']:
-                evidence['k8s_samples'] = _deep_k8s_samples(context, k8s['findings'])
+            if depth in {'targeted', 'full'}:
+                targeted = _targeted_alert_labels(alert) if alert else {}
+                deep_findings = list(k8s['findings'])
+                if targeted.get('namespace') and targeted.get('pod'):
+                    deep_findings.append({'namespace': targeted['namespace'], 'target': targeted['pod'], 'container': targeted.get('container'), 'code': 'alert_target'})
+                evidence['k8s_samples'] = _deep_k8s_samples(context, deep_findings)
                 evidence['event_findings'] = [event for item in evidence['k8s_samples'] for event in item.get('events') or []]
             evidence['stage_status']['k8s'] = 'completed'
             evidence['source_coverage']['k8s'] = True
@@ -652,6 +778,8 @@ def collect_observability_evidence(context, profile='inspection', depth='full', 
             context,
             window_minutes=window_minutes,
             target=target,
+            start_time=alert.starts_at if alert and alert.starts_at else None,
+            end_time=timezone.now(),
         )
         evidence['stage_status']['changes'] = 'completed'
         evidence['source_coverage']['changes'] = True
