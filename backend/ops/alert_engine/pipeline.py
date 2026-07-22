@@ -22,7 +22,20 @@ def _duration_seconds(rule):
 
 
 def _result_fingerprint(rule, result):
-    return build_rule_fingerprint(rule, result.get('labels') or {})
+    labels = result.get('labels') or {}
+    # Waiting reason is diagnostic state, not the identity of a Pod incident.
+    # Keep the Pod UID so a replacement Pod with the same name is a new incident.
+    rule_text = f'{rule.code} {rule.name}'.lower()
+    if 'waiting' in rule_text:
+        labels = {
+            key: labels.get(key, '')
+            for key in (
+                'environment', 'metric_datasource_id', 'cluster', 'namespace',
+                'pod', 'container', 'uid', 'pod_uid',
+            )
+            if labels.get(key, '') not in (None, '')
+        }
+    return build_rule_fingerprint(rule, labels)
 
 
 def _alert_payload_from_result(rule, result, status=Alert.STATUS_ACTIVE):
@@ -43,10 +56,12 @@ def _alert_payload_from_result(rule, result, status=Alert.STATUS_ACTIVE):
         'metric_name': result.get('metric_name') or labels.get('__name__') or '',
         'evidence': result.get('evidence') or {},
     }
-    return build_platform_alert_payload(rule, payload=payload, status=status)
+    normalized = build_platform_alert_payload(rule, payload=payload, status=status)
+    normalized['fingerprint'] = _result_fingerprint(rule, result)
+    return normalized
 
 
-def _emit_alert(rule, result, request=None, status=Alert.STATUS_ACTIVE):
+def _emit_alert(rule, result, request=None, status=Alert.STATUS_ACTIVE, action_note='alert engine evaluation'):
     normalized = _alert_payload_from_result(rule, result, status=status)
     previous = Alert.objects.filter(fingerprint=normalized.get('fingerprint')).only('level').first()
     previous_level = previous.level if previous else ''
@@ -63,7 +78,7 @@ def _emit_alert(rule, result, request=None, status=Alert.STATUS_ACTIVE):
         normalized,
         actor='alert-engine',
         action=AlertAction.ACTION_RULE_EVALUATION,
-        action_note='alert engine evaluation',
+        action_note=action_note,
     )
     apply_alert_suppression(alert)
     apply_escalation_policy(alert, request=request)
@@ -127,9 +142,17 @@ def process_rule_results(rule, results, *, dry_run=False, request=None):
             )
             if not state.first_seen_at or state.status == AlertRuleState.STATUS_RESOLVED:
                 state.first_seen_at = now
-            state.labels = item.get('labels') or {}
+            previous_labels = state.labels or {}
+            current_labels = item.get('labels') or {}
+            previous_reason = previous_labels.get('reason')
+            current_reason = current_labels.get('reason')
+            reason_changed = bool(
+                previous_reason and current_reason and previous_reason != current_reason
+            )
+            state.labels = current_labels
             state.last_seen_at = now
             state.last_value = item.get('value') if isinstance(item.get('value'), (int, float)) else None
+            state.consecutive_misses = 0
             state.last_error = ''
             try:
                 duration = int(item.get('duration_seconds', default_duration))
@@ -140,7 +163,12 @@ def process_rule_results(rule, results, *, dry_run=False, request=None):
             if item['would_fire']:
                 previous_status = state.status
                 state.status = AlertRuleState.STATUS_ACTIVE
-                alert, created, previous_level = _emit_alert(rule, item, request=request, status=Alert.STATUS_ACTIVE)
+                action_note = 'alert engine evaluation'
+                if reason_changed:
+                    action_note = f'Waiting 原因变化: {previous_reason} -> {current_reason}'
+                alert, created, previous_level = _emit_alert(
+                    rule, item, request=request, status=Alert.STATUS_ACTIVE, action_note=action_note,
+                )
                 alerts_to_notify.append(alert)
                 analysis_candidates.append((alert, created, previous_level))
                 created_count += 1 if created else 0
@@ -149,10 +177,18 @@ def process_rule_results(rule, results, *, dry_run=False, request=None):
                     item['state_changed'] = True
             else:
                 state.status = AlertRuleState.STATUS_PENDING
-            state.save(update_fields=['labels', 'status', 'first_seen_at', 'last_seen_at', 'last_value', 'last_error', 'updated_at'])
+            state.save(update_fields=[
+                'labels', 'status', 'first_seen_at', 'last_seen_at', 'last_value',
+                'consecutive_misses', 'last_error', 'updated_at',
+            ])
 
         stale_states = AlertRuleState.objects.filter(rule=rule, status__in=[AlertRuleState.STATUS_ACTIVE, AlertRuleState.STATUS_PENDING]).exclude(fingerprint__in=seen_fingerprints)
         for state in stale_states:
+            if state.status == AlertRuleState.STATUS_ACTIVE:
+                state.consecutive_misses += 1
+                if state.consecutive_misses < 2:
+                    state.save(update_fields=['consecutive_misses', 'updated_at'])
+                    continue
             if state.status == AlertRuleState.STATUS_ACTIVE:
                 result = {
                     'labels': state.labels or {},
@@ -167,7 +203,7 @@ def process_rule_results(rule, results, *, dry_run=False, request=None):
                 resolved_count += 1
             state.status = AlertRuleState.STATUS_RESOLVED
             state.last_seen_at = now
-            state.save(update_fields=['status', 'last_seen_at', 'updated_at'])
+            state.save(update_fields=['status', 'last_seen_at', 'consecutive_misses', 'updated_at'])
 
         rule.last_evaluated_at = now
         if alerts_to_notify:

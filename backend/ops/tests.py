@@ -2289,7 +2289,7 @@ class AlertPlatformRuleTests(TestCase):
         results = payload['results'] if isinstance(payload, dict) and 'results' in payload else payload
         self.assertTrue(any(item['code'] == 'k8s-pod-crashloop-test' for item in results))
 
-    def test_builtin_template_bundles_include_k8s_events_and_linux_server(self):
+    def test_builtin_template_bundles_include_agent4_k8s_and_linux_server(self):
         from ops.alert_rule_presets import ensure_builtin_alert_rule_templates
 
         ensure_builtin_alert_rule_templates()
@@ -2297,11 +2297,11 @@ class AlertPlatformRuleTests(TestCase):
         k8s_codes = set(AlertRule.objects.filter(is_template=True, labels__integration='kubernetes').values_list('code', flat=True))
         linux_codes = set(AlertRule.objects.filter(is_template=True, labels__integration='linux').values_list('code', flat=True))
         self.assertTrue(
-            {'k8s-node-not-ready', 'k8s-abnormal-pods', 'k8s-pod-restarts', 'k8s-events-warning'}.issubset(k8s_codes)
+            {'k8s-pod-waiting', 'k8s-pod-restarts', 'k8s-pod-unschedulable'}.issubset(k8s_codes)
         )
         reference_templates = AlertRule.objects.filter(
             is_template=True,
-            labels__template_source='xing-cloud-ops-agent',
+            labels__template_source='xing-cloud-ops-agent-agent1-4',
         )
         self.assertTrue({
             'apiserver', 'workload', 'network', 'storage', 'system',
@@ -2316,9 +2316,9 @@ class AlertPlatformRuleTests(TestCase):
         self.assertTrue(
             {'linux-node-down', 'linux-high-cpu', 'linux-high-memory', 'linux-high-disk'}.issubset(linux_codes)
         )
-        k8s_events = AlertRule.objects.get(code='k8s-events-warning', is_template=True)
-        self.assertEqual(k8s_events.source_type, 'clickhouse')
-        self.assertEqual(k8s_events.query_config['collection'], 'k8s-events')
+        waiting = AlertRule.objects.get(code='k8s-pod-waiting', is_template=True)
+        self.assertEqual(waiting.source_type, 'prometheus')
+        self.assertTrue(waiting.auto_analyze)
 
     def test_alert_rule_template_api_returns_full_builtin_catalog(self):
         from ops.alert_rule_presets import ensure_builtin_alert_rule_templates
@@ -2332,7 +2332,7 @@ class AlertPlatformRuleTests(TestCase):
         if isinstance(rows, dict) and 'results' in rows:
             rows = rows['results']
         codes = {item['code'] for item in rows}
-        self.assertIn('k8s-events-warning', codes)
+        self.assertIn('k8s-pod-waiting', codes)
         self.assertIn('linux-node-down', codes)
         self.assertGreaterEqual(len(rows), AlertRule.objects.filter(is_template=True).count())
 

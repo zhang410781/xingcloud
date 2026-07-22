@@ -1075,6 +1075,7 @@ class AlertRuleState(models.Model):
     first_seen_at = models.DateTimeField(null=True, blank=True)
     last_seen_at = models.DateTimeField(null=True, blank=True)
     last_value = models.FloatField(null=True, blank=True)
+    consecutive_misses = models.PositiveSmallIntegerField(default=0)
     last_error = models.TextField(blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
