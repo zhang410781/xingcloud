@@ -416,6 +416,21 @@ INSTANCE_FIELDS = {
 }
 
 
+def _datasource_cluster_display_name(datasource):
+    if datasource is None:
+        return ''
+    context = (
+        datasource.aiops_knowledge_environments
+        .filter(is_enabled=True, k8s_cluster__isnull=False)
+        .select_related('k8s_cluster')
+        .order_by('id')
+        .first()
+    )
+    if context and context.k8s_cluster:
+        return context.k8s_cluster.name
+    return datasource.cluster_name or datasource.name
+
+
 def instantiate_rule_from_template(template, datasource=None, overrides=None):
     if not template.is_template:
         raise ValueError('所选规则不是模板')
@@ -428,8 +443,9 @@ def instantiate_rule_from_template(template, datasource=None, overrides=None):
     if existing:
         return existing, False
 
+    cluster_display_name = _datasource_cluster_display_name(datasource)
     payload = {
-        'name': f'{template.name} · {datasource.cluster_name or datasource.name}' if datasource else template.name,
+        'name': f'{template.name} · {cluster_display_name}' if datasource else template.name,
         'category': template.category,
         'source': template.code,
         'is_template': False,
@@ -457,6 +473,8 @@ def instantiate_rule_from_template(template, datasource=None, overrides=None):
             payload['labels']['environment'] = datasource.environment
         if datasource.cluster_name:
             payload['labels']['cluster'] = datasource.cluster_name
+        if cluster_display_name:
+            payload['labels']['cluster_display_name'] = cluster_display_name
         payload['labels']['metric_datasource_id'] = str(datasource.id)
     for key, value in (overrides or {}).items():
         if key in INSTANCE_FIELDS:

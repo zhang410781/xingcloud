@@ -2,7 +2,7 @@ from unittest.mock import patch
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -18,7 +18,7 @@ from ops.alert_analysis import (
     recover_stale_running_analyses,
     run_due_alert_analyses,
 )
-from ops.alerting import _default_body, _policy_inhibits_alert, dispatch_alert_notifications, upsert_alert
+from ops.alerting import _card_buttons, _default_body, _policy_inhibits_alert, dispatch_alert_notifications, upsert_alert
 from ops.alert_rules import trigger_alert_rule
 from ops.alert_rule_presets import ensure_builtin_alert_rule_templates
 from ops.observability_evidence import _targeted_alert_metrics
@@ -441,6 +441,16 @@ class AlertAnalysisTests(TestCase):
         body = _default_body(self.alert, action='analysis')
 
         self.assertIn('研判状态：** 研判期间已恢复', body)
+
+    @override_settings(XING_CLOUD_PUBLIC_BASE_URL='https://xingcloud.example.com')
+    def test_alert_card_includes_detail_claim_and_mute_buttons(self):
+        buttons = _card_buttons(self.alert, 'feishu')
+
+        self.assertEqual(buttons[0]['title'], '查看详情')
+        self.assertEqual(buttons[0]['url'], f'https://xingcloud.example.com/observability/alerts/{self.alert.id}')
+        titles = {item['title'] for item in buttons}
+        self.assertIn('认领', titles)
+        self.assertIn('屏蔽 1 小时', titles)
 
 
 class AlertAnalysisApiTests(TestCase):

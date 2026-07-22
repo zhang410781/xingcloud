@@ -109,6 +109,17 @@ def _prometheus_results(rule):
         environment=rule.metric_datasource.environment or query_config.get('environment') or rule_labels.get('environment') or '',
         prefer_metric_datasource=True,
     )
+    cluster_display_name = rule_labels.get('cluster_display_name')
+    if not cluster_display_name:
+        context = (
+            rule.metric_datasource.aiops_knowledge_environments
+            .filter(is_enabled=True, k8s_cluster__isnull=False)
+            .select_related('k8s_cluster')
+            .order_by('id')
+            .first()
+        )
+        if context and context.k8s_cluster:
+            cluster_display_name = context.k8s_cluster.name
     results = []
     for item in payload.get('result') or []:
         metric = _dict(item.get('metric'))
@@ -120,9 +131,12 @@ def _prometheus_results(rule):
             labels.setdefault('environment', rule.metric_datasource.environment)
         if rule.metric_datasource.cluster_name:
             labels.setdefault('cluster', rule.metric_datasource.cluster_name)
+        if cluster_display_name:
+            labels['cluster_display_name'] = cluster_display_name
         resource = labels.get('pod') or labels.get('instance') or labels.get('node') or labels.get('job') or ''
         matched = _compare(value, condition)
-        rendered_annotations, template_diagnostics = render_rule_annotations(rule, labels=labels, value=value)
+        display_labels = {**labels, 'cluster': cluster_display_name or labels.get('cluster') or ''}
+        rendered_annotations, template_diagnostics = render_rule_annotations(rule, labels=display_labels, value=value)
         results.append({
             'source_type': 'prometheus',
             'matched': matched,

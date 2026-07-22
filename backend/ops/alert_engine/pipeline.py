@@ -194,8 +194,8 @@ def process_rule_results(rule, results, *, dry_run=False, request=None):
                     'labels': state.labels or {},
                     'value': state.last_value,
                     'matched': False,
-                    'title': f'{rule.name} recovered',
-                    'message': f'{rule.name} recovered',
+                    'title': rule.name,
+                    'message': f'{rule.name} 已恢复',
                     'evidence': {'state': 'resolved', 'last_value': state.last_value},
                 }
                 alert, _, _ = _emit_alert(rule, result, request=request, status=Alert.STATUS_RESOLVED)

@@ -371,15 +371,15 @@ def _base_url(request=None):
 
 
 def _interaction_url(alert, action, provider='', request=None):
+    base = _base_url(request)
+    if not base:
+        return ''
     token = AlertInteractionToken.objects.create(
         alert=alert,
         action=action,
         provider=provider or '',
         expires_at=timezone.now() + timedelta(days=7),
     )
-    base = _base_url(request)
-    if not base:
-        return ''
     return f'{base}/alert-actions/{token.token}'
 
 

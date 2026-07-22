@@ -292,6 +292,7 @@ ALLOWED_HOSTS = [
     for host in os.getenv('ALLOWED_HOSTS', '*').split(',')
     if host.strip()
 ]
+XING_CLOUD_PUBLIC_BASE_URL = os.getenv('XING_CLOUD_PUBLIC_BASE_URL', '').rstrip('/')
 
 X_FRAME_OPTIONS = os.getenv('X_FRAME_OPTIONS', 'SAMEORIGIN')
 

@@ -68,4 +68,7 @@ class WaitingAlertStabilityTests(TestCase):
         state.refresh_from_db()
         self.assertEqual(second_miss['resolved_count'], 1)
         self.assertEqual(state.status, AlertRuleState.STATUS_RESOLVED)
-        self.assertEqual(Alert.objects.get().status, Alert.STATUS_RESOLVED)
+        alert = Alert.objects.get()
+        self.assertEqual(alert.status, Alert.STATUS_RESOLVED)
+        self.assertEqual(alert.title, self.rule.name)
+        self.assertNotIn('recovered', alert.title.lower())
