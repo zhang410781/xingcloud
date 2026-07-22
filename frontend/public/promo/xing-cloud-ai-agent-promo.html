@@ -3,155 +3,689 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Xing-Cloud 运维智能体平台：七类业务智能体协同连接资产、可观测、告警、巡检、研判、任务与工单。">
   <title>Xing-Cloud 运维智能体平台</title>
-  <meta name="description" content="Xing-Cloud 统一 CMDB、业务上下文、可观测性、告警研判、巡检、任务与工单。">
   <link rel="icon" href="assets/favicon.svg">
   <style>
-    :root{--bg:#f5f8fc;--card:#fff;--text:#17243a;--muted:#60748c;--line:#dce6f2;--blue:#2563eb;--cyan:#0891b2;--green:#059669;--orange:#d97706;--shadow:0 18px 50px rgba(24,55,95,.09)}
-    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;color:var(--text);font-family:"Microsoft YaHei","PingFang SC",Arial,sans-serif;background:linear-gradient(180deg,#f8fbff 0,#f3f7fb 55%,#fff 100%);line-height:1.7}
-    a{color:inherit;text-decoration:none}.wrap{width:min(1180px,calc(100% - 36px));margin:auto}.nav{position:sticky;top:0;z-index:20;border-bottom:1px solid rgba(220,230,242,.9);background:rgba(255,255,255,.9);backdrop-filter:blur(16px)}
-    .nav-inner{height:64px;display:flex;align-items:center;justify-content:space-between;gap:24px}.brand{display:flex;align-items:center;gap:11px;font-weight:800}.brand img{width:34px;height:34px}.brand small{display:block;color:var(--muted);font-size:11px;font-weight:500}
-    .links{display:flex;gap:22px;color:#48627e;font-size:14px}.hero{padding:90px 0 64px;position:relative;overflow:hidden}.hero:before{content:"";position:absolute;inset:-200px 45% auto -180px;height:520px;background:radial-gradient(circle,rgba(37,99,235,.16),transparent 68%);pointer-events:none}
-    .hero-grid{position:relative;display:grid;grid-template-columns:1.15fr .85fr;gap:55px;align-items:center}.eyebrow{display:inline-flex;padding:6px 12px;border:1px solid #bfdbfe;border-radius:999px;background:#eff6ff;color:#1d4ed8;font-size:13px;font-weight:700}
-    h1{margin:22px 0 18px;font-size:52px;line-height:1.13;letter-spacing:-2px}.gradient{background:linear-gradient(100deg,#2563eb,#0891b2);-webkit-background-clip:text;color:transparent}.lead{max-width:700px;color:var(--muted);font-size:18px}
-    .actions{display:flex;gap:12px;margin-top:30px}.btn{display:inline-flex;align-items:center;justify-content:center;padding:11px 20px;border-radius:10px;border:1px solid var(--line);background:#fff;font-weight:700}.btn.primary{color:#fff;border-color:var(--blue);background:var(--blue);box-shadow:0 12px 28px rgba(37,99,235,.25)}
-    .scope{margin-top:28px;display:flex;flex-wrap:wrap;gap:9px}.scope span{padding:5px 10px;border-radius:7px;background:#fff;border:1px solid var(--line);color:#526b85;font-size:12px}
-    .console{padding:18px;border:1px solid #d7e3ef;border-radius:20px;background:rgba(255,255,255,.92);box-shadow:var(--shadow)}.console-head{display:flex;justify-content:space-between;align-items:center;padding-bottom:14px;border-bottom:1px solid var(--line)}
-    .dots{display:flex;gap:5px}.dots i{width:8px;height:8px;border-radius:50%;background:#bfdbfe}.console h3{margin:0;font-size:15px}.status{color:var(--green);font-size:12px;font-weight:700}
-    .metric-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:14px}.metric{padding:13px;border-radius:12px;background:#f7faff;border:1px solid #e4edf7}.metric span{display:block;color:var(--muted);font-size:11px}.metric strong{font-size:20px}.timeline{margin-top:14px}.event{display:grid;grid-template-columns:10px 1fr;gap:10px;padding:8px 0;font-size:12px;color:#536b84}.event i{width:8px;height:8px;margin-top:7px;border-radius:50%;background:var(--blue)}
-    section{padding:66px 0}.section-head{max-width:760px;margin-bottom:30px}.section-head h2{margin:0 0 10px;font-size:34px}.section-head p{margin:0;color:var(--muted)}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
-    .card{padding:23px;border:1px solid var(--line);border-radius:16px;background:var(--card);box-shadow:0 8px 26px rgba(27,58,96,.05)}.card .icon{display:grid;place-items:center;width:38px;height:38px;border-radius:11px;background:#eff6ff;color:var(--blue);font-weight:900}.card h3{margin:15px 0 7px;font-size:18px}.card p{margin:0;color:var(--muted);font-size:14px}
-    .flow{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.flow-card{position:relative;padding:20px;border:1px solid var(--line);border-radius:15px;background:#fff}.flow-card:not(:last-child):after{content:"→";position:absolute;right:-19px;top:42%;z-index:2;color:#8aa0b8;font-weight:800}.flow-card b{display:block;color:var(--blue);font-size:12px}.flow-card strong{display:block;margin:6px 0}.flow-card span{color:var(--muted);font-size:13px}
-    .split{display:grid;grid-template-columns:1fr 1fr;gap:22px}.panel{padding:28px;border:1px solid var(--line);border-radius:18px;background:#fff}.panel h3{margin-top:0}.check{list-style:none;padding:0;margin:18px 0 0}.check li{position:relative;padding:8px 0 8px 26px;color:#4f6680}.check li:before{content:"✓";position:absolute;left:0;color:var(--green);font-weight:900}
-    .notice{border-color:#fed7aa;background:#fffaf3}.notice .check li:before{content:"—";color:var(--orange)}.report{padding:24px;border:1px solid #cfe0f3;border-radius:18px;background:linear-gradient(150deg,#fff,#f5faff)}.report table{width:100%;border-collapse:collapse;font-size:13px}.report th,.report td{padding:10px;border-bottom:1px solid #e2ebf4;text-align:left}.report th{color:#526b85;background:#f7faff}.pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#ecfdf5;color:#047857;font-size:11px;font-weight:700}
-    footer{padding:36px 0;border-top:1px solid var(--line);background:#fff;color:var(--muted);font-size:13px}.footer-inner{display:flex;justify-content:space-between;gap:20px}
-    @media(max-width:900px){.links{display:none}.hero{padding-top:60px}.hero-grid,.split{grid-template-columns:1fr}.grid{grid-template-columns:repeat(2,1fr)}.flow{grid-template-columns:1fr 1fr}.flow-card:after{display:none}h1{font-size:42px}}
-    @media(max-width:620px){.wrap{width:min(100% - 24px,1180px)}h1{font-size:35px}.lead{font-size:16px}.grid,.flow{grid-template-columns:1fr}.actions{flex-direction:column}.metric-grid{grid-template-columns:1fr 1fr}.section-head h2{font-size:28px}.footer-inner{flex-direction:column}}
+    :root {
+      --stage: #101418;
+      --paper: #f7f8f6;
+      --ink: #17212b;
+      --muted: #607080;
+      --line: #d8e0e5;
+      --blue: #2468d8;
+      --teal: #16887e;
+      --amber: #bd7417;
+      --red: #bb3e4a;
+      --violet: #7653b5;
+      --green: #268252;
+      --panel: #ffffff;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; scroll-snap-type: y mandatory; }
+    body {
+      margin: 0;
+      overflow-x: hidden;
+      color: var(--ink);
+      background: var(--stage);
+      font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+      line-height: 1.55;
+    }
+    button, a { font: inherit; }
+    a { color: inherit; text-decoration: none; }
+    .slide {
+      position: relative;
+      width: 100%;
+      height: 100vh;
+      height: 100svh;
+      padding: 3vh 3vw;
+      display: flex;
+      scroll-snap-align: start;
+      scroll-snap-stop: always;
+      overflow: hidden;
+    }
+    .paper {
+      position: relative;
+      width: min(1480px, 94vw);
+      height: min(900px, 94vh);
+      margin: auto;
+      padding: 30px 38px 24px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border: 1px solid #2b333b;
+      border-radius: 8px;
+      background-color: var(--paper);
+      background-image:
+        linear-gradient(#e8edef 1px, transparent 1px),
+        linear-gradient(90deg, #e8edef 1px, transparent 1px);
+      background-size: 32px 32px;
+      box-shadow: 0 24px 70px rgba(0,0,0,.38);
+    }
+    .paper::after {
+      content: "";
+      position: absolute;
+      inset: 10px;
+      border: 1px solid rgba(23,33,43,.06);
+      pointer-events: none;
+    }
+    .topline, .slide-footer {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .topline { min-height: 38px; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
+    .brand { display: flex; align-items: center; gap: 10px; color: var(--ink); font-weight: 800; }
+    .brand img { width: 30px; height: 30px; }
+    .brand span { display: flex; flex-direction: column; line-height: 1.2; }
+    .brand small { color: var(--muted); font-weight: 500; }
+    .section-code { font-family: Consolas, monospace; color: var(--blue); font-weight: 700; }
+    .content {
+      position: relative;
+      z-index: 2;
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 18px;
+      padding: 18px 0;
+    }
+    .slide-footer { min-height: 30px; padding-top: 9px; border-top: 1px solid var(--line); }
+    .page-num strong { color: var(--ink); font-size: 18px; }
+    h1, h2, h3, p { margin: 0; letter-spacing: 0; }
+    h1 { max-width: 820px; font-size: 58px; line-height: 1.08; }
+    h2 { font-size: 35px; line-height: 1.18; }
+    h3 { font-size: 17px; line-height: 1.3; }
+    .accent { color: var(--teal); }
+    .subtitle { max-width: 900px; color: var(--muted); font-size: 17px; }
+    .kicker { color: var(--blue); font-size: 13px; font-weight: 800; text-transform: uppercase; }
+    .tag-row { display: flex; flex-wrap: wrap; gap: 8px; }
+    .tag {
+      padding: 5px 9px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: rgba(255,255,255,.72);
+      color: #435464;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .hero-grid, .two-col {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(380px, .95fr);
+      gap: 34px;
+      align-items: center;
+    }
+    .hero-copy { display: flex; flex-direction: column; gap: 18px; }
+    .hero-panel, .panel, .agent-card, .stat-card, .flow-step, .evidence-row, .audit-row {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255,255,255,.9);
+    }
+    .hero-panel { padding: 20px; box-shadow: 0 14px 36px rgba(23,33,43,.10); }
+    .panel { padding: 20px; }
+    .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+    .status { color: var(--green); font-size: 12px; font-weight: 800; }
+    .metric-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 9px; margin-top: 12px; }
+    .metric { min-height: 72px; padding: 11px; border-left: 3px solid var(--blue); background: #f4f7fa; }
+    .metric span { display: block; color: var(--muted); font-size: 11px; }
+    .metric strong { display: block; margin-top: 5px; font-size: 22px; }
+    .mini-flow { display: grid; gap: 7px; margin-top: 12px; }
+    .mini-flow div { display: grid; grid-template-columns: 72px 1fr; gap: 8px; color: #4d5f70; font-size: 12px; }
+    .mini-flow b { color: var(--blue); }
+    .grid-2, .grid-3, .grid-4, .agent-grid {
+      display: grid;
+      gap: 13px;
+    }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0,1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0,1fr)); }
+    .grid-4 { grid-template-columns: repeat(4, minmax(0,1fr)); }
+    .agent-grid { grid-template-columns: repeat(4, minmax(0,1fr)); }
+    .agent-card { position: relative; min-height: 150px; padding: 17px; overflow: hidden; }
+    .agent-card::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 4px; background: var(--agent-color, var(--blue)); }
+    .agent-card.wide { grid-column: span 2; }
+    .agent-id {
+      width: 34px; height: 34px; display: grid; place-items: center;
+      border: 1px solid currentColor; border-radius: 6px;
+      color: var(--agent-color, var(--blue)); font-size: 12px; font-weight: 900;
+    }
+    .agent-card h3 { margin-top: 12px; }
+    .agent-card p { margin-top: 6px; color: var(--muted); font-size: 12px; }
+    .agent-card .io { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); color: #425465; font-size: 11px; }
+    .pain { padding: 20px; border-top: 4px solid var(--tone, var(--blue)); }
+    .pain b { display: block; margin-bottom: 8px; font-size: 18px; }
+    .pain p { color: var(--muted); font-size: 13px; }
+    .flow { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; }
+    .flow-step { position: relative; padding: 17px; min-height: 120px; }
+    .flow-step:not(:last-child)::after { content: "→"; position: absolute; right: -18px; top: 42%; z-index: 3; color: #82909c; font-weight: 900; }
+    .flow-step b { color: var(--blue); font-family: Consolas, monospace; }
+    .flow-step strong { display: block; margin: 7px 0; }
+    .flow-step span { color: var(--muted); font-size: 12px; }
+    .topology { display: grid; grid-template-columns: .8fr 1.2fr; gap: 12px; }
+    .topology-main { display: grid; place-items: center; min-height: 210px; border: 2px solid var(--teal); border-radius: 8px; background: #f0f8f6; text-align: center; }
+    .topology-main strong { font-size: 23px; }
+    .topology-links { display: grid; grid-template-columns: repeat(2,1fr); gap: 10px; }
+    .topology-links div { display: grid; place-items: center; min-height: 100px; border: 1px solid var(--line); border-radius: 8px; background: #fff; text-align: center; font-size: 13px; font-weight: 700; }
+    .table { width: 100%; border-collapse: collapse; background: #fff; font-size: 12px; }
+    .table th, .table td { padding: 9px 10px; border-bottom: 1px solid var(--line); text-align: left; }
+    .table th { color: #4b5d6e; background: #eef2f4; }
+    .ok { color: var(--green); font-weight: 800; }
+    .warn { color: var(--amber); font-weight: 800; }
+    .critical { color: var(--red); font-weight: 800; }
+    .big-score { display: flex; align-items: baseline; gap: 8px; color: var(--teal); }
+    .big-score strong { font-size: 58px; line-height: 1; }
+    .list { margin: 10px 0 0; padding: 0; list-style: none; }
+    .list li { position: relative; padding: 6px 0 6px 22px; color: #4d5f70; font-size: 13px; }
+    .list li::before { content: "✓"; position: absolute; left: 0; color: var(--green); font-weight: 900; }
+    .evidence-list { display: grid; gap: 8px; }
+    .evidence-row { display: grid; grid-template-columns: 92px 1fr 74px; gap: 10px; align-items: center; padding: 10px 12px; font-size: 12px; }
+    .evidence-row b { color: var(--blue); }
+    .evidence-row span { color: var(--muted); }
+    .timeline { display: grid; gap: 8px; }
+    .timeline-row { display: grid; grid-template-columns: 82px 22px 1fr 100px; align-items: center; gap: 8px; min-height: 44px; font-size: 12px; }
+    .timeline-row time { color: var(--muted); font-family: Consolas, monospace; }
+    .timeline-row i { width: 11px; height: 11px; border: 3px solid var(--paper); outline: 2px solid var(--blue); border-radius: 50%; background: var(--blue); }
+    .timeline-row strong { padding: 9px 11px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+    .timeline-row em { color: var(--green); font-style: normal; font-weight: 800; }
+    .audit-list { display: grid; gap: 7px; }
+    .audit-row { display: grid; grid-template-columns: 72px 1fr 86px; gap: 10px; padding: 10px 12px; font-size: 12px; }
+    .audit-row time { color: var(--muted); font-family: Consolas, monospace; }
+    .audit-row b { font-weight: 800; }
+    .audit-row span { color: var(--green); text-align: right; font-weight: 800; }
+    .arch { display: grid; gap: 10px; max-width: 1100px; margin: auto; }
+    .arch-layer { display: grid; grid-template-columns: 160px 1fr; gap: 12px; align-items: stretch; }
+    .arch-label { display: grid; place-items: center; border: 1px solid #425465; border-radius: 6px; background: #27333d; color: #fff; font-weight: 800; }
+    .arch-items { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 8px; }
+    .arch-items div { display: grid; place-items: center; min-height: 54px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: #fff; text-align: center; font-size: 12px; font-weight: 700; }
+    .value-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 12px; }
+    .value { padding: 18px; border: 1px solid var(--line); border-top: 4px solid var(--tone,var(--blue)); border-radius: 8px; background: #fff; }
+    .value strong { display: block; font-size: 20px; }
+    .value span { display: block; margin-top: 7px; color: var(--muted); font-size: 12px; }
+    .cta-row { display: flex; gap: 10px; align-items: center; }
+    .cta { display: inline-flex; align-items: center; justify-content: center; height: 42px; padding: 0 18px; border: 1px solid #174ea6; border-radius: 6px; background: var(--blue); color: #fff; font-weight: 800; }
+    .cta.secondary { border-color: var(--line); background: #fff; color: var(--ink); }
+    .nav-dots {
+      position: fixed; z-index: 20; right: 16px; top: 50%; transform: translateY(-50%);
+      display: grid; gap: 6px; padding: 8px 6px; border: 1px solid #35414b; border-radius: 8px; background: rgba(16,20,24,.86);
+    }
+    .nav-dot { width: 8px; height: 8px; padding: 0; border: 0; border-radius: 50%; background: #66737d; cursor: pointer; }
+    .nav-dot.active { background: #69d1c3; transform: scale(1.35); }
+    .nav-controls { position: fixed; z-index: 20; right: 18px; bottom: 14px; display: flex; gap: 6px; }
+    .nav-control { width: 36px; height: 36px; border: 1px solid #46535d; border-radius: 6px; background: #1e272e; color: #fff; cursor: pointer; }
+    .nav-control:disabled { opacity: .35; cursor: default; }
+    .progress { position: fixed; z-index: 25; left: 0; top: 0; height: 3px; width: 0; background: #69d1c3; transition: width .25s ease; }
+    @media (max-width: 1050px) {
+      .paper { padding: 24px 28px 20px; }
+      h1 { font-size: 44px; }
+      h2 { font-size: 30px; }
+      .agent-card { min-height: 138px; padding: 14px; }
+      .grid-4, .agent-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+      .agent-card.wide { grid-column: span 1; }
+      .arch-items { grid-template-columns: repeat(2,minmax(0,1fr)); }
+    }
+    @media (max-width: 700px) {
+      html { scroll-snap-type: y mandatory; }
+      .slide { height: 100svh; min-height: 100svh; padding: 6px; overflow: hidden; }
+      .paper { width: 100%; height: calc(100svh - 12px); min-height: 0; padding: 12px 12px 9px; overflow: hidden; }
+      .paper::after { inset: 5px; }
+      .topline, .slide-footer { gap: 8px; font-size: 9px; }
+      .topline { min-height: 27px; padding-bottom: 5px; }
+      .slide-footer { min-height: 22px; padding-top: 4px; padding-right: 68px; }
+      .brand { gap: 6px; }
+      .brand img { width: 22px; height: 22px; }
+      .brand small { display: none; }
+      .page-num strong { font-size: 13px; }
+      .content { justify-content: center; gap: 8px; padding: 6px 0; }
+      h1 { font-size: 28px; }
+      h2 { font-size: 20px; }
+      h3 { font-size: 13px; }
+      .subtitle { font-size: 11px; line-height: 1.45; }
+      .kicker, .section-code { font-size: 9px; }
+      .tag-row { gap: 4px; }
+      .tag { padding: 3px 5px; font-size: 9px; }
+      .hero-grid, .two-col { grid-template-columns: 1fr; gap: 7px; }
+      .hero-copy { gap: 7px; }
+      .hero-panel, .panel { padding: 9px; }
+      .panel-head { padding-bottom: 6px; }
+      .status { font-size: 9px; }
+      .metric-grid { gap: 5px; margin-top: 6px; }
+      .metric { min-height: 48px; padding: 6px; }
+      .metric span { font-size: 8px; }
+      .metric strong { margin-top: 2px; font-size: 16px; }
+      .mini-flow { gap: 3px; margin-top: 6px; }
+      .mini-flow div { grid-template-columns: 56px 1fr; gap: 4px; font-size: 9px; }
+      .grid-2, .grid-4, .agent-grid, .flow, .value-grid { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px; }
+      .grid-3 { grid-template-columns: repeat(3,minmax(0,1fr)); gap: 6px; }
+      .pain { padding: 9px; border-top-width: 3px; }
+      .pain b { margin-bottom: 3px; font-size: 13px; }
+      .pain p { font-size: 9px; line-height: 1.4; }
+      .agent-card { min-height: 0; padding: 8px; }
+      .agent-card.wide { grid-column: span 2; }
+      .agent-id { width: 24px; height: 24px; font-size: 9px; }
+      .agent-card h3 { margin-top: 5px; }
+      .agent-card p { margin-top: 3px; font-size: 9px; line-height: 1.35; }
+      .agent-card .io { margin-top: 4px; padding-top: 4px; font-size: 8px; }
+      .flow-step { min-height: 0; padding: 8px; }
+      .flow-step::after { display: none; }
+      .flow-step b { font-size: 9px; }
+      .flow-step strong { margin: 3px 0; font-size: 11px; }
+      .flow-step span { font-size: 8px; line-height: 1.35; }
+      .topology { grid-template-columns: .8fr 1.2fr; gap: 6px; }
+      .topology-main { min-height: 112px; }
+      .topology-main strong { font-size: 15px; }
+      .topology-main p { font-size: 8px; }
+      .topology-links { grid-template-columns: repeat(2,1fr); gap: 5px; }
+      .topology-links div { min-height: 53px; font-size: 8px; }
+      .big-score strong { font-size: 37px; }
+      .big-score span { font-size: 9px; }
+      .list { margin-top: 5px; }
+      .list li { padding: 2px 0 2px 14px; font-size: 9px; line-height: 1.35; }
+      .evidence-list { gap: 4px; }
+      .evidence-row { grid-template-columns: 55px 1fr 43px; gap: 4px; padding: 5px; font-size: 8px; }
+      .timeline { gap: 3px; }
+      .timeline-row { grid-template-columns: 48px 12px 1fr 50px; gap: 3px; min-height: 31px; font-size: 8px; }
+      .timeline-row i { width: 8px; height: 8px; border-width: 2px; outline-width: 1px; }
+      .timeline-row strong { padding: 5px; font-size: 8px; }
+      .audit-list { gap: 3px !important; }
+      .audit-row { grid-template-columns: 48px 1fr 45px; gap: 4px; padding: 5px; font-size: 8px; }
+      .arch { gap: 5px; }
+      .arch-layer { grid-template-columns: 62px 1fr; gap: 5px; }
+      .arch-label { min-height: 34px; font-size: 8px; }
+      .arch-items { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 3px; }
+      .arch-items div { min-height: 25px; padding: 3px; font-size: 7px; }
+      .value { padding: 8px; border-top-width: 3px; }
+      .value strong { font-size: 13px; }
+      .value span { margin-top: 3px; font-size: 8px; line-height: 1.35; }
+      .cta-row { gap: 6px; }
+      .cta { height: 31px; padding: 0 10px; font-size: 10px; }
+      .nav-dots { display: none; }
+      .nav-controls { right: 10px; bottom: 8px; }
+      .nav-control { width: 30px; height: 30px; }
+      .table { font-size: 8px; }
+      .table th, .table td { padding: 4px 3px; }
+      .panel > p { font-size: 9px !important; line-height: 1.35; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .progress { transition: none; }
+    }
   </style>
 </head>
 <body>
-  <nav class="nav">
-    <div class="wrap nav-inner">
-      <a class="brand" href="#top"><img src="assets/favicon.svg" alt="Xing-Cloud"><span>Xing-Cloud<small>运维智能体平台</small></span></a>
-      <div class="links"><a href="#capabilities">核心能力</a><a href="#context">业务上下文</a><a href="#alert">告警研判</a><a href="#inspection">巡检</a><a href="#boundary">能力边界</a></div>
-    </div>
-  </nav>
+  <div class="progress" aria-hidden="true"></div>
+  <nav class="nav-dots" aria-label="演示页导航"></nav>
+  <div class="nav-controls">
+    <button class="nav-control prev" type="button" aria-label="上一页">↑</button>
+    <button class="nav-control next" type="button" aria-label="下一页">↓</button>
+  </div>
 
-  <main id="top">
-    <header class="hero">
-      <div class="wrap hero-grid">
-        <div>
-          <span class="eyebrow">生产运维的一体化控制面</span>
-          <h1>让分散的运维数据<br>形成<span class="gradient">可验证的证据闭环</span></h1>
-          <p class="lead">统一 CMDB、Prometheus、日志、Kubernetes、告警、任务和工单。先采集事实，再由模型整理结论；所有写操作经过权限、确认与审计。</p>
-          <div class="actions"><a class="btn primary" href="/login">进入平台</a><a class="btn" href="#capabilities">查看能力</a></div>
-          <div class="scope"><span>Vue 3 + Django</span><span>Prometheus</span><span>Elasticsearch / ClickHouse / Loki</span><span>Kubernetes API</span><span>Action / Skill / MCP</span></div>
+  <section class="slide" data-title="产品封面">
+    <div class="paper">
+      <div class="topline"><div class="brand"><img src="assets/favicon.svg" alt=""><span>Xing-Cloud<small>运维智能体平台</small></span></div><span class="section-code">INTRO / 2026</span></div>
+      <div class="content hero-grid">
+        <div class="hero-copy">
+          <span class="kicker">面向生产运维的数字员工团队</span>
+          <h1>七类智能体协同，<span class="accent">让运维形成闭环</span></h1>
+          <p class="subtitle">统一资产、指标、日志、Kubernetes、告警、变更、任务与工单，让每一次判断都有证据，每一次处置都有承接。</p>
+          <div class="tag-row"><span class="tag">统一业务上下文</span><span class="tag">七智能体协作</span><span class="tag">原生可观测</span><span class="tag">告警精准研判</span><span class="tag">任务工单闭环</span></div>
         </div>
-        <div class="console">
-          <div class="console-head"><h3>当前业务上下文：数智平台</h3><span class="status">● 已就绪</span></div>
+        <div class="hero-panel">
+          <div class="panel-head"><h3>智能运维平台 · 实时态势</h3><span class="status">● 业务上下文已就绪</span></div>
           <div class="metric-grid">
-            <div class="metric"><span>Ready 节点</span><strong>4 / 4</strong></div>
-            <div class="metric"><span>活跃告警</span><strong>3</strong></div>
-            <div class="metric"><span>Pod 状态</span><strong>61 正常</strong></div>
+            <div class="metric"><span>Ready节点</span><strong>4 / 4</strong></div>
             <div class="metric"><span>巡检健康分</span><strong>92</strong></div>
+            <div class="metric"><span>Pod运行状态</span><strong>61 正常</strong></div>
+            <div class="metric"><span>待处置告警</span><strong>3</strong></div>
           </div>
-          <div class="timeline">
-            <div class="event"><i></i><span>告警触发：立即发送影响摘要</span></div>
-            <div class="event"><i></i><span>持续两分钟：采集指标、K8S、事件和日志</span></div>
-            <div class="event"><i></i><span>研判完成：发送结构化证据与建议</span></div>
-          </div>
+          <div class="mini-flow"><div><b>15:17:05</b><span>告警智能体发送首次通知</span></div><div><b>15:17:08</b><span>研判、日志、异常与变更智能体并行取证</span></div><div><b>15:17:21</b><span>Runbook智能体生成P0/P1/P2处置草稿</span></div></div>
         </div>
       </div>
-    </header>
+      <div class="slide-footer"><span>从发现问题到完成处置，全程可见、可控、可审计</span><span class="page-num"><strong>01</strong> / 14</span></div>
+    </div>
+  </section>
 
-    <section id="capabilities">
-      <div class="wrap">
-        <div class="section-head"><h2>一个平台，覆盖完整运维工作流</h2><p>当前能力来自同一套 Django 平台，不依赖七个独立 Agent 服务。</p></div>
-        <div class="grid">
-          <article class="card"><div class="icon">CM</div><h3>CMDB 与资产</h3><p>自定义一级业务分组，登记服务器、K8S 和中间件，保持真实空态。</p></article>
-          <article class="card"><div class="icon">OB</div><h3>原生可观测性</h3><p>K8S、服务器、数据库、中间件、日志五类固定浅色看板与专业查询。</p></article>
-          <article class="card"><div class="icon">AL</div><h3>告警闭环</h3><p>模板实例化、运行质量、通知策略、聚合、静默、抑制、升级和恢复。</p></article>
-          <article class="card"><div class="icon">AI</div><h3>AIOps 助手</h3><p>业务上下文约束下的查询、巡检、诊断、报告和待确认动作。</p></article>
-          <article class="card"><div class="icon">K8</div><h3>Kubernetes 管理</h3><p>多集群登记、资源状态、事件、日志、终端与受权限控制的操作。</p></article>
-          <article class="card"><div class="icon">WF</div><h3>任务与工单</h3><p>任务执行、Runbook、应用发布、事务工单、审批流和审计。</p></article>
+  <section class="slide" data-title="运维痛点">
+    <div class="paper">
+      <div class="topline"><div class="brand"><img src="assets/favicon.svg" alt=""><span>Xing-Cloud<small>运维智能体平台</small></span></div><span class="section-code">WHY NOW</span></div>
+      <div class="content">
+        <div><span class="kicker">传统运维为什么需要智能体</span><h2>问题不是没有数据，而是数据没有形成协作</h2></div>
+        <div class="grid-4">
+          <div class="pain" style="--tone:var(--blue)"><b>信息分散</b><p>资产、指标、日志、告警和K8S状态分布在不同系统，排障不断切换页面。</p></div>
+          <div class="pain" style="--tone:var(--red)"><b>告警噪声</b><p>重复告警、状态抖动和缺少影响范围，让值班人员难以判断优先级。</p></div>
+          <div class="pain" style="--tone:var(--amber)"><b>经验依赖</b><p>排查路径依赖个人经验，日志、事件和变更证据难以稳定复用。</p></div>
+          <div class="pain" style="--tone:var(--teal)"><b>处置断点</b><p>研判结论停留在消息里，无法自然进入任务、工单、Runbook和复盘。</p></div>
+        </div>
+        <div class="panel"><h3>智能体协作的价值</h3><p class="subtitle">让不同角色围绕同一个业务上下文工作：有人发现、有人取证、有人研判、有人关联变更、有人生成处置手册，最终由平台统一汇总。</p></div>
+      </div>
+      <div class="slide-footer"><span>把分散工具升级为协同工作的运维数字员工</span><span class="page-num"><strong>02</strong> / 14</span></div>
+    </div>
+  </section>
+
+  <section class="slide" data-title="七智能体地图">
+    <div class="paper">
+      <div class="topline"><div class="brand"><img src="assets/favicon.svg" alt=""><span>Xing-Cloud<small>运维智能体平台</small></span></div><span class="section-code">AGENT MAP</span></div>
+      <div class="content">
+        <div><span class="kicker">七类业务智能体</span><h2>各司其职，共享同一套业务上下文与证据</h2></div>
+        <div class="agent-grid">
+          <article class="agent-card" style="--agent-color:var(--teal)"><div class="agent-id">A1</div><h3>巡检智能体</h3><p>集群与服务器健康巡检，生成评分、发现项和定时报告。</p><div class="io">输出：详细巡检报告</div></article>
+          <article class="agent-card" style="--agent-color:var(--red)"><div class="agent-id">A2</div><h3>告警智能体</h3><p>规则求值、降噪、通知、交互处置与研判调度。</p><div class="io">输出：告警事件时间线</div></article>
+          <article class="agent-card" style="--agent-color:var(--amber)"><div class="agent-id">A3</div><h3>异常检测智能体</h3><p>历史基线、多算法投票和趋势偏离识别。</p><div class="io">输出：异常证据与风险等级</div></article>
+          <article class="agent-card" style="--agent-color:var(--blue)"><div class="agent-id">A4</div><h3>故障研判智能体</h3><p>关联指标、K8S、事件、日志、变更和图谱证据。</p><div class="io">输出：候选根因与置信度</div></article>
+          <article class="agent-card" style="--agent-color:var(--violet)"><div class="agent-id">A5</div><h3>日志分析智能体</h3><p>检索多种日志源，提取异常模式、排行和关键样本。</p><div class="io">输出：日志证据与影响对象</div></article>
+          <article class="agent-card" style="--agent-color:#34758a"><div class="agent-id">A6</div><h3>变更智能体</h3><p>关联发布、工单、配置和事件时间线，识别触发点。</p><div class="io">输出：变更候选与影响面</div></article>
+          <article class="agent-card wide" style="--agent-color:var(--green)"><div class="agent-id">A7</div><h3>Runbook智能体</h3><p>匹配处置步骤，生成Runbook、任务或工单草稿，并沉淀复盘知识。</p><div class="io">输出：P0/P1/P2建议与待确认动作</div></article>
         </div>
       </div>
-    </section>
+      <div class="slide-footer"><span>智能体能力按业务职责组织，统一由平台编排</span><span class="page-num"><strong>03</strong> / 14</span></div>
+    </div>
+  </section>
 
-    <section id="context">
-      <div class="wrap">
-        <div class="section-head"><h2>业务上下文统一所有数据范围</h2><p>资产与数据源先登记，知识图谱再引用；上下文不是资产创建入口。</p></div>
+  <section class="slide" data-title="业务上下文">
+    <div class="paper">
+      <div class="topline"><div class="brand"><img src="assets/favicon.svg" alt=""><span>Xing-Cloud<small>运维智能体平台</small></span></div><span class="section-code">CONTEXT</span></div>
+      <div class="content">
+        <div><span class="kicker">CMDB + 知识图谱</span><h2>业务上下文让七个智能体看到同一个生产环境</h2></div>
         <div class="flow">
-          <div class="flow-card"><b>01</b><strong>登记资产</strong><span>一级业务分组、服务器、K8S 和中间件</span></div>
-          <div class="flow-card"><b>02</b><strong>接入数据源</strong><span>一个 Prometheus 与一个日志源</span></div>
-          <div class="flow-card"><b>03</b><strong>创建上下文</strong><span>编码作为告警 environment，K8S 从资产推导</span></div>
-          <div class="flow-card"><b>04</b><strong>统一使用</strong><span>监控、日志、告警、巡检、资产和助手同步切换</span></div>
+          <div class="flow-step"><b>01</b><strong>登记资产</strong><span>服务器、K8S集群、中间件和一级业务分组</span></div>
+          <div class="flow-step"><b>02</b><strong>接入数据源</strong><span>Prometheus与日志源完成连接和字段映射</span></div>
+          <div class="flow-step"><b>03</b><strong>创建业务上下文</strong><span>绑定资产分组、指标源、日志源和集群</span></div>
+          <div class="flow-step"><b>04</b><strong>智能体共享</strong><span>监控、日志、告警、巡检和研判同步切换</span></div>
+        </div>
+        <div class="topology">
+          <div class="topology-main"><div><strong>智能运维平台</strong><p>业务上下文编码：sre</p><p>统一环境身份与数据范围</p></div></div>
+          <div class="topology-links"><div>CMDB资产分组<br>服务器 / K8S / 中间件</div><div>Prometheus<br>指标与历史趋势</div><div>日志数据源<br>ES / ClickHouse / Loki</div><div>告警与变更<br>规则 / 工单 / 发布</div></div>
         </div>
       </div>
-    </section>
+      <div class="slide-footer"><span>一次选择，七个智能体同步使用相同资产和数据源</span><span class="page-num"><strong>04</strong> / 14</span></div>
+    </div>
+  </section>
 
-    <section id="alert">
-      <div class="wrap">
-        <div class="section-head"><h2>Agent‑4 风格的告警精准研判</h2><p>告警先通知，持续两分钟后再基于当时已经产生的真实证据执行一次精准研判。</p></div>
-        <div class="split">
+  <section class="slide" data-title="原生可观测">
+    <div class="paper">
+      <div class="topline"><div class="brand"><img src="assets/favicon.svg" alt=""><span>Xing-Cloud<small>运维智能体平台</small></span></div><span class="section-code">OBSERVABILITY</span></div>
+      <div class="content">
+        <div><span class="kicker">原生可观测性</span><h2>指标、日志、K8S和资产先形成事实证据</h2></div>
+        <div class="two-col">
           <div class="panel">
-            <h3>确定性采集</h3>
-            <ul class="check">
-              <li>告警前十分钟至执行时刻的指标趋势与峰值</li>
-              <li>目标 Pod describe 等价状态和 Warning Event</li>
-              <li>当前日志与 previous 崩溃日志</li>
-              <li>重启增量、OOM、Request/Limit、节点磁盘和 I/O</li>
-              <li>同一窗口内的发布、任务与变更证据</li>
-            </ul>
+            <div class="panel-head"><h3>生产环境实时指标</h3><span class="status">Prometheus</span></div>
+            <table class="table"><thead><tr><th>对象</th><th>当前值</th><th>状态</th></tr></thead><tbody><tr><td>节点CPU使用率</td><td>6.19%</td><td class="ok">正常</td></tr><tr><td>节点内存使用率</td><td>30.98%</td><td class="ok">正常</td></tr><tr><td>API Server P99</td><td>24ms</td><td class="ok">正常</td></tr><tr><td>磁盘I/O</td><td>5.74 MB/s</td><td class="warn">关注</td></tr><tr><td>PVC使用率</td><td>45.89%</td><td class="ok">正常</td></tr></tbody></table>
+          </div>
+          <div class="evidence-list">
+            <div class="evidence-row"><b>指标证据</b><span>当前值、历史趋势、峰值、阈值和基线</span><strong class="ok">已采集</strong></div>
+            <div class="evidence-row"><b>K8S证据</b><span>对象状态、容器原因、资源限制和探针</span><strong class="ok">已采集</strong></div>
+            <div class="evidence-row"><b>事件证据</b><span>Warning Event、调度、存储和节点Conditions</span><strong class="ok">已采集</strong></div>
+            <div class="evidence-row"><b>日志证据</b><span>当前日志、previous日志和异常模式</span><strong class="ok">已采集</strong></div>
+            <div class="evidence-row"><b>资产证据</b><span>业务归属、运行位置和关联中间件</span><strong class="ok">已关联</strong></div>
+            <div class="evidence-row"><b>变更证据</b><span>发布、工单、任务和事件时间线</span><strong class="ok">已关联</strong></div>
+          </div>
+        </div>
+      </div>
+      <div class="slide-footer"><span>五类原生看板与专业查询为智能体提供统一证据入口</span><span class="page-num"><strong>05</strong> / 14</span></div>
+    </div>
+  </section>
+
+  <section class="slide" data-title="巡检智能体">
+    <div class="paper">
+      <div class="topline"><div class="brand"><img src="assets/favicon.svg" alt=""><span>Xing-Cloud<small>运维智能体平台</small></span></div><span class="section-code">AGENT 01 / INSPECTION</span></div>
+      <div class="content">
+        <div><span class="kicker">巡检智能体</span><h2>从“查几个状态”升级为一份可执行的生产巡检报告</h2></div>
+        <div class="two-col">
+          <div class="panel">
+            <div class="big-score"><strong>92</strong><span>健康分 / 集群运行正常</span></div>
+            <ul class="list"><li>节点4/4 Ready，汇总CPU、内存、负载、磁盘、网络和I/O</li><li>Pod状态分布、异常Pod、重启排行和命名空间分布</li><li>Deployment、StatefulSet、DaemonSet与PVC状态</li><li>API Server请求、错误率与延迟</li><li>近期Warning Event和异常日志样本</li></ul>
           </div>
           <div class="panel">
-            <h3>受约束的结论</h3>
-            <ul class="check">
-              <li>确定性故障模式先生成候选根因</li>
-              <li>模型只整理已有证据，不提出无证据原因</li>
-              <li>单来源最高 49%，两类来源最高 79%</li>
-              <li>证据不足明确输出“无法确诊”</li>
-              <li>修复只生成待确认任务草稿</li>
-            </ul>
+            <div class="panel-head"><h3>智能体输出</h3><span class="status">实时生成</span></div>
+            <table class="table"><thead><tr><th>巡检方式</th><th>范围</th><th>结果</th></tr></thead><tbody><tr><td>集群综合巡检</td><td>K8S + 节点 + 存储 + 日志</td><td>详细报告</td></tr><tr><td>服务器巡检</td><td>主机资源 + 网络 + 进程</td><td>风险排行</td></tr><tr><td>立即发送</td><td>指定业务上下文</td><td>飞书/企微/邮件</td></tr><tr><td>每日/每周</td><td>新增或恶化问题</td><td>定时报告</td></tr></tbody></table>
+            <p style="margin-top:12px;color:var(--muted);font-size:12px;">发现项按指纹去重，健康分透明扣分，并与上次成功巡检比较变化。</p>
           </div>
         </div>
       </div>
-    </section>
+      <div class="slide-footer"><span>输入真实指标、K8S状态和日志，输出结构化详细报告</span><span class="page-num"><strong>06</strong> / 14</span></div>
+    </div>
+  </section>
 
-    <section id="inspection">
-      <div class="wrap">
-        <div class="section-head"><h2>实时生成的详细巡检报告</h2><p>集群综合巡检侧重 K8S 并包含节点；服务器巡检侧重主机资源。支持立即发送、每日和每周计划。</p></div>
-        <div class="report">
-          <table>
-            <thead><tr><th>巡检区域</th><th>关键内容</th><th>状态</th></tr></thead>
-            <tbody>
-              <tr><td>节点</td><td>Ready、CPU、内存、负载、磁盘、网络、I/O</td><td><span class="pill">正常</span></td></tr>
-              <tr><td>Pod 与工作负载</td><td>状态分布、重启排行、副本、PVC</td><td><span class="pill">已采集</span></td></tr>
-              <tr><td>控制面</td><td>API Server 请求、错误和延迟</td><td><span class="pill">已采集</span></td></tr>
-              <tr><td>日志与事件</td><td>异常模式、Warning Event、有限样本</td><td><span class="pill">已采集</span></td></tr>
-            </tbody>
-          </table>
+  <section class="slide" data-title="告警与异常检测">
+    <div class="paper">
+      <div class="topline"><div class="brand"><img src="assets/favicon.svg" alt=""><span>Xing-Cloud<small>运维智能体平台</small></span></div><span class="section-code">AGENT 02-03</span></div>
+      <div class="content">
+        <div><span class="kicker">告警智能体 + 异常检测智能体</span><h2>一个负责事件闭环，一个负责识别趋势偏离</h2></div>
+        <div class="two-col">
+          <article class="panel">
+            <div class="agent-id" style="--agent-color:var(--red)">A2</div><h3 style="margin-top:12px;">告警智能体</h3>
+            <ul class="list"><li>内置K8S、服务器、数据库和中间件规则包</li><li>稳定指纹、聚合、静默、抑制、升级和恢复通知</li><li>首次告警、精准研判更新和恢复消息分阶段发送</li><li>HTML详情、事件时间线、认领和屏蔽操作</li></ul>
+            <div class="tag-row"><span class="tag">规则运行质量</span><span class="tag">告警降噪</span><span class="tag">交互通知</span></div>
+          </article>
+          <article class="panel">
+            <div class="agent-id" style="--agent-color:var(--amber)">A3</div><h3 style="margin-top:12px;">异常检测智能体</h3>
+            <ul class="list"><li>对历史指标建立窗口基线和波动范围</li><li>3-Sigma、EWMA、IQR与Isolation Forest联合判断</li><li>样本不足时自动弃权，至少两个有效算法形成异常证据</li><li>识别当前异常、持续恶化和基线偏离</li></ul>
+            <div class="tag-row"><span class="tag">多算法投票</span><span class="tag">趋势证据</span><span class="tag">风险分级</span></div>
+          </article>
         </div>
       </div>
-    </section>
+      <div class="slide-footer"><span>告警说明“发生了什么”，异常检测补充“是否偏离历史”</span><span class="page-num"><strong>07</strong> / 14</span></div>
+    </div>
+  </section>
 
-    <section id="boundary">
-      <div class="wrap">
-        <div class="section-head"><h2>能力边界写清楚，平台才能可信</h2><p>只承诺当前代码可验证的能力。</p></div>
-        <div class="split">
+  <section class="slide" data-title="研判与日志">
+    <div class="paper">
+      <div class="topline"><div class="brand"><img src="assets/favicon.svg" alt=""><span>Xing-Cloud<small>运维智能体平台</small></span></div><span class="section-code">AGENT 04-05</span></div>
+      <div class="content">
+        <div><span class="kicker">故障研判智能体 + 日志分析智能体</span><h2>围绕告警对象精准取证，让根因结论可回溯</h2></div>
+        <div class="two-col">
+          <article class="panel">
+            <div class="agent-id" style="--agent-color:var(--blue)">A4</div><h3 style="margin-top:12px;">故障研判智能体</h3>
+            <ul class="list"><li>从告警开始时间建立指标和日志窗口</li><li>精确过滤namespace、Pod、容器和节点</li><li>读取describe等价状态、Warning Event和previous日志</li><li>匹配OOM、探针、调度、镜像、配置、存储和节点故障模式</li><li>输出候选根因、反向证据、置信度和缺失证据</li></ul>
+          </article>
+          <article class="panel">
+            <div class="agent-id" style="--agent-color:var(--violet)">A5</div><h3 style="margin-top:12px;">日志分析智能体</h3>
+            <ul class="list"><li>查询Elasticsearch、ClickHouse或Loki日志源</li><li>统计日志量、错误量、错误率和级别分布</li><li>提取OOM、异常堆栈、超时、连接、存储和启动失败模式</li><li>生成服务、命名空间和Pod影响排行</li><li>保留有限关键样本并自动脱敏</li></ul>
+          </article>
+        </div>
+      </div>
+      <div class="slide-footer"><span>指标说明趋势，K8S说明状态，日志说明现场，研判智能体负责合并证据</span><span class="page-num"><strong>08</strong> / 14</span></div>
+    </div>
+  </section>
+
+  <section class="slide" data-title="变更与Runbook">
+    <div class="paper">
+      <div class="topline"><div class="brand"><img src="assets/favicon.svg" alt=""><span>Xing-Cloud<small>运维智能体平台</small></span></div><span class="section-code">AGENT 06-07</span></div>
+      <div class="content">
+        <div><span class="kicker">变更智能体 + Runbook智能体</span><h2>把“为什么发生”连接到“下一步怎么处理”</h2></div>
+        <div class="two-col">
+          <article class="panel">
+            <div class="agent-id" style="--agent-color:#34758a">A6</div><h3 style="margin-top:12px;">变更智能体</h3>
+            <ul class="list"><li>关联应用发布、配置调整、事务工单和运维任务</li><li>将变更时间线与告警、指标和日志窗口对齐</li><li>定位版本、工作负载、节点和业务影响范围</li><li>提供变更前后状态对比和回滚目标信息</li></ul>
+            <p style="margin-top:10px;color:var(--muted);font-size:12px;">输出：候选变更、时间相关性、受影响资产和验证项。</p>
+          </article>
+          <article class="panel">
+            <div class="agent-id" style="--agent-color:var(--green)">A7</div><h3 style="margin-top:12px;">Runbook智能体</h3>
+            <ul class="list"><li>根据故障类型匹配标准排查和处置步骤</li><li>按P0/P1/P2生成建议、验证方式与停止条件</li><li>从会话或研判结果生成Runbook和任务草稿</li><li>支持版本快照、发布、归档和复盘知识沉淀</li></ul>
+            <p style="margin-top:10px;color:var(--muted);font-size:12px;">输出：可复用手册、待确认任务、工单草稿和复盘知识。</p>
+          </article>
+        </div>
+      </div>
+      <div class="slide-footer"><span>变更智能体补充诱因，Runbook智能体承接行动</span><span class="page-num"><strong>09</strong> / 14</span></div>
+    </div>
+  </section>
+
+  <section class="slide" data-title="协同研判场景">
+    <div class="paper">
+      <div class="topline"><div class="brand"><img src="assets/favicon.svg" alt=""><span>Xing-Cloud<small>运维智能体平台</small></span></div><span class="section-code">COLLABORATION</span></div>
+      <div class="content">
+        <div><span class="kicker">七智能体协同场景</span><h2>Pod短时间多次重启：从告警触发到处置草稿</h2></div>
+        <div class="timeline">
+          <div class="timeline-row"><time>15:17:05</time><i></i><strong>告警智能体：合并告警并发送首次影响摘要</strong><em>已通知</em></div>
+          <div class="timeline-row"><time>15:17:06</time><i></i><strong>异常检测智能体：回放重启增量、CPU和内存峰值</strong><em>发现偏离</em></div>
+          <div class="timeline-row"><time>15:17:07</time><i></i><strong>日志分析智能体：提取previous日志中的OOM与GC模式</strong><em>命中证据</em></div>
+          <div class="timeline-row"><time>15:17:08</time><i></i><strong>巡检智能体：补充节点压力、磁盘I/O和同节点Pod状态</strong><em>节点正常</em></div>
+          <div class="timeline-row"><time>15:17:09</time><i></i><strong>变更智能体：关联近五分钟发布与配置调整</strong><em>发现发布</em></div>
+          <div class="timeline-row"><time>15:17:12</time><i></i><strong>故障研判智能体：形成“内存Limit不足”候选根因链</strong><em>置信度79%</em></div>
+          <div class="timeline-row"><time>15:17:15</time><i></i><strong>Runbook智能体：生成资源复核、回滚和验证任务草稿</strong><em>待确认</em></div>
+        </div>
+        <div class="tag-row"><span class="tag">HTML研判详情</span><span class="tag">飞书结果通知</span><span class="tag">证据编号</span><span class="tag">人工确认任务</span><span class="tag">审计留痕</span></div>
+      </div>
+      <div class="slide-footer"><span>同一告警ID贯穿通知、研判、认领、处置与恢复</span><span class="page-num"><strong>10</strong> / 14</span></div>
+    </div>
+  </section>
+
+  <section class="slide" data-title="处置闭环">
+    <div class="paper">
+      <div class="topline"><div class="brand"><img src="assets/favicon.svg" alt=""><span>Xing-Cloud<small>运维智能体平台</small></span></div><span class="section-code">OPERATIONS LOOP</span></div>
+      <div class="content">
+        <div><span class="kicker">任务、工单与应用发布</span><h2>让智能体结论进入可执行、可追踪的工作流</h2></div>
+        <div class="flow">
+          <div class="flow-step"><b>01 / 草稿</b><strong>生成行动方案</strong><span>Runbook智能体输出命令、目标、风险和验证方式</span></div>
+          <div class="flow-step"><b>02 / 确认</b><strong>人工审核</strong><span>确认资源范围、执行窗口、审批人和停止条件</span></div>
+          <div class="flow-step"><b>03 / 执行</b><strong>任务中心承接</strong><span>主机任务、K8S操作、应用发布或事务工单</span></div>
+          <div class="flow-step"><b>04 / 复盘</b><strong>结果回写</strong><span>执行结果、告警恢复、验证证据和Runbook版本沉淀</span></div>
+        </div>
+        <div class="grid-3">
+          <div class="panel"><h3>任务中心</h3><p style="margin-top:8px;color:var(--muted);font-size:13px;">统一执行主机、Playbook和K8S任务，记录状态、耗时和结果。</p></div>
+          <div class="panel"><h3>工单系统</h3><p style="margin-top:8px;color:var(--muted);font-size:13px;">事务工单、审批流和责任人协作，承接跨团队处置。</p></div>
+          <div class="panel"><h3>应用发布</h3><p style="margin-top:8px;color:var(--muted);font-size:13px;">发布、验证和回滚记录进入变更时间线，反哺后续研判。</p></div>
+        </div>
+      </div>
+      <div class="slide-footer"><span>从分析建议到任务执行，再到结果复盘，形成完整运维闭环</span><span class="page-num"><strong>11</strong> / 14</span></div>
+    </div>
+  </section>
+
+  <section class="slide" data-title="安全与审计">
+    <div class="paper">
+      <div class="topline"><div class="brand"><img src="assets/favicon.svg" alt=""><span>Xing-Cloud<small>运维智能体平台</small></span></div><span class="section-code">GOVERNANCE</span></div>
+      <div class="content">
+        <div><span class="kicker">受控智能体</span><h2>权限、确认与审计贯穿每一次智能体协作</h2></div>
+        <div class="two-col">
+          <div class="grid-2">
+            <div class="panel"><h3>RBAC权限</h3><p style="margin-top:8px;color:var(--muted);font-size:12px;">按角色控制页面、接口、数据范围和动作权限。</p></div>
+            <div class="panel"><h3>工具白名单</h3><p style="margin-top:8px;color:var(--muted);font-size:12px;">Action、Skill与MCP明确工具范围和输入合同。</p></div>
+            <div class="panel"><h3>人工确认</h3><p style="margin-top:8px;color:var(--muted);font-size:12px;">处置先形成草稿，再由有权限的用户确认执行。</p></div>
+            <div class="panel"><h3>可中断执行</h3><p style="margin-top:8px;color:var(--muted);font-size:12px;">长任务支持停止生成、超时和部分结果保留。</p></div>
+          </div>
           <div class="panel">
-            <h3>当前提供</h3>
-            <ul class="check"><li>固定原生看板和专业查询</li><li>告警规则、通知和精准研判</li><li>确定性集群/服务器巡检</li><li>Action、Skill、MCP、模型和 Runbook</li><li>任务、应用发布、工单、RBAC 与审计</li></ul>
-          </div>
-          <div class="panel notice">
-            <h3>当前不提供</h3>
-            <ul class="check"><li>APM、Trace 和服务调用链</li><li>七个独立 Agent 微服务</li><li>无人值守自动修复或自动回滚</li><li>PDF 巡检报告</li><li>面向用户的拖拽/JSON 看板编辑器</li></ul>
+            <div class="panel-head"><h3>智能体审计时间线</h3><span class="status">完整留痕</span></div>
+            <div class="audit-list" style="margin-top:10px;">
+              <div class="audit-row"><time>15:17:05</time><b>用户/系统发起告警研判</b><span>已接收</span></div>
+              <div class="audit-row"><time>15:17:07</time><b>调用Prometheus与K8S只读工具</b><span>成功</span></div>
+              <div class="audit-row"><time>15:17:10</time><b>查询日志与近期变更</b><span>成功</span></div>
+              <div class="audit-row"><time>15:17:14</time><b>模型整理候选根因与建议</b><span>已完成</span></div>
+              <div class="audit-row"><time>15:17:15</time><b>生成任务草稿等待确认</b><span class="warn">待确认</span></div>
+            </div>
           </div>
         </div>
       </div>
-    </section>
-  </main>
+      <div class="slide-footer"><span>会话、工具、模型、动作和执行结果均可查询与回放</span><span class="page-num"><strong>12</strong> / 14</span></div>
+    </div>
+  </section>
 
-  <footer><div class="wrap footer-inner"><strong>Xing-Cloud 运维智能体平台</strong><span>数据先成为证据，动作始终可控、可审计。</span></div></footer>
+  <section class="slide" data-title="平台架构">
+    <div class="paper">
+      <div class="topline"><div class="brand"><img src="assets/favicon.svg" alt=""><span>Xing-Cloud<small>运维智能体平台</small></span></div><span class="section-code">ARCHITECTURE</span></div>
+      <div class="content">
+        <div><span class="kicker">平台能力架构</span><h2>数据成为证据，智能体完成协作，工作流承接行动</h2></div>
+        <div class="arch">
+          <div class="arch-layer"><div class="arch-label">用户入口</div><div class="arch-items"><div>Web控制台</div><div>智能助手</div><div>飞书 / 企微 / 邮件</div><div>告警HTML详情</div></div></div>
+          <div class="arch-layer"><div class="arch-label">七智能体</div><div class="arch-items"><div>巡检 / 告警</div><div>异常检测 / 研判</div><div>日志 / 变更</div><div>Runbook</div></div></div>
+          <div class="arch-layer"><div class="arch-label">智能体引擎</div><div class="arch-items"><div>Action编排</div><div>Skill知识与流程</div><div>MCP工具接入</div><div>模型与证据约束</div></div></div>
+          <div class="arch-layer"><div class="arch-label">运维平台</div><div class="arch-items"><div>CMDB / 知识图谱</div><div>可观测 / 告警中心</div><div>任务 / Runbook</div><div>工单 / 应用发布</div></div></div>
+          <div class="arch-layer"><div class="arch-label">数据与基础设施</div><div class="arch-items"><div>Prometheus</div><div>ES / ClickHouse / Loki</div><div>Kubernetes API</div><div>服务器 / 中间件</div></div></div>
+        </div>
+      </div>
+      <div class="slide-footer"><span>统一平台、统一上下文、统一权限、统一审计</span><span class="page-num"><strong>13</strong> / 14</span></div>
+    </div>
+  </section>
+
+  <section class="slide" data-title="产品价值">
+    <div class="paper">
+      <div class="topline"><div class="brand"><img src="assets/favicon.svg" alt=""><span>Xing-Cloud<small>运维智能体平台</small></span></div><span class="section-code">VALUE</span></div>
+      <div class="content">
+        <div class="hero-copy">
+          <span class="kicker">Xing-Cloud带来的改变</span>
+          <h1>让AI Agent成为<span class="accent">真正能协作的运维数字员工</span></h1>
+          <p class="subtitle">从发现异常、收集证据、研判根因，到生成Runbook、承接任务和沉淀复盘，七类智能体围绕同一业务上下文持续协作。</p>
+        </div>
+        <div class="value-grid">
+          <div class="value" style="--tone:var(--blue)"><strong>看得全</strong><span>资产、指标、日志、K8S、告警和变更统一关联。</span></div>
+          <div class="value" style="--tone:var(--teal)"><strong>判得准</strong><span>确定性证据、反向证据和置信度共同约束结论。</span></div>
+          <div class="value" style="--tone:var(--amber)"><strong>接得住</strong><span>建议自然进入Runbook、任务、工单和应用发布。</span></div>
+          <div class="value" style="--tone:var(--violet)"><strong>可复盘</strong><span>会话、工具、模型、动作和结果完整留痕。</span></div>
+        </div>
+        <div class="cta-row"><a class="cta" href="/login">进入Xing-Cloud</a><a class="cta secondary" href="#top" onclick="document.querySelector('.slide').scrollIntoView({behavior:'smooth'});return false;">重新观看</a></div>
+      </div>
+      <div class="slide-footer"><span>Xing-Cloud 运维智能体平台</span><span class="page-num"><strong>14</strong> / 14</span></div>
+    </div>
+  </section>
+
+  <script>
+    (() => {
+      const slides = [...document.querySelectorAll('.slide')];
+      const dotsHost = document.querySelector('.nav-dots');
+      const prev = document.querySelector('.prev');
+      const next = document.querySelector('.next');
+      const progress = document.querySelector('.progress');
+      let active = 0;
+      let wheelLocked = false;
+      let touchStartY = 0;
+
+      const go = (index) => {
+        active = Math.max(0, Math.min(slides.length - 1, index));
+        slides[active].scrollIntoView({ behavior: 'smooth', block: 'start' });
+        update();
+      };
+      const update = () => {
+        [...dotsHost.children].forEach((dot, index) => dot.classList.toggle('active', index === active));
+        prev.disabled = active === 0;
+        next.disabled = active === slides.length - 1;
+        progress.style.width = ((active + 1) / slides.length * 100) + '%';
+        document.title = slides[active].dataset.title + ' · Xing-Cloud 运维智能体平台';
+      };
+
+      slides.forEach((slide, index) => {
+        slide.id = index === 0 ? 'top' : 'slide-' + (index + 1);
+        const dot = document.createElement('button');
+        dot.className = 'nav-dot';
+        dot.type = 'button';
+        dot.title = (index + 1) + '. ' + slide.dataset.title;
+        dot.setAttribute('aria-label', dot.title);
+        dot.addEventListener('click', () => go(index));
+        dotsHost.appendChild(dot);
+      });
+
+      const observer = new IntersectionObserver((entries) => {
+        const visible = entries.filter((entry) => entry.isIntersecting).sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+        if (visible) {
+          active = slides.indexOf(visible.target);
+          update();
+        }
+      }, { threshold: [0.45, 0.7] });
+      slides.forEach((slide) => observer.observe(slide));
+
+      prev.addEventListener('click', () => go(active - 1));
+      next.addEventListener('click', () => go(active + 1));
+      document.addEventListener('keydown', (event) => {
+        if (['ArrowDown', 'PageDown', ' '].includes(event.key)) { event.preventDefault(); go(active + 1); }
+        if (['ArrowUp', 'PageUp'].includes(event.key)) { event.preventDefault(); go(active - 1); }
+        if (event.key === 'Home') { event.preventDefault(); go(0); }
+        if (event.key === 'End') { event.preventDefault(); go(slides.length - 1); }
+      });
+      document.addEventListener('wheel', (event) => {
+        if (window.innerWidth <= 700 || wheelLocked || Math.abs(event.deltaY) < 24) return;
+        wheelLocked = true;
+        go(active + (event.deltaY > 0 ? 1 : -1));
+        window.setTimeout(() => { wheelLocked = false; }, 650);
+      }, { passive: true });
+      document.addEventListener('touchstart', (event) => { touchStartY = event.changedTouches[0].clientY; }, { passive: true });
+      document.addEventListener('touchend', (event) => {
+        const delta = touchStartY - event.changedTouches[0].clientY;
+        if (Math.abs(delta) > 60) go(active + (delta > 0 ? 1 : -1));
+      }, { passive: true });
+      update();
+    })();
+  </script>
 </body>
 </html>
