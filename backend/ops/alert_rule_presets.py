@@ -416,16 +416,23 @@ INSTANCE_FIELDS = {
 }
 
 
-def _datasource_cluster_display_name(datasource):
+def _datasource_business_context(datasource):
     if datasource is None:
-        return ''
-    context = (
+        return None
+    contexts = list(
         datasource.aiops_knowledge_environments
-        .filter(is_enabled=True, k8s_cluster__isnull=False)
+        .filter(is_enabled=True)
         .select_related('k8s_cluster')
         .order_by('id')
-        .first()
+        [:2]
     )
+    return contexts[0] if len(contexts) == 1 else None
+
+
+def _datasource_cluster_display_name(datasource, context=None):
+    if datasource is None:
+        return ''
+    context = context or _datasource_business_context(datasource)
     if context and context.k8s_cluster:
         return context.k8s_cluster.name
     return datasource.cluster_name or datasource.name
@@ -443,7 +450,8 @@ def instantiate_rule_from_template(template, datasource=None, overrides=None):
     if existing:
         return existing, False
 
-    cluster_display_name = _datasource_cluster_display_name(datasource)
+    business_context = _datasource_business_context(datasource)
+    cluster_display_name = _datasource_cluster_display_name(datasource, context=business_context)
     payload = {
         'name': f'{template.name} · {cluster_display_name}' if datasource else template.name,
         'category': template.category,
@@ -469,7 +477,10 @@ def instantiate_rule_from_template(template, datasource=None, overrides=None):
         'is_enabled': False,
     }
     if datasource:
-        if datasource.environment:
+        if business_context:
+            payload['labels']['environment'] = business_context.code
+            payload['labels']['environment_display_name'] = business_context.name
+        elif datasource.environment:
             payload['labels']['environment'] = datasource.environment
         if datasource.cluster_name:
             payload['labels']['cluster'] = datasource.cluster_name

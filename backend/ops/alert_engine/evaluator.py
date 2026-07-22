@@ -102,24 +102,26 @@ def _prometheus_results(rule):
     if not rule.metric_datasource or not rule.metric_datasource.is_enabled:
         raise ValueError('Prometheus 规则绑定的指标数据源已停用或不存在')
     rule_labels = _dict(rule.labels)
+    contexts = list(
+        rule.metric_datasource.aiops_knowledge_environments
+        .filter(is_enabled=True)
+        .select_related('k8s_cluster')
+        .order_by('id')[:2]
+    )
+    context = contexts[0] if len(contexts) == 1 else None
+    query_environment = context.code if context else (
+        rule.metric_datasource.environment or query_config.get('environment') or rule_labels.get('environment') or ''
+    )
     payload = execute_promql_query(
         query,
         range_query=False,
         metric_datasource_id=rule.metric_datasource_id,
-        environment=rule.metric_datasource.environment or query_config.get('environment') or rule_labels.get('environment') or '',
+        environment=query_environment,
         prefer_metric_datasource=True,
     )
     cluster_display_name = rule_labels.get('cluster_display_name')
-    if not cluster_display_name:
-        context = (
-            rule.metric_datasource.aiops_knowledge_environments
-            .filter(is_enabled=True, k8s_cluster__isnull=False)
-            .select_related('k8s_cluster')
-            .order_by('id')
-            .first()
-        )
-        if context and context.k8s_cluster:
-            cluster_display_name = context.k8s_cluster.name
+    if not cluster_display_name and context and context.k8s_cluster:
+        cluster_display_name = context.k8s_cluster.name
     results = []
     for item in payload.get('result') or []:
         metric = _dict(item.get('metric'))
@@ -127,7 +129,10 @@ def _prometheus_results(rule):
         labels = _labels(rule, metric)
         labels['metric_datasource_id'] = str(rule.metric_datasource_id)
         labels['metric_datasource_name'] = rule.metric_datasource.name
-        if rule.metric_datasource.environment:
+        if context:
+            labels['environment'] = context.code
+            labels['environment_display_name'] = context.name
+        elif rule.metric_datasource.environment:
             labels.setdefault('environment', rule.metric_datasource.environment)
         if rule.metric_datasource.cluster_name:
             labels.setdefault('cluster', rule.metric_datasource.cluster_name)

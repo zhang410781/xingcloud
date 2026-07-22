@@ -45,6 +45,7 @@ def build_rule_fingerprint(rule, labels=None):
 
 def build_platform_alert_payload(rule, payload=None, status=None):
     payload = _dict(payload)
+    canonical_environment = ''
     labels = {
         **_dict(rule.labels),
         **_dict(payload.get('labels')),
@@ -58,7 +59,16 @@ def build_platform_alert_payload(rule, payload=None, status=None):
         labels['metric_datasource_id'] = str(rule.metric_datasource_id)
         if rule.metric_datasource:
             labels['metric_datasource_name'] = rule.metric_datasource.name
-            if rule.metric_datasource.environment:
+            contexts = list(
+                rule.metric_datasource.aiops_knowledge_environments
+                .filter(is_enabled=True)
+                .order_by('id')[:2]
+            )
+            if len(contexts) == 1:
+                canonical_environment = contexts[0].code
+                labels['environment'] = canonical_environment
+                labels['environment_display_name'] = contexts[0].name
+            elif rule.metric_datasource.environment:
                 labels.setdefault('environment', rule.metric_datasource.environment)
             if rule.metric_datasource.cluster_name:
                 labels.setdefault('cluster', rule.metric_datasource.cluster_name)
@@ -89,7 +99,7 @@ def build_platform_alert_payload(rule, payload=None, status=None):
         'group_key': _first(payload.get('group_key')),
         'message': _first(payload.get('message'), annotations.get('message'), annotations.get('description'), rule.description, title),
         'service': _first(payload.get('service'), labels.get('service'), labels.get('app'), labels.get('job_name')),
-        'environment': _first(payload.get('environment'), labels.get('environment'), labels.get('env')),
+        'environment': _first(canonical_environment, payload.get('environment'), labels.get('environment'), labels.get('env')),
         'cluster': _first(payload.get('cluster'), labels.get('cluster')),
         'namespace': _first(payload.get('namespace'), labels.get('namespace')),
         'region': _first(payload.get('region'), labels.get('region')),

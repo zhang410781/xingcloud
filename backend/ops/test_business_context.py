@@ -281,7 +281,7 @@ class BusinessContextTests(TestCase):
         self.assertEqual(result['sample_count'], 5)
 
     @patch('ops.observability_evidence._run_query')
-    def test_alert_log_evidence_uses_five_minute_primary_window_and_baseline(self, run_query):
+    def test_alert_log_evidence_uses_alert_start_primary_window_and_baseline(self, run_query):
         starts_at = timezone.now() - timedelta(minutes=10)
         alert = Alert.objects.create(
             title='K8S的APISERVER请求延迟过高',
@@ -293,11 +293,11 @@ class BusinessContextTests(TestCase):
         )
         run_query.side_effect = [
             {'total': 2, 'logs': [
-                {'timestamp': starts_at.isoformat(), 'level': 'error', 'source': 'kube-apiserver', 'message': 'etcd request timeout'},
-                {'timestamp': starts_at.isoformat(), 'level': 'info', 'source': 'kube-apiserver', 'message': 'request completed'},
+                {'timestamp': starts_at.isoformat(), 'level': 'error', 'source': 'kube-apiserver', 'service': 'kube-apiserver', 'message': 'etcd request timeout'},
+                {'timestamp': starts_at.isoformat(), 'level': 'info', 'source': 'kube-apiserver', 'service': 'kube-apiserver', 'message': 'request completed'},
             ]},
             {'total': 1, 'logs': [
-                {'timestamp': (starts_at - timedelta(minutes=10)).isoformat(), 'level': 'info', 'source': 'kube-apiserver', 'message': 'healthy'},
+                {'timestamp': (starts_at - timedelta(minutes=10)).isoformat(), 'level': 'info', 'source': 'kube-apiserver', 'service': 'kube-apiserver', 'message': 'healthy'},
             ]},
         ]
 
@@ -305,10 +305,10 @@ class BusinessContextTests(TestCase):
 
         primary_payload = run_query.call_args_list[0].args[2]
         baseline_payload = run_query.call_args_list[1].args[2]
-        self.assertEqual(primary_payload['start_ms'], int((starts_at - timedelta(minutes=5)).timestamp() * 1000))
-        self.assertEqual(primary_payload['end_ms'], int((starts_at + timedelta(minutes=2)).timestamp() * 1000))
+        self.assertEqual(primary_payload['start_ms'], int(starts_at.timestamp() * 1000))
+        self.assertEqual(primary_payload['end_ms'], int((starts_at + timedelta(minutes=5)).timestamp() * 1000))
         self.assertEqual(baseline_payload['start_ms'], int((starts_at - timedelta(minutes=30)).timestamp() * 1000))
-        self.assertEqual(baseline_payload['end_ms'], int((starts_at - timedelta(minutes=5)).timestamp() * 1000))
+        self.assertEqual(baseline_payload['end_ms'], int(starts_at.timestamp() * 1000))
         self.assertEqual(result['dimensions']['service'], 'kube-apiserver')
         self.assertEqual(result['error_count'], 1)
         self.assertEqual(result['baseline']['error_count'], 0)

@@ -20,6 +20,7 @@ from ops.alert_analysis import (
 )
 from ops.alerting import _card_buttons, _default_body, _policy_inhibits_alert, dispatch_alert_notifications, upsert_alert
 from ops.alert_rules import trigger_alert_rule
+from ops.alert_rules import build_platform_alert_payload
 from ops.alert_rule_presets import ensure_builtin_alert_rule_templates
 from ops.observability_evidence import _targeted_alert_metrics
 from ops.models import (
@@ -441,6 +442,26 @@ class AlertAnalysisTests(TestCase):
         body = _default_body(self.alert, action='analysis')
 
         self.assertIn('研判状态：** 研判期间已恢复', body)
+
+    def test_platform_alert_uses_bound_context_code_not_datasource_display_name(self):
+        self.metric.environment = '智能运维平台'
+        self.metric.save(update_fields=['environment'])
+        rule = AlertRule.objects.create(
+            name='context rule', code='context-rule', source_type='prometheus',
+            category='k8s', metric_datasource=self.metric, is_template=False,
+        )
+
+        payload = build_platform_alert_payload(
+            rule,
+            payload={
+                'environment': '智能运维平台',
+                'labels': {'environment': '智能运维平台', 'pod': 'api-0'},
+            },
+        )
+
+        self.assertEqual(payload['environment'], self.environment.code)
+        self.assertEqual(payload['labels']['environment'], self.environment.code)
+        self.assertEqual(payload['labels']['environment_display_name'], self.environment.name)
 
     @override_settings(XING_CLOUD_PUBLIC_BASE_URL='https://xingcloud.example.com')
     def test_alert_card_includes_detail_claim_and_mute_buttons(self):
