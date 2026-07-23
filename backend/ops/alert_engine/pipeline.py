@@ -55,6 +55,8 @@ def _alert_payload_from_result(rule, result, status=Alert.STATUS_ACTIVE):
         'resource': result.get('resource') or labels.get('resource') or labels.get('pod') or labels.get('instance') or labels.get('name') or '',
         'metric_name': result.get('metric_name') or labels.get('__name__') or '',
         'evidence': result.get('evidence') or {},
+        'starts_at': result.get('starts_at'),
+        'ends_at': result.get('ends_at'),
     }
     normalized = build_platform_alert_payload(rule, payload=payload, status=status)
     normalized['fingerprint'] = _result_fingerprint(rule, result)
@@ -63,8 +65,9 @@ def _alert_payload_from_result(rule, result, status=Alert.STATUS_ACTIVE):
 
 def _emit_alert(rule, result, request=None, status=Alert.STATUS_ACTIVE, action_note='alert engine evaluation'):
     normalized = _alert_payload_from_result(rule, result, status=status)
-    previous = Alert.objects.filter(fingerprint=normalized.get('fingerprint')).only('level').first()
+    previous = Alert.objects.filter(fingerprint=normalized.get('fingerprint')).only('level', 'status').first()
     previous_level = previous.level if previous else ''
+    reactivated = bool(previous and previous.status == Alert.STATUS_RESOLVED and status == Alert.STATUS_ACTIVE)
     # 参考 database-monitor-main 的根因分析设计
     try:
         from ops.alert_engine.evaluator import build_alert_with_root_cause
@@ -82,7 +85,7 @@ def _emit_alert(rule, result, request=None, status=Alert.STATUS_ACTIVE, action_n
     )
     apply_alert_suppression(alert)
     apply_escalation_policy(alert, request=request)
-    return alert, created, previous_level
+    return alert, created, previous_level, reactivated
 
 
 def process_rule_results(rule, results, *, dry_run=False, request=None):
@@ -163,14 +166,15 @@ def process_rule_results(rule, results, *, dry_run=False, request=None):
             if item['would_fire']:
                 previous_status = state.status
                 state.status = AlertRuleState.STATUS_ACTIVE
+                item['starts_at'] = state.first_seen_at
                 action_note = 'alert engine evaluation'
                 if reason_changed:
                     action_note = f'Waiting 原因变化: {previous_reason} -> {current_reason}'
-                alert, created, previous_level = _emit_alert(
+                alert, created, previous_level, reactivated = _emit_alert(
                     rule, item, request=request, status=Alert.STATUS_ACTIVE, action_note=action_note,
                 )
                 alerts_to_notify.append(alert)
-                analysis_candidates.append((alert, created, previous_level))
+                analysis_candidates.append((alert, created, previous_level, reactivated))
                 created_count += 1 if created else 0
                 updated_count += 0 if created else 1
                 if previous_status != AlertRuleState.STATUS_ACTIVE:
@@ -198,7 +202,7 @@ def process_rule_results(rule, results, *, dry_run=False, request=None):
                     'message': f'{rule.name} 已恢复',
                     'evidence': {'state': 'resolved', 'last_value': state.last_value},
                 }
-                alert, _, _ = _emit_alert(rule, result, request=request, status=Alert.STATUS_RESOLVED)
+                alert, _, _, _ = _emit_alert(rule, result, request=request, status=Alert.STATUS_RESOLVED)
                 resolved_to_notify.append(alert)
                 resolved_count += 1
             state.status = AlertRuleState.STATUS_RESOLVED
@@ -215,8 +219,14 @@ def process_rule_results(rule, results, *, dry_run=False, request=None):
         notification_result = dispatch_alert_batch_notifications(alerts_to_notify, action='fire', request=request)
     if analysis_candidates:
         from ops.alert_analysis import enqueue_for_rule_alert
-        for alert, created, previous_level in analysis_candidates:
-            enqueue_for_rule_alert(alert, rule, created=created, previous_level=previous_level)
+        for alert, created, previous_level, reactivated in analysis_candidates:
+            enqueue_for_rule_alert(
+                alert,
+                rule,
+                created=created,
+                previous_level=previous_level,
+                reactivated=reactivated,
+            )
     resolved_notification_result = {'notification_logs': [], 'storm_batches': []}
     if rule.notify_enabled and resolved_to_notify:
         resolved_notification_result = dispatch_alert_batch_notifications(resolved_to_notify, action='resolved', request=request)

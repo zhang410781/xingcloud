@@ -554,6 +554,28 @@
                 <strong>未获取证据及原因</strong>
                 <ol><li v-for="item in analysisMissingEvidence" :key="item.code || item.message">{{ item.code || 'unknown' }}：{{ item.message || '-' }}</li></ol>
               </div>
+              <div v-if="alertAnalysisHistory.length" class="analysis-evidence">
+                <strong>研判与通知时间线</strong>
+                <el-timeline class="alert-detail-timeline analysis-history-timeline">
+                  <el-timeline-item
+                    v-for="item in alertAnalysisHistory"
+                    :key="item.id"
+                    :timestamp="formatTime(item.completed_at || item.started_at || item.created_at)"
+                    :type="analysisStatusType(item.status)"
+                  >
+                    <div class="analysis-history-entry">
+                      <span>{{ item.trigger_display || item.trigger || '自动触发' }} / {{ item.status_display || analysisStatusText(item.status) }}</span>
+                      <small>排队：{{ formatTime(item.created_at) || '-' }}</small>
+                      <small v-if="item.started_at">开始：{{ formatTime(item.started_at) }}</small>
+                      <small v-if="item.completed_at">结束：{{ formatTime(item.completed_at) }}</small>
+                      <small>{{ item.notification_delivery?.message || '暂无通知状态' }}</small>
+                      <small v-for="log in item.notification_delivery?.logs || []" :key="log.id">
+                        {{ log.channel_name || log.channel_type || '通知渠道' }}：{{ log.status_display || log.status }}<template v-if="log.error_message">（{{ log.error_message }}）</template>
+                      </small>
+                    </div>
+                  </el-timeline-item>
+                </el-timeline>
+              </div>
             </template>
           </section>
           <div v-if="canManageAlerts || canNotifyAlerts" class="detail-actions">
@@ -1296,6 +1318,7 @@ const alertAnalysisLatest = computed(() => {
   }
   return null
 })
+const alertAnalysisHistory = computed(() => (Array.isArray(alertAnalysis.value?.results) ? alertAnalysis.value.results : []))
 const analysisEvidenceItems = computed(() => normalizeEvidence(alertAnalysisLatest.value?.evidence))
 const analysisCandidates = computed(() => alertAnalysisLatest.value?.candidates || [])
 const analysisTargeted = computed(() => alertAnalysisLatest.value?.evidence?.targeted_metrics || {})
@@ -2746,6 +2769,17 @@ watch(() => route.params.id, openRouteAlertDetail)
 .analysis-evidence li {
   line-height: 1.55;
   margin-bottom: 3px;
+}
+
+.analysis-history-entry {
+  display: grid;
+  gap: 3px;
+  overflow-wrap: anywhere;
+}
+
+.analysis-history-entry small {
+  color: #64748b;
+  line-height: 1.45;
 }
 
 .analysis-table-wrap {

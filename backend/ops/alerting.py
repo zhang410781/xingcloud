@@ -213,11 +213,14 @@ def upsert_alert(normalized, actor='system', action=None, action_note=None):
         alert = existing
         was_resolved = alert.status == Alert.STATUS_RESOLVED
         for field, value in defaults.items():
-            if field == 'starts_at' and alert.starts_at:
+            if field == 'starts_at' and alert.starts_at and not (
+                status_value == Alert.STATUS_ACTIVE and was_resolved
+            ):
                 continue
             setattr(alert, field, value)
         alert.occurrence_count = alert.occurrence_count + 1
         if status_value == Alert.STATUS_ACTIVE and was_resolved:
+            alert.starts_at = defaults.get('starts_at') or now
             alert.is_acknowledged = False
             alert.acknowledged_by = ''
             alert.acknowledged_at = None
@@ -579,6 +582,56 @@ def _format_duration(start, end):
     return ''.join(parts[:2])
 
 
+def _analysis_key_evidence(evidence, result=None, limit=3):
+    result = _dict(result)
+    lines = []
+
+    def append(value):
+        text = _text(value)
+        if text and text not in lines:
+            lines.append(text[:300])
+
+    for event in evidence.get('event_findings') or []:
+        if isinstance(event, dict):
+            append(f'{event.get("reason") or "Warning Event"}：{event.get("message") or "-"}')
+        if len(lines) >= limit:
+            return lines
+
+    for sample in evidence.get('k8s_samples') or []:
+        if not isinstance(sample, dict):
+            continue
+        target = '/'.join(item for item in [sample.get('namespace'), sample.get('pod')] if item) or '目标 Pod'
+        for container in sample.get('containers') or []:
+            if not isinstance(container, dict):
+                continue
+            state = _dict(container.get('waiting')) or _dict(container.get('terminated'))
+            if state.get('reason') or state.get('message'):
+                append(
+                    f'{target}/{container.get("name") or "-"}：'
+                    f'{state.get("reason") or "异常"} {state.get("message") or ""}'.strip()
+                )
+            if len(lines) >= limit:
+                return lines
+
+    for finding in evidence.get('log_findings') or []:
+        if isinstance(finding, dict):
+            append(f'{finding.get("target") or "异常日志"}：{finding.get("message") or "-"}')
+        if len(lines) >= limit:
+            return lines
+
+    for note in result.get('evidence_notes') or []:
+        append(note.get('message') if isinstance(note, dict) else note)
+        if len(lines) >= limit:
+            return lines
+
+    for item in _dict(evidence.get('targeted_metrics')).get('items') or []:
+        if isinstance(item, dict) and item.get('health') in {'warning', 'critical'}:
+            append(f'{item.get("title") or item.get("code") or "指标"}：峰值 {item.get("peak")}, 当前值 {item.get("latest")}')
+        if len(lines) >= limit:
+            return lines
+    return lines
+
+
 def _analysis_content(alert, raw):
     analysis = _dict(raw.get('ai_analysis'))
     analysis_manager = getattr(alert, 'analyses', None)
@@ -601,23 +654,27 @@ def _analysis_content(alert, raw):
     else:
         confidence_text = _text(confidence, '未评估') or '未评估'
     root_cause = _first(analysis.get('root_cause'), analysis.get('summary'), alert.root_cause, '尚未形成明确结论')
-    evidence = analysis.get('evidence_notes') or analysis.get('evidence')
+    evidence = analysis.get('evidence') or analysis.get('evidence_notes')
     if isinstance(evidence, dict):
-        diagnostics = evidence.get('diagnostics') if isinstance(evidence.get('diagnostics'), list) else []
-        diagnostic_lines = [
-            _first(item.get('message'), item.get('summary'))
-            for item in diagnostics if isinstance(item, dict)
-        ]
-        logs = _dict(evidence.get('logs'))
-        log_summary = ''
-        if logs:
-            sample_count = logs.get('sample_count') or logs.get('count') or 0
-            status = logs.get('status') or 'unknown'
-            log_summary = f'关联日志状态 {status}，命中 {sample_count} 条样本'
-        metrics = _dict(evidence.get('metrics'))
-        metric_summary = _first(metrics.get('summary'), metrics.get('message'))
-        summarized = [item for item in [metric_summary, log_summary, *diagnostic_lines] if item]
-        evidence = evidence.get('summary') or evidence.get('items') or evidence.get('key_evidence') or summarized or evidence
+        key_evidence = _analysis_key_evidence(evidence, result if latest is not None else analysis)
+        if key_evidence:
+            evidence = key_evidence
+        else:
+            diagnostics = evidence.get('diagnostics') if isinstance(evidence.get('diagnostics'), list) else []
+            diagnostic_lines = [
+                _first(item.get('message'), item.get('summary'))
+                for item in diagnostics if isinstance(item, dict)
+            ]
+            logs = _dict(evidence.get('logs'))
+            log_summary = ''
+            if logs:
+                sample_count = logs.get('sample_count') or logs.get('count') or 0
+                status = logs.get('status') or 'unknown'
+                log_summary = f'关联日志状态 {status}，命中 {sample_count} 条样本'
+            metrics = _dict(evidence.get('metrics'))
+            metric_summary = _first(metrics.get('summary'), metrics.get('message'))
+            summarized = [item for item in [metric_summary, log_summary, *diagnostic_lines] if item]
+            evidence = evidence.get('summary') or evidence.get('items') or evidence.get('key_evidence') or summarized or evidence
     if isinstance(evidence, list):
         evidence_lines = []
         for item in evidence[:3]:
@@ -746,9 +803,17 @@ def _default_body(alert, action='fire'):
         ])
     else:
         lines.append(f'🕐 **发生时间：** {_format_datetime(alert.starts_at)}')
-        ai_status = _dict(raw.get('ai_analysis')).get('status')
+        latest_analysis = alert.analyses.order_by('-created_at', '-id').first()
+        ai_status = latest_analysis.status if latest_analysis else _dict(raw.get('ai_analysis')).get('status')
         if ai_status in {'pending', 'running'}:
             lines.append('⏳ **智能研判：** 正在执行精准研判，完成后将发送独立结果通知。')
+        elif latest_analysis and latest_analysis.status in {'completed', 'partial'}:
+            result = _dict(latest_analysis.result)
+            conclusion = _first(latest_analysis.root_cause, result.get('summary'), '尚未形成明确结论')
+            completed_at = _format_datetime(latest_analysis.completed_at)
+            confidence = latest_analysis.confidence
+            confidence_text = f'{confidence * 100:.0f}%' if isinstance(confidence, (int, float)) else '未评估'
+            lines.append(f'🎯 **最近研判：** {conclusion}（置信度 {confidence_text}，{completed_at}）')
         title_text = f'{alert.title} {alert.message}'.lower()
         if any(token in title_text for token in ('重启', 'crashloop', 'pod', '容器')):
             lines.append('**简要建议：** 优先查看目标 Pod 的状态、Warning Event、当前日志和上次崩溃日志。')
@@ -844,7 +909,7 @@ def _channel_url(channel):
     return ''
 
 
-def _card_buttons(alert, provider, request=None):
+def _card_buttons(alert, provider, request=None, action='fire'):
     labels = {
         'acknowledge': '确认',
         'claim': '认领',
@@ -859,10 +924,12 @@ def _card_buttons(alert, provider, request=None):
             'title': '查看详情',
             'url': f'{detail_url}/observability/alerts/{alert.id}',
         })
-    for action in CARD_ACTIONS:
-        url = _interaction_url(alert, action, provider=provider, request=request)
+    if action == 'analysis':
+        return buttons
+    for card_action in CARD_ACTIONS:
+        url = _interaction_url(alert, card_action, provider=provider, request=request)
         if url:
-            buttons.append({'action': action, 'title': labels[action], 'url': url})
+            buttons.append({'action': card_action, 'title': labels[card_action], 'url': url})
     return buttons
 
 
@@ -969,6 +1036,10 @@ def send_alert_notification(channel, alert, recipients, action='fire', rule=None
     response_body = ''
     error_message = ''
     request_summary = {'channel_type': channel.channel_type, 'title': title, 'action': action, 'group_key': alert.group_key}
+    if action == 'analysis':
+        latest_analysis = alert.analyses.order_by('-created_at', '-id').first()
+        if latest_analysis:
+            request_summary['analysis_id'] = latest_analysis.id
 
     try:
         if channel.channel_type == AlertNotificationChannel.CHANNEL_EMAIL:
@@ -996,7 +1067,7 @@ def send_alert_notification(channel, alert, recipients, action='fire', rule=None
                 status = AlertNotificationLog.STATUS_SKIPPED
                 response_body = '未配置钉钉 webhook_url 或 access_token'
             else:
-                buttons = _card_buttons(alert, 'dingtalk', request=request)
+                buttons = _card_buttons(alert, 'dingtalk', request=request, action=action)
                 payload = {
                     'msgtype': 'actionCard',
                     'actionCard': {
@@ -1019,7 +1090,7 @@ def send_alert_notification(channel, alert, recipients, action='fire', rule=None
                 status = AlertNotificationLog.STATUS_SKIPPED
                 response_body = '飞书渠道未配置签名密钥，已拒绝发送未签名通知'
             else:
-                buttons = _card_buttons(alert, 'feishu', request=request)
+                buttons = _card_buttons(alert, 'feishu', request=request, action=action)
                 payload = {
                     'msg_type': 'interactive',
                     'card': {
@@ -1050,7 +1121,7 @@ def send_alert_notification(channel, alert, recipients, action='fire', rule=None
                 status = AlertNotificationLog.STATUS_SKIPPED
                 response_body = '未配置企微 webhook_url 或 key'
             else:
-                button_text = '\n'.join([f'[{item["title"]}]({item["url"]})' for item in _card_buttons(alert, 'wecom', request=request)])
+                button_text = '\n'.join([f'[{item["title"]}]({item["url"]})' for item in _card_buttons(alert, 'wecom', request=request, action=action)])
                 title_color = 'info' if action == 'resolved' else ('comment' if action == 'analysis' else 'warning')
                 colored_title = f'<font color="{title_color}">**{title}**</font>'
                 payload = {'msgtype': 'markdown', 'markdown': {'content': f'{colored_title}\n\n{body}\n\n{button_text}'.rstrip()}}
@@ -1079,7 +1150,18 @@ def send_alert_notification(channel, alert, recipients, action='fire', rule=None
         error_message=error_message,
         sent_at=timezone.now() if status == AlertNotificationLog.STATUS_SUCCESS else None,
     )
-    _save_action(alert, AlertAction.ACTION_NOTIFY, actor='system', note=f'{channel.name}: {log.get_status_display()}', metadata={'channel_type': channel.channel_type, 'log_id': log.id})
+    _save_action(
+        alert,
+        AlertAction.ACTION_NOTIFY,
+        actor='system',
+        note=f'{channel.name}: {log.get_status_display()}',
+        metadata={
+            'channel_type': channel.channel_type,
+            'log_id': log.id,
+            'notification_action': action,
+            'analysis_id': request_summary.get('analysis_id'),
+        },
+    )
     return log
 
 

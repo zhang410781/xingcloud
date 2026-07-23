@@ -17,6 +17,7 @@ from ops.alert_analysis import (
     execute_alert_analysis,
     recover_stale_running_analyses,
     run_due_alert_analyses,
+    serialize_analysis,
 )
 from ops.alerting import _card_buttons, _default_body, _policy_inhibits_alert, dispatch_alert_notifications, upsert_alert
 from ops.alert_rules import trigger_alert_rule
@@ -224,6 +225,107 @@ class AlertAnalysisTests(TestCase):
         self.assertEqual(duplicate.id, analysis.id)
         self.assertLessEqual(analysis.next_retry_at, timezone.now())
         self.assertEqual(analysis.evidence['stage_status']['queued_after_first_notification'], 'waiting')
+
+    def test_continuous_rule_matches_keep_one_analysis_for_current_cycle(self):
+        rule = AlertRule.objects.create(
+            name='continuous analysis rule', code='continuous-analysis-rule',
+            source_type='prometheus', category='k8s', metric_datasource=self.metric,
+            is_template=False, is_enabled=True, notify_enabled=False, auto_analyze=True,
+        )
+        payload = {'title': 'continuous alert', 'labels': {'namespace': 'ops', 'pod': 'api-0'}}
+
+        first = trigger_alert_rule(rule, payload=payload)['alert']
+        second = trigger_alert_rule(rule, payload=payload)['alert']
+
+        self.assertEqual(first.id, second.id)
+        self.assertEqual(first.analyses.count(), 1)
+
+    def test_reactivated_alert_resets_start_time_and_creates_new_analysis(self):
+        rule = AlertRule.objects.create(
+            name='reactivated analysis rule', code='reactivated-analysis-rule',
+            source_type='prometheus', category='k8s', metric_datasource=self.metric,
+            is_template=False, is_enabled=True, notify_enabled=False, auto_analyze=True,
+        )
+        payload = {'title': 'reactivated alert', 'labels': {'namespace': 'ops', 'pod': 'api-0'}}
+        first = trigger_alert_rule(rule, payload=payload)['alert']
+        first_analysis = first.analyses.get()
+        first_analysis.status = AlertAnalysis.STATUS_COMPLETED
+        first_analysis.completed_at = timezone.now()
+        first_analysis.save(update_fields=['status', 'completed_at'])
+        original_start = first.starts_at
+
+        trigger_alert_rule(rule, payload=payload, status=Alert.STATUS_RESOLVED)
+        reactivated = trigger_alert_rule(rule, payload=payload, status=Alert.STATUS_ACTIVE)['alert']
+
+        self.assertEqual(reactivated.id, first.id)
+        self.assertGreater(reactivated.starts_at, original_start)
+        self.assertEqual(reactivated.analyses.count(), 2)
+        latest = reactivated.analyses.order_by('-created_at', '-id').first()
+        self.assertEqual(latest.requested_by, 'alert-engine-reactivated')
+        self.assertEqual(latest.evidence['activity_cycle_started_at'], reactivated.starts_at.isoformat())
+
+    def test_repeat_fire_body_includes_latest_completed_analysis(self):
+        analysis = AlertAnalysis.objects.create(
+            alert=self.alert,
+            status=AlertAnalysis.STATUS_COMPLETED,
+            confidence=0.79,
+            root_cause='镜像仓库网络连接超时',
+            completed_at=timezone.now(),
+            result={'summary': '镜像拉取失败'},
+        )
+
+        body = _default_body(self.alert, action='fire')
+
+        self.assertIn('最近研判', body)
+        self.assertIn(analysis.root_cause, body)
+        self.assertIn('79%', body)
+
+    def test_analysis_notification_uses_direct_k8s_event_evidence(self):
+        AlertAnalysis.objects.create(
+            alert=self.alert,
+            status=AlertAnalysis.STATUS_COMPLETED,
+            confidence=0.95,
+            root_cause='镜像拉取超时',
+            evidence={
+                'event_findings': [{
+                    'reason': 'Failed',
+                    'message': 'Client.Timeout exceeded while awaiting headers',
+                }],
+            },
+            completed_at=timezone.now(),
+            result={'summary': '镜像拉取超时', 'evidence_notes': []},
+        )
+
+        body = _default_body(self.alert, action='analysis')
+
+        self.assertIn('Failed：Client.Timeout exceeded while awaiting headers', body)
+        self.assertNotIn('暂无关键证据摘要', body)
+
+    @override_settings(XING_CLOUD_PUBLIC_BASE_URL='https://xingcloud.example')
+    def test_analysis_card_only_contains_detail_button(self):
+        buttons = _card_buttons(self.alert, 'feishu', action='analysis')
+
+        self.assertEqual([item['action'] for item in buttons], ['detail'])
+
+    def test_completed_analysis_reports_disabled_notification_policy(self):
+        rule = AlertRule.objects.create(
+            name='disabled analysis notification', source_type='prometheus', category='k8s',
+            metric_datasource=self.metric, is_template=False, is_enabled=True, notify_enabled=True,
+        )
+        AlertNotificationPolicy.objects.create(
+            name='analysis disabled policy', metric_datasource=self.metric, notify_on_analysis=False,
+        )
+        self.alert.labels = {**self.alert.labels, 'alert_rule_id': str(rule.id)}
+        self.alert.save(update_fields=['labels'])
+        analysis = AlertAnalysis.objects.create(
+            alert=self.alert,
+            status=AlertAnalysis.STATUS_COMPLETED,
+            completed_at=timezone.now(),
+        )
+
+        payload = serialize_analysis(analysis)
+
+        self.assertEqual(payload['notification_delivery']['status'], 'disabled')
 
     def test_existing_active_alert_without_analysis_is_backfilled_once(self):
         rule = AlertRule.objects.create(

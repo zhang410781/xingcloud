@@ -9,7 +9,14 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from .models import Alert, AlertAnalysis, AlertRule, MetricDataSource
+from .models import (
+    Alert,
+    AlertAnalysis,
+    AlertNotificationChannel,
+    AlertNotificationLog,
+    AlertRule,
+    MetricDataSource,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -535,6 +542,7 @@ def enqueue_alert_analysis(alert, trigger=AlertAnalysis.TRIGGER_FIRST_ACTIVE, re
         return active, False
     automatic = trigger != AlertAnalysis.TRIGGER_MANUAL
     next_retry_at = timezone.now()
+    cycle_started_at = alert.starts_at or alert.created_at or next_retry_at
     analysis = AlertAnalysis.objects.create(
         alert=alert,
         trigger=trigger,
@@ -548,6 +556,7 @@ def enqueue_alert_analysis(alert, trigger=AlertAnalysis.TRIGGER_FIRST_ACTIVE, re
                 'node': _dict(alert.labels).get('node') or _dict(alert.labels).get('node_name'),
             },
             'stage_status': {'queued_after_first_notification': 'waiting'},
+            'activity_cycle_started_at': cycle_started_at.isoformat(),
         },
     )
     payload = _dict(alert.raw_payload)
@@ -557,30 +566,44 @@ def enqueue_alert_analysis(alert, trigger=AlertAnalysis.TRIGGER_FIRST_ACTIVE, re
         'status': AlertAnalysis.STATUS_PENDING,
         'stage': 'queued_after_first_notification' if automatic else 'collecting_metrics',
         'scheduled_at': next_retry_at.isoformat() if next_retry_at else None,
+        'activity_cycle_started_at': cycle_started_at.isoformat(),
+        'summary': '',
+        'confidence': None,
+        'root_cause': '',
+        'suggested_actions': [],
     }
     alert.raw_payload = payload
     alert.save(update_fields=['raw_payload', 'updated_at'])
     return analysis, True
 
 
-def enqueue_for_rule_alert(alert, rule, created=False, previous_level=''):
+def enqueue_for_rule_alert(alert, rule, created=False, previous_level='', reactivated=False):
     if not rule.auto_analyze or alert.status != Alert.STATUS_ACTIVE:
         return None, False
-    # Existing active alerts may predate automatic analysis. Queue them once
-    # instead of leaving the compatibility payload permanently at "pending".
-    if created or not alert.analyses.exists():
-        return enqueue_alert_analysis(alert, AlertAnalysis.TRIGGER_FIRST_ACTIVE, requested_by='alert-engine')
+    latest = alert.analyses.order_by('-created_at', '-id').first()
+    cycle_started_at = alert.starts_at or alert.created_at
+    has_current_cycle_analysis = bool(
+        latest and cycle_started_at and latest.created_at >= cycle_started_at
+    )
+    # A recovered fingerprint starts a new activity cycle. Continuous matches
+    # within the same cycle reuse the existing analysis.
+    if created or reactivated or not has_current_cycle_analysis:
+        requested_by = 'alert-engine-reactivated' if reactivated else 'alert-engine'
+        return enqueue_alert_analysis(
+            alert,
+            AlertAnalysis.TRIGGER_FIRST_ACTIVE,
+            requested_by=requested_by,
+        )
     if LEVEL_RANK.get(alert.level, 0) > LEVEL_RANK.get(previous_level, 0):
         return enqueue_alert_analysis(alert, AlertAnalysis.TRIGGER_SEVERITY_ESCALATION, requested_by='alert-engine')
     return None, False
 
 
 def enqueue_missing_active_analyses(limit=100):
-    """Repair active rule alerts left with a pending compatibility marker only."""
+    """Repair active rule alerts without an analysis for their current cycle."""
     queued = []
     queryset = Alert.objects.filter(
         status=Alert.STATUS_ACTIVE,
-        analyses__isnull=True,
     ).order_by('created_at', 'id')[:max(1, int(limit or 100))]
     for alert in queryset:
         rule = _alert_rule(alert)
@@ -676,6 +699,64 @@ def run_due_alert_analyses(limit=20):
     }
 
 
+def _analysis_notification_delivery(analysis):
+    logs = []
+    candidates = list(
+        analysis.alert.notification_logs.filter(action='analysis')
+        .order_by('-created_at', '-id')[:50]
+    )
+    for log in candidates:
+        payload = _dict(log.request_payload)
+        if str(payload.get('analysis_id') or '') == str(analysis.id):
+            logs.append(log)
+    if not logs and analysis.completed_at:
+        legacy_start = analysis.completed_at - timedelta(minutes=1)
+        legacy_end = analysis.completed_at + timedelta(minutes=10)
+        logs = [
+            log for log in candidates
+            if not _dict(log.request_payload).get('analysis_id')
+            and legacy_start <= log.created_at <= legacy_end
+        ]
+    channel_ids = {log.channel_id for log in logs if log.channel_id}
+    channels = {
+        channel.id: channel
+        for channel in AlertNotificationChannel.objects.filter(id__in=channel_ids)
+    }
+    serialized_logs = [
+        {
+            'id': log.id,
+            'channel_id': log.channel_id,
+            'channel_name': channels[log.channel_id].name if log.channel_id in channels else '',
+            'channel_type': channels[log.channel_id].channel_type if log.channel_id in channels else '',
+            'status': log.status,
+            'status_display': log.get_status_display(),
+            'error_message': log.error_message,
+            'sent_at': log.sent_at.isoformat() if log.sent_at else None,
+            'created_at': log.created_at.isoformat() if log.created_at else None,
+        }
+        for log in logs
+    ]
+    if any(log.status == AlertNotificationLog.STATUS_SUCCESS for log in logs):
+        status, message = 'sent', '研判结果通知已发送'
+    elif any(log.status == AlertNotificationLog.STATUS_ERROR for log in logs):
+        status, message = 'failed', '研判结果通知发送失败'
+    elif logs:
+        status, message = 'skipped', '研判结果通知已跳过'
+    elif analysis.status in {AlertAnalysis.STATUS_PENDING, AlertAnalysis.STATUS_RUNNING}:
+        status, message = 'pending', '研判尚未完成'
+    else:
+        from .alerting import resolve_notification_policies
+
+        policies = resolve_notification_policies(analysis.alert, rule=_alert_rule(analysis.alert))
+        if policies and not any(getattr(policy, 'notify_on_analysis', False) for policy in policies):
+            status, message = 'disabled', '研判已完成，但命中的通知策略未开启研判完成通知'
+        elif not policies:
+            status, message = 'not_configured', '研判已完成，但未匹配到通知策略'
+        else:
+            status, message = 'not_sent', '研判已完成，但未找到对应的通知发送记录'
+    return {'status': status, 'message': message, 'logs': serialized_logs}
+
+
 def serialize_analysis(analysis):
     if not analysis:
         return None
@@ -684,7 +765,9 @@ def serialize_analysis(analysis):
         'id': analysis.id,
         'alert_id': analysis.alert_id,
         'status': analysis.status,
+        'status_display': analysis.get_status_display(),
         'trigger': analysis.trigger,
+        'trigger_display': analysis.get_trigger_display(),
         'confidence': analysis.confidence,
         'summary': result.get('summary') or '',
         'root_cause': analysis.root_cause,
@@ -701,4 +784,5 @@ def serialize_analysis(analysis):
         'completed_at': analysis.completed_at.isoformat() if analysis.completed_at else None,
         'created_at': analysis.created_at.isoformat() if analysis.created_at else None,
         'updated_at': analysis.updated_at.isoformat() if analysis.updated_at else None,
+        'notification_delivery': _analysis_notification_delivery(analysis),
     }

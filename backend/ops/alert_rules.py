@@ -113,7 +113,8 @@ def build_platform_alert_payload(rule, payload=None, status=None):
         'suggestion': payload.get('suggestion') or '',
         'labels': labels,
         'annotations': annotations,
-        'starts_at': timezone.now(),
+        'starts_at': payload.get('starts_at') or timezone.now(),
+        'ends_at': payload.get('ends_at'),
         'raw_payload': {
             'source': 'alert_rule',
             'rule': {
@@ -143,8 +144,13 @@ def trigger_alert_rule(rule, payload=None, status=None, request=None):
     if not rule.is_enabled:
         raise ValueError('告警规则未启用')
     normalized = build_platform_alert_payload(rule, payload=payload, status=status)
-    previous = Alert.objects.filter(fingerprint=normalized.get('fingerprint')).only('level').first()
+    previous = Alert.objects.filter(fingerprint=normalized.get('fingerprint')).only('level', 'status').first()
     previous_level = previous.level if previous else ''
+    reactivated = bool(
+        previous
+        and previous.status == Alert.STATUS_RESOLVED
+        and normalized['status'] == Alert.STATUS_ACTIVE
+    )
     notification_action = None
     with transaction.atomic():
         now = timezone.now()
@@ -168,5 +174,11 @@ def trigger_alert_rule(rule, payload=None, status=None, request=None):
         logs = dispatch_alert_notifications(alert, action=notification_action, request=request)
     if rule.auto_analyze and alert.status == Alert.STATUS_ACTIVE:
         from .alert_analysis import enqueue_for_rule_alert
-        enqueue_for_rule_alert(alert, rule, created=created, previous_level=previous_level)
+        enqueue_for_rule_alert(
+            alert,
+            rule,
+            created=created,
+            previous_level=previous_level,
+            reactivated=reactivated,
+        )
     return {'alert': alert, 'created': created, 'notification_logs': logs}
