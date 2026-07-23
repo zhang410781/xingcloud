@@ -520,6 +520,25 @@ class AlertAnalysisTests(TestCase):
         self.assertEqual(duplicate.id, analysis.id)
         self.assertEqual(self.alert.analyses.count(), 1)
 
+    def test_completed_current_cycle_analysis_is_not_requeued_by_backfill(self):
+        rule = AlertRule.objects.create(
+            name='completed cycle rule', source_type='prometheus', category='k8s',
+            metric_datasource=self.metric, is_template=False, auto_analyze=True,
+        )
+        self.alert.labels = {**self.alert.labels, 'alert_rule_id': str(rule.id)}
+        self.alert.save(update_fields=['labels'])
+        completed = AlertAnalysis.objects.create(
+            alert=self.alert,
+            status=AlertAnalysis.STATUS_COMPLETED,
+            completed_at=timezone.now(),
+        )
+
+        result = enqueue_missing_active_analyses()
+
+        self.assertEqual(result['queued'], 0)
+        self.assertEqual(self.alert.analyses.count(), 1)
+        self.assertEqual(self.alert.analyses.get().id, completed.id)
+
     def test_worker_repairs_active_alert_with_pending_marker_only(self):
         rule = AlertRule.objects.create(
             name='repair rule', source_type='prometheus', category='k8s',

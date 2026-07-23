@@ -596,7 +596,7 @@ def enqueue_for_rule_alert(alert, rule, created=False, previous_level='', reacti
             AlertAnalysis.TRIGGER_FIRST_ACTIVE,
             requested_by=requested_by,
         )
-    if LEVEL_RANK.get(alert.level, 0) > LEVEL_RANK.get(previous_level, 0):
+    if previous_level and LEVEL_RANK.get(alert.level, 0) > LEVEL_RANK.get(previous_level, 0):
         return enqueue_alert_analysis(alert, AlertAnalysis.TRIGGER_SEVERITY_ESCALATION, requested_by='alert-engine')
     return None, False
 
