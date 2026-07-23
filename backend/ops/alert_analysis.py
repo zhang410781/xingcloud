@@ -528,6 +528,8 @@ def execute_alert_analysis(analysis):
     if analysis.alert.status in {Alert.STATUS_ACTIVE, Alert.STATUS_RESOLVED}:
         try:
             from .alerting import dispatch_alert_notifications
+            # Force only bypasses repeat intervals. Analysis-specific gates still
+            # enforce alert suppression and require a delivered fire notification.
             dispatch_alert_notifications(analysis.alert, action='analysis', force=True)
         except Exception:
             logger.exception('failed to dispatch analysis notification for alert %s', analysis.alert_id)
@@ -745,7 +747,7 @@ def _analysis_notification_delivery(analysis):
     elif analysis.status in {AlertAnalysis.STATUS_PENDING, AlertAnalysis.STATUS_RUNNING}:
         status, message = 'pending', '研判尚未完成'
     else:
-        from .alerting import resolve_notification_policies
+        from .alerting import analysis_notification_gate, resolve_notification_policies
 
         policies = resolve_notification_policies(analysis.alert, rule=_alert_rule(analysis.alert))
         if policies and not any(getattr(policy, 'notify_on_analysis', False) for policy in policies):
@@ -753,7 +755,12 @@ def _analysis_notification_delivery(analysis):
         elif not policies:
             status, message = 'not_configured', '研判已完成，但未匹配到通知策略'
         else:
-            status, message = 'not_sent', '研判已完成，但未找到对应的通知发送记录'
+            gates = [analysis_notification_gate(analysis.alert, policy=policy) for policy in policies]
+            blocked_reasons = [reason for allowed, reason in gates if not allowed and reason]
+            if blocked_reasons and not any(allowed for allowed, _reason in gates):
+                status, message = 'suppressed', blocked_reasons[0]
+            else:
+                status, message = 'not_sent', '研判已完成，但未找到对应的通知发送记录'
     return {'status': status, 'message': message, 'logs': serialized_logs}
 
 

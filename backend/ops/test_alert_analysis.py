@@ -28,6 +28,7 @@ from ops.models import (
     Alert,
     AlertAnalysis,
     AlertNotificationChannel,
+    AlertNotificationLog,
     AlertNotificationPolicy,
     AlertRule,
     LogDataSource,
@@ -195,11 +196,153 @@ class AlertAnalysisTests(TestCase):
         self.alert.status = Alert.STATUS_RESOLVED
         self.alert.labels = {**self.alert.labels, 'alert_rule_id': str(rule.id)}
         self.alert.save(update_fields=['status', 'labels'])
+        AlertNotificationLog.objects.create(
+            alert=self.alert, rule_id=rule.id, policy_id=policy.id, channel_id=channel.id,
+            action='fire', status=AlertNotificationLog.STATUS_SUCCESS, sent_at=timezone.now(),
+        )
 
         logs = dispatch_alert_notifications(self.alert, action='analysis')
 
         self.assertEqual(logs, ['sent'])
         send_notification.assert_called_once()
+
+    @patch('ops.alerting.send_alert_notification', return_value='sent')
+    def test_analysis_is_not_sent_when_current_cycle_alert_was_not_delivered(self, send_notification):
+        rule = AlertRule.objects.create(
+            name='analysis gate rule', source_type='prometheus', category='k8s',
+            metric_datasource=self.metric, is_template=False, notify_enabled=True,
+        )
+        channel = AlertNotificationChannel.objects.create(
+            name='analysis gate feishu', channel_type='feishu',
+            config={'webhook_url': 'https://open.feishu.cn/test', 'secret': 'secret'},
+        )
+        policy = AlertNotificationPolicy.objects.create(
+            name='analysis gate policy', metric_datasource=self.metric, notify_on_analysis=True,
+        )
+        policy.channels.add(channel)
+        self.alert.labels = {**self.alert.labels, 'alert_rule_id': str(rule.id)}
+        self.alert.save(update_fields=['labels'])
+
+        logs = dispatch_alert_notifications(self.alert, action='analysis', force=True)
+
+        self.assertEqual(logs, [])
+        send_notification.assert_not_called()
+
+    @patch('ops.alerting.send_alert_notification', return_value='sent')
+    def test_analysis_does_not_bypass_alert_suppression_even_when_forced(self, send_notification):
+        rule = AlertRule.objects.create(
+            name='suppressed analysis rule', source_type='prometheus', category='k8s',
+            metric_datasource=self.metric, is_template=False, notify_enabled=True,
+        )
+        channel = AlertNotificationChannel.objects.create(
+            name='suppressed feishu', channel_type='feishu',
+            config={'webhook_url': 'https://open.feishu.cn/test', 'secret': 'secret'},
+        )
+        policy = AlertNotificationPolicy.objects.create(
+            name='suppressed policy', metric_datasource=self.metric, notify_on_analysis=True,
+        )
+        policy.channels.add(channel)
+        self.alert.labels = {**self.alert.labels, 'alert_rule_id': str(rule.id)}
+        self.alert.is_suppressed = True
+        self.alert.suppressed_by = 'silence:test'
+        self.alert.save(update_fields=['labels', 'is_suppressed', 'suppressed_by'])
+        AlertNotificationLog.objects.create(
+            alert=self.alert, rule_id=rule.id, policy_id=policy.id, channel_id=channel.id,
+            action='fire', status=AlertNotificationLog.STATUS_SUCCESS, sent_at=timezone.now(),
+        )
+
+        logs = dispatch_alert_notifications(self.alert, action='analysis', force=True)
+
+        self.assertEqual(logs, [])
+        send_notification.assert_not_called()
+
+    @patch('ops.alerting.send_alert_notification', return_value='sent')
+    def test_analysis_is_not_sent_for_storm_primary_alert(self, send_notification):
+        rule = AlertRule.objects.create(
+            name='storm analysis rule', source_type='prometheus', category='k8s',
+            metric_datasource=self.metric, is_template=False, notify_enabled=True,
+        )
+        channel = AlertNotificationChannel.objects.create(
+            name='storm feishu', channel_type='feishu',
+            config={'webhook_url': 'https://open.feishu.cn/test', 'secret': 'secret'},
+        )
+        policy = AlertNotificationPolicy.objects.create(
+            name='storm policy', metric_datasource=self.metric, notify_on_analysis=True,
+        )
+        policy.channels.add(channel)
+        self.alert.labels = {**self.alert.labels, 'alert_rule_id': str(rule.id)}
+        self.alert.raw_payload = {
+            **self.alert.raw_payload,
+            'fire_notification_batch': {
+                'mode': 'storm', 'role': 'primary', 'primary_alert_id': self.alert.id, 'action': 'fire',
+            },
+            'notification_batch': {'mode': 'single', 'primary_alert_id': self.alert.id, 'action': 'resolved'},
+        }
+        self.alert.save(update_fields=['labels', 'raw_payload'])
+
+        logs = dispatch_alert_notifications(self.alert, action='analysis', force=True)
+
+        self.assertEqual(logs, [])
+        send_notification.assert_not_called()
+
+    @patch('ops.alerting.send_alert_notification', return_value='sent')
+    def test_analysis_does_not_inherit_fire_delivery_from_previous_cycle(self, send_notification):
+        rule = AlertRule.objects.create(
+            name='cycle gate rule', source_type='prometheus', category='k8s',
+            metric_datasource=self.metric, is_template=False, notify_enabled=True,
+        )
+        channel = AlertNotificationChannel.objects.create(
+            name='cycle gate feishu', channel_type='feishu',
+            config={'webhook_url': 'https://open.feishu.cn/test', 'secret': 'secret'},
+        )
+        policy = AlertNotificationPolicy.objects.create(
+            name='cycle gate policy', metric_datasource=self.metric, notify_on_analysis=True,
+        )
+        policy.channels.add(channel)
+        self.alert.labels = {**self.alert.labels, 'alert_rule_id': str(rule.id)}
+        self.alert.save(update_fields=['labels'])
+        old_log = AlertNotificationLog.objects.create(
+            alert=self.alert, rule_id=rule.id, policy_id=policy.id, channel_id=channel.id,
+            action='fire', status=AlertNotificationLog.STATUS_SUCCESS, sent_at=timezone.now(),
+        )
+        AlertNotificationLog.objects.filter(pk=old_log.pk).update(created_at=timezone.now() - timedelta(hours=1))
+        self.alert.starts_at = timezone.now()
+        self.alert.save(update_fields=['starts_at'])
+
+        logs = dispatch_alert_notifications(self.alert, action='analysis', force=True)
+
+        self.assertEqual(logs, [])
+        send_notification.assert_not_called()
+
+    @patch('ops.alerting.send_alert_notification', return_value='sent')
+    def test_analysis_only_follows_channels_that_delivered_the_alert(self, send_notification):
+        rule = AlertRule.objects.create(
+            name='channel inheritance rule', source_type='prometheus', category='k8s',
+            metric_datasource=self.metric, is_template=False, notify_enabled=True,
+        )
+        delivered = AlertNotificationChannel.objects.create(
+            name='delivered feishu', channel_type='feishu',
+            config={'webhook_url': 'https://open.feishu.cn/test', 'secret': 'secret'},
+        )
+        skipped = AlertNotificationChannel.objects.create(
+            name='skipped wecom', channel_type='wecom',
+            config={'webhook_url': 'https://qyapi.weixin.qq.com/test'},
+        )
+        policy = AlertNotificationPolicy.objects.create(
+            name='channel inheritance policy', metric_datasource=self.metric, notify_on_analysis=True,
+        )
+        policy.channels.add(delivered, skipped)
+        self.alert.labels = {**self.alert.labels, 'alert_rule_id': str(rule.id)}
+        self.alert.save(update_fields=['labels'])
+        AlertNotificationLog.objects.create(
+            alert=self.alert, rule_id=rule.id, policy_id=policy.id, channel_id=delivered.id,
+            action='fire', status=AlertNotificationLog.STATUS_SUCCESS, sent_at=timezone.now(),
+        )
+
+        logs = dispatch_alert_notifications(self.alert, action='analysis')
+
+        self.assertEqual(logs, ['sent'])
+        self.assertEqual(send_notification.call_args.args[0].id, delivered.id)
 
     @patch('ops.alert_analysis.execute_alert_analysis')
     def test_scheduler_retries_processing_failure_twice(self, execute):
@@ -326,6 +469,34 @@ class AlertAnalysisTests(TestCase):
         payload = serialize_analysis(analysis)
 
         self.assertEqual(payload['notification_delivery']['status'], 'disabled')
+
+    def test_completed_analysis_reports_storm_suppression(self):
+        rule = AlertRule.objects.create(
+            name='storm delivery status', source_type='prometheus', category='k8s',
+            metric_datasource=self.metric, is_template=False, is_enabled=True, notify_enabled=True,
+        )
+        policy = AlertNotificationPolicy.objects.create(
+            name='storm delivery policy', metric_datasource=self.metric, notify_on_analysis=True,
+        )
+        self.alert.labels = {**self.alert.labels, 'alert_rule_id': str(rule.id)}
+        self.alert.raw_payload = {
+            **self.alert.raw_payload,
+            'fire_notification_batch': {
+                'mode': 'storm', 'role': 'primary', 'primary_alert_id': self.alert.id, 'action': 'fire',
+            },
+            'notification_batch': {'mode': 'single', 'primary_alert_id': self.alert.id, 'action': 'resolved'},
+        }
+        self.alert.save(update_fields=['labels', 'raw_payload'])
+        analysis = AlertAnalysis.objects.create(
+            alert=self.alert,
+            status=AlertAnalysis.STATUS_COMPLETED,
+            completed_at=timezone.now(),
+        )
+
+        payload = serialize_analysis(analysis)
+
+        self.assertEqual(payload['notification_delivery']['status'], 'suppressed')
+        self.assertIn('聚合/风暴降噪', payload['notification_delivery']['message'])
 
     def test_existing_active_alert_without_analysis_is_backfilled_once(self):
         rule = AlertRule.objects.create(

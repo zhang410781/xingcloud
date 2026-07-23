@@ -1195,6 +1195,51 @@ def _policy_action_enabled(policy, action):
     return True
 
 
+def _activity_cycle_start(alert):
+    """Return the start boundary used to inherit the current alert cycle's delivery."""
+    return alert.starts_at or alert.created_at or timezone.now()
+
+
+def _successful_fire_channel_ids(alert, policy=None):
+    """Channels that actually delivered the first notification in this activity cycle."""
+    cycle_start = _activity_cycle_start(alert)
+    logs = AlertNotificationLog.objects.filter(
+        alert=alert,
+        action='fire',
+        status=AlertNotificationLog.STATUS_SUCCESS,
+        created_at__gte=cycle_start,
+    )
+    if policy is not None:
+        logs = logs.filter(policy_id=policy.id)
+    return set(logs.values_list('channel_id', flat=True))
+
+
+def analysis_notification_gate(alert, policy=None):
+    """Decide whether analysis may follow a notification that was actually delivered.
+
+    Analysis is evidence for an alert, not an independent alert.  It must not
+    bypass silence, inhibition, storm aggregation, or a policy/channel that did
+    not deliver the first alert in the current activity cycle.
+    """
+    if alert.is_suppressed or alert.status == Alert.STATUS_MUTED:
+        return False, '告警已静默或屏蔽，研判结果仅保存在平台详情'
+    if policy is not None:
+        now = timezone.now()
+        if not _policy_action_enabled(policy, 'analysis'):
+            return False, '命中的通知策略未开启研判通知，结果仅保存在平台详情'
+        if _policy_is_muted(policy, timezone.localtime(now)):
+            return False, '命中的通知策略当前处于静默时段，研判结果仅保存在平台详情'
+        if _policy_inhibits_alert(policy, alert):
+            return False, '告警被通知策略抑制，研判结果仅保存在平台详情'
+    payload = alert.raw_payload or {}
+    batch = payload.get('fire_notification_batch') or payload.get('notification_batch') or {}
+    if batch.get('mode') == 'storm':
+        return False, '告警已被聚合/风暴降噪，研判结果仅保存在平台详情'
+    if not _successful_fire_channel_ids(alert, policy=policy):
+        return False, '首次告警未实际发送，研判结果仅保存在平台详情'
+    return True, ''
+
+
 def _policy_is_muted(policy, now=None):
     schedule = policy.mute_schedule if isinstance(policy.mute_schedule, dict) else {}
     if not schedule:
@@ -1241,7 +1286,7 @@ def resolve_notification_policies(alert, rule=None, metric_datasource_id=None):
 def dispatch_alert_notifications(alert, action='fire', request=None, force=False):
     if action == 'analysis' and alert.status not in {Alert.STATUS_ACTIVE, Alert.STATUS_RESOLVED}:
         return []
-    if not force and (alert.is_suppressed or alert.status == Alert.STATUS_MUTED):
+    if (not force or action == 'analysis') and (alert.is_suppressed or alert.status == Alert.STATUS_MUTED):
         return []
     if action == 'resolved' and alert.status != Alert.STATUS_RESOLVED:
         return []
@@ -1259,7 +1304,15 @@ def dispatch_alert_notifications(alert, action='fire', request=None, force=False
                 continue
             if _policy_inhibits_alert(policy, alert):
                 continue
+            analysis_channel_ids = None
+            if action == 'analysis':
+                allowed, _reason = analysis_notification_gate(alert, policy=policy)
+                if not allowed:
+                    continue
+                analysis_channel_ids = _successful_fire_channel_ids(alert, policy=policy)
             channels = list(policy.channels.filter(is_enabled=True))
+            if analysis_channel_ids is not None:
+                channels = [channel for channel in channels if channel.id in analysis_channel_ids]
             if action == 'resolved':
                 channels = [channel for channel in channels if channel.send_resolved]
             if not channels:
@@ -1348,6 +1401,8 @@ def _storm_threshold_for_alert(alert, fallback=3):
 def _mark_notification_batch(alert, batch):
     raw_payload = dict(alert.raw_payload or {})
     raw_payload['notification_batch'] = batch
+    if batch.get('action') == 'fire':
+        raw_payload['fire_notification_batch'] = batch
     alert.raw_payload = raw_payload
     alert.save(update_fields=['raw_payload', 'updated_at'])
 
