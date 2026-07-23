@@ -45,6 +45,7 @@ class WaitingAlertStabilityTests(TestCase):
         alert = Alert.objects.get()
         self.assertEqual(alert.status, Alert.STATUS_ACTIVE)
         self.assertEqual(alert.labels['reason'], 'ErrImagePull')
+        self.assertIsInstance(alert.raw_payload['event']['starts_at'], str)
         self.assertTrue(AlertAction.objects.filter(alert=alert, note__contains='原因变化').exists())
 
     def test_reason_is_excluded_but_pod_uid_is_part_of_fingerprint(self):

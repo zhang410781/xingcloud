@@ -924,7 +924,7 @@ def _card_buttons(alert, provider, request=None, action='fire'):
             'title': '查看详情',
             'url': f'{detail_url}/observability/alerts/{alert.id}',
         })
-    if action == 'analysis':
+    if action in {'analysis', 'resolved'}:
         return buttons
     for card_action in CARD_ACTIONS:
         url = _interaction_url(alert, card_action, provider=provider, request=request)

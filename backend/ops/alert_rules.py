@@ -1,6 +1,7 @@
 import hashlib
 import json
 
+from django.core.serializers.json import DjangoJSONEncoder
 from django.db import transaction
 from django.utils import timezone
 
@@ -23,6 +24,11 @@ def _text(value, default=''):
 
 def _dict(value):
     return value if isinstance(value, dict) else {}
+
+
+def _json_safe(value):
+    """Convert datetimes and other Django JSON values before JSONField persistence."""
+    return json.loads(json.dumps(value, cls=DjangoJSONEncoder, ensure_ascii=False))
 
 
 def _first(*values):
@@ -115,7 +121,7 @@ def build_platform_alert_payload(rule, payload=None, status=None):
         'annotations': annotations,
         'starts_at': payload.get('starts_at') or timezone.now(),
         'ends_at': payload.get('ends_at'),
-        'raw_payload': {
+        'raw_payload': _json_safe({
             'source': 'alert_rule',
             'rule': {
                 'id': rule.id,
@@ -136,7 +142,7 @@ def build_platform_alert_payload(rule, payload=None, status=None):
                 'confidence': None,
                 'suggested_actions': [],
             },
-        },
+        }),
     }
 
 

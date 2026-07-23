@@ -450,6 +450,14 @@ class AlertAnalysisTests(TestCase):
 
         self.assertEqual([item['action'] for item in buttons], ['detail'])
 
+    @override_settings(XING_CLOUD_PUBLIC_BASE_URL='https://xingcloud.example')
+    def test_resolved_card_only_contains_detail_button(self):
+        self.alert.status = Alert.STATUS_RESOLVED
+
+        buttons = _card_buttons(self.alert, 'feishu', action='resolved')
+
+        self.assertEqual([item['action'] for item in buttons], ['detail'])
+
     def test_completed_analysis_reports_disabled_notification_policy(self):
         rule = AlertRule.objects.create(
             name='disabled analysis notification', source_type='prometheus', category='k8s',
