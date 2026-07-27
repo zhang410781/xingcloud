@@ -82,6 +82,13 @@ export const startProcessTransactionTicket = (id) => request.post(`/transaction-
 export const completeTransactionTicket = (id) => request.post(`/transaction-tickets/${id}/complete/`)
 
 export const getAlerts = (params) => request.get('/alerts/', { params })
+export const getExternalAlertSources = (params) => request.get('/external-alert-sources/', { params })
+export const createExternalAlertSource = (data) => request.post('/external-alert-sources/', data)
+export const updateExternalAlertSource = (id, data) => request.patch(`/external-alert-sources/${id}/`, data)
+export const deleteExternalAlertSource = (id) => request.delete(`/external-alert-sources/${id}/`)
+export const rotateExternalAlertSourceToken = (id) => request.post(`/external-alert-sources/${id}/rotate-token/`)
+export const getExternalAlertSourceLogs = (id, params) => request.get(`/external-alert-sources/${id}/ingress-logs/`, { params })
+export const previewExternalAlertSourcePayload = (id, payload) => request.post(`/external-alert-sources/${id}/preview-payload/`, { payload })
 export const getAlert = (id) => request.get(`/alerts/${id}/`)
 export const getAlertSummary = (params) => request.get('/alerts/summary/', { params })
 export const getAlertGroups = (params) => request.get('/alerts/groups/', { params })

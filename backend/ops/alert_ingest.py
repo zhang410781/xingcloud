@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import re
 import secrets
 from datetime import datetime, timezone as datetime_timezone
 
@@ -254,11 +255,11 @@ def authenticate_webhook_token(candidate):
     return any(secrets.compare_digest(candidate, expected) for expected in configured_webhook_tokens())
 
 
-def check_ingest_rate_limit(token):
-    limit = max(int(getattr(settings, 'ALERT_INGEST_RATE_LIMIT', 120) or 120), 1)
+def check_ingest_rate_limit(token, limit=None, namespace='global'):
+    limit = max(int(limit or getattr(settings, 'ALERT_INGEST_RATE_LIMIT', 120) or 120), 1)
     token_digest = hashlib.sha256(_text(token).encode('utf-8')).hexdigest()
     bucket = timezone.now().strftime('%Y%m%d%H%M')
-    key = f'alert-ingest-rate:{token_digest}:{bucket}'
+    key = f'alert-ingest-rate:{namespace}:{token_digest}:{bucket}'
     try:
         if cache.add(key, 1, timeout=70):
             return True
@@ -268,8 +269,103 @@ def check_ingest_rate_limit(token):
         return True
 
 
-def ingest_external_alert_payload(payload):
-    source, normalized_alerts = normalize_payload(payload)
+def _mapping_values(normalized):
+    values = {
+        key: _text(normalized.get(key))
+        for key in (
+            'title', 'level', 'source', 'source_type', 'environment', 'cluster',
+            'namespace', 'service', 'business_line', 'resource_type', 'resource',
+        )
+    }
+    for key, value in _dict(normalized.get('labels')).items():
+        values.setdefault(_text(key), _text(value))
+        values[f'label.{_text(key)}'] = _text(value)
+    return values
+
+
+def _mapping_matches(normalized, matchers):
+    values = _mapping_values(normalized)
+    for matcher in matchers or []:
+        if not isinstance(matcher, dict):
+            return False
+        key = _text(matcher.get('key'))
+        operator = _text(matcher.get('operator') or matcher.get('op') or '==')
+        expected = _text(matcher.get('value'))
+        actual = values.get(key, '')
+        if operator in {'=', '=='} and actual != expected:
+            return False
+        if operator == '!=' and actual == expected:
+            return False
+        if operator in {'=~', '!~'}:
+            try:
+                matched = bool(re.search(expected, actual))
+            except re.error:
+                return False
+            if operator == '=~' and not matched:
+                return False
+            if operator == '!~' and matched:
+                return False
+        if operator == 'contains' and expected not in actual:
+            return False
+    return True
+
+
+def _mapped_knowledge_environment(ingress_source, normalized):
+    from aiops.models import AIOpsKnowledgeEnvironment
+
+    for rule in sorted(ingress_source.mapping_rules or [], key=lambda item: int(item.get('priority') or 0)):
+        if not _mapping_matches(normalized, rule.get('matchers')):
+            continue
+        context_id = rule.get('knowledge_environment_id')
+        context = AIOpsKnowledgeEnvironment.objects.filter(pk=context_id, is_enabled=True).first()
+        if context:
+            return context, f'mapping_rule:{rule.get("priority") or 0}'
+    if ingress_source.default_knowledge_environment_id:
+        context = ingress_source.default_knowledge_environment
+        if context and context.is_enabled:
+            return context, 'source_default'
+    return None, 'unbound'
+
+
+def prepare_external_alerts(payload, ingress_source):
+    detected_source, normalized_alerts = normalize_payload(payload)
+    if detected_source != ingress_source.provider:
+        raise AlertIngestError(
+            f'载荷来源为 {detected_source}，与接入源类型 {ingress_source.provider} 不一致。'
+        )
+    prepared = []
+    for normalized in normalized_alerts:
+        normalized = dict(normalized)
+        original_fingerprint = normalized['fingerprint']
+        context, binding_reason = _mapped_knowledge_environment(ingress_source, normalized)
+        normalized['fingerprint'] = _stable_fingerprint(
+            'external', ingress_source.public_id, original_fingerprint,
+        )
+        normalized['source'] = ingress_source.code
+        normalized['ingress_source'] = ingress_source
+        normalized['knowledge_environment'] = context
+        normalized['binding_status'] = 'bound' if context else 'unbound'
+        raw_payload = _dict(normalized.get('raw_payload')).copy()
+        ingest_metadata = _dict(raw_payload.get('ingest')).copy()
+        ingest_metadata.update({
+            'source_id': ingress_source.id,
+            'source_code': ingress_source.code,
+            'source_name': ingress_source.name,
+            'provider': ingress_source.provider,
+            'external_fingerprint': original_fingerprint,
+            'binding_reason': binding_reason,
+        })
+        raw_payload['ingest'] = ingest_metadata
+        normalized['raw_payload'] = raw_payload
+        prepared.append(normalized)
+    return detected_source, prepared
+
+
+def ingest_external_alert_payload(payload, ingress_source=None):
+    if ingress_source is None:
+        source, normalized_alerts = normalize_payload(payload)
+    else:
+        source, normalized_alerts = prepare_external_alerts(payload, ingress_source)
     results = []
     fire_alerts = []
     resolved_alerts = []
@@ -313,12 +409,21 @@ def ingest_external_alert_payload(payload):
             'analysis_id': None,
         })
 
-    fire_dispatch = dispatch_alert_batch_notifications(fire_alerts, action='fire', force=True)
-    resolved_dispatch = dispatch_alert_batch_notifications(resolved_alerts, action='resolved', force=True)
-    for alert in active_alerts:
-        apply_escalation_policy(alert)
+    notify_enabled = ingress_source is None or ingress_source.notify_enabled
+    analyze_enabled = ingress_source is None or ingress_source.analyze_enabled
+    fire_dispatch = (
+        dispatch_alert_batch_notifications(fire_alerts, action='fire', force=True)
+        if notify_enabled else {'notification_logs': [], 'storm_batches': []}
+    )
+    resolved_dispatch = (
+        dispatch_alert_batch_notifications(resolved_alerts, action='resolved', force=True)
+        if notify_enabled else {'notification_logs': [], 'storm_batches': []}
+    )
+    if notify_enabled:
+        for alert in active_alerts:
+            apply_escalation_policy(alert)
 
-    if analysis_targets:
+    if analysis_targets and analyze_enabled:
         from .alert_analysis import enqueue_lightweight_analysis
 
         result_by_id = {item['id']: item for item in results}

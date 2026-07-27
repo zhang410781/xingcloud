@@ -38,6 +38,9 @@
       <button v-if="canViewConfig" class="neo-tab-btn" :class="{ active: activeTab === 'notify' }" @click="switchTab('notify')">
         <el-icon style="margin-right: 4px;"><Setting /></el-icon>&#x901A;&#x77E5;&#x914D;&#x7F6E;
       </button>
+      <button v-if="canViewConfig" class="neo-tab-btn" :class="{ active: activeTab === 'external' }" @click="switchTab('external')">
+        <el-icon style="margin-right: 4px;"><Connection /></el-icon>外部告警接入
+      </button>
     </div>
 
     <template v-if="activeTab === 'events' && canViewAlerts">
@@ -51,6 +54,11 @@
           </el-select>
           <el-select v-model="filters.source_type" size="small" clearable placeholder="&#x6765;&#x6E90;" @change="handleFilterChange">
             <el-option v-for="item in providerOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
+          <el-select v-model="filters.binding_scope" size="small" placeholder="业务归属" @change="handleFilterChange">
+            <el-option label="当前业务上下文" value="current" />
+            <el-option label="全部业务上下文" value="all" />
+            <el-option label="待绑定外部告警" value="unbound" />
           </el-select>
           <el-select v-model="filters.environment" size="small" clearable filterable allow-create default-first-option placeholder="&#x73AF;&#x5883;" @change="handleFilterChange">
             <el-option v-for="item in environmentOptions" :key="item" :label="item" :value="item" />
@@ -328,6 +336,10 @@
       </section>
     </template>
 
+    <template v-if="activeTab === 'external' && canViewConfig">
+      <ExternalAlertSourcesPanel />
+    </template>
+
     <template v-if="activeTab === 'rules' && canViewConfig">
       <section class="panel">
         <div class="section-head">
@@ -434,6 +446,8 @@
           <section class="alert-detail-card">
             <el-descriptions class="alert-detail-summary" :column="1" size="small" border>
               <el-descriptions-item label="&#x6765;&#x6E90;">{{ providerText(selectedAlert.source_type) }} / {{ selectedAlert.source }}</el-descriptions-item>
+              <el-descriptions-item v-if="selectedAlert.ingress_source_detail" label="外部接入源">{{ selectedAlert.ingress_source_detail.name }} / {{ selectedAlert.ingress_source_detail.code }}</el-descriptions-item>
+              <el-descriptions-item v-if="selectedAlert.source_type !== 'platform'" label="业务归属">{{ selectedAlert.binding_status === 'bound' ? '已绑定' : '待绑定' }}</el-descriptions-item>
               <el-descriptions-item label="&#x8D44;&#x6E90;">{{ selectedAlert.resource || selectedAlert.host_name || '-' }}</el-descriptions-item>
               <el-descriptions-item label="&#x670D;&#x52A1;">{{ selectedAlert.service || '-' }}</el-descriptions-item>
               <el-descriptions-item label="&#x73AF;&#x5883;">{{ selectedAlert.environment || '-' }}</el-descriptions-item>
@@ -913,7 +927,7 @@
 import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
-import { Bell, Delete, Operation, Plus, Refresh, Search, Setting } from '@element-plus/icons-vue'
+import { Bell, Connection, Delete, Operation, Plus, Refresh, Search, Setting } from '@element-plus/icons-vue'
 import { ElButton, ElInput, ElMessage, ElMessageBox, ElOption, ElPopconfirm, ElSelect, ElTable, ElTableColumn, ElTag } from 'element-plus'
 import {
   analyzeAlert,
@@ -977,6 +991,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useBusinessContextStore } from '@/stores/businessContext'
 import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
 import AlertRuleWizard from '@/components/observability/AlertRuleWizard.vue'
+import ExternalAlertSourcesPanel from '@/components/observability/ExternalAlertSourcesPanel.vue'
 
 const props = defineProps({
   workspace: { type: String, default: 'events' },
@@ -1160,7 +1175,7 @@ const pageDescription = computed(() => (isEventWorkspace.value
   ? '统一查看实时告警，支持筛选、认领、屏蔽和关联证据排查。'
   : '通过模板或手动配置创建规则，并维护规则的通知方式和接收对象。'))
 const activeTab = ref(isEventWorkspace.value ? 'events' : 'rules')
-const routeTabs = ['events', 'rules', 'notify', 'logs', 'policies']
+const routeTabs = ['events', 'rules', 'notify', 'external', 'logs', 'policies']
 const notifyTab = ref('rules')
 const policyTab = ref('aggregation')
 const eventMode = ref('group')
@@ -1179,6 +1194,8 @@ const categoryOptions = [
 
 const providerOptions = [
   { label: '\u5E73\u53F0\u89C4\u5219', value: 'platform' },
+  { label: 'Alertmanager', value: 'alertmanager' },
+  { label: 'Zabbix', value: 'zabbix' },
 ]
 
 const ruleSourceOptions = [
@@ -1222,6 +1239,7 @@ const channelOptions = [
 
 const dimensionOptions = [
   { label: '\u6765\u6E90\u7C7B\u578B', value: 'source_type' },
+  { label: '外部接入源', value: 'ingress_source_code' },
   { label: '\u73AF\u5883', value: 'environment' },
   { label: '\u670D\u52A1', value: 'service' },
   { label: '\u96C6\u7FA4', value: 'cluster' },
@@ -1242,6 +1260,7 @@ const filters = reactive({
   claimed: '',
   source_type: '',
   environment: '',
+  binding_scope: 'current',
 })
 
 const loading = ref(false)
@@ -1522,7 +1541,8 @@ function groupMembers(row) {
 
 function buildAlertParams() {
   const params = { page: page.value }
-  if (currentContextId.value) params.knowledge_environment_id = currentContextId.value
+  if (filters.binding_scope === 'current' && currentContextId.value) params.knowledge_environment_id = currentContextId.value
+  if (filters.binding_scope === 'unbound') params.binding_status = 'unbound'
   if (filters.search) params.search = filters.search
   if (filters.level) params.level = filters.level
   if (filters.status) params.status = filters.status
@@ -1559,7 +1579,7 @@ async function fetchGroups() {
 }
 
 async function refreshEvents() {
-  if (!currentContextId.value) {
+  if (filters.binding_scope === 'current' && !currentContextId.value) {
     alerts.value = []
     groups.value = []
     summary.value = {}
@@ -1736,7 +1756,7 @@ async function handleBatchDelete() {
 function ensureTabAccess() {
   const tabs = []
   if (isEventWorkspace.value && canViewAlerts.value) tabs.push('events')
-  if (!isEventWorkspace.value && canViewConfig.value) tabs.push('rules', 'notify')
+  if (!isEventWorkspace.value && canViewConfig.value) tabs.push('rules', 'notify', 'external')
   if (!tabs.includes(activeTab.value)) activeTab.value = tabs[0] || (isEventWorkspace.value ? 'events' : 'rules')
 }
 
@@ -1747,7 +1767,7 @@ async function switchTab(tab) {
 
 function applyRouteTab() {
   const tab = typeof route.query.tab === 'string' ? route.query.tab.trim() : ''
-  const allowedTabs = isEventWorkspace.value ? ['events'] : ['rules', 'notify']
+  const allowedTabs = isEventWorkspace.value ? ['events'] : ['rules', 'notify', 'external']
   if (routeTabs.includes(tab) && allowedTabs.includes(tab)) activeTab.value = tab
 }
 

@@ -1,3 +1,5 @@
+import hashlib
+import secrets
 import uuid
 
 from django.conf import settings
@@ -835,6 +837,93 @@ class DeploymentApprovalStep(models.Model):
         return f'{self.get_approver_type_display()}: {self.approver_value or "-"}'
 
 
+class ExternalAlertSource(models.Model):
+    PROVIDER_ALERTMANAGER = 'alertmanager'
+    PROVIDER_ZABBIX = 'zabbix'
+    PROVIDER_CHOICES = [
+        (PROVIDER_ALERTMANAGER, 'Alertmanager'),
+        (PROVIDER_ZABBIX, 'Zabbix'),
+    ]
+
+    name = models.CharField('接入源名称', max_length=128)
+    code = models.SlugField('接入源编码', max_length=64, unique=True)
+    public_id = models.UUIDField('接入标识', default=uuid.uuid4, unique=True, editable=False)
+    provider = models.CharField('来源类型', max_length=32, choices=PROVIDER_CHOICES)
+    default_knowledge_environment = models.ForeignKey(
+        'aiops.AIOpsKnowledgeEnvironment',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='external_alert_sources',
+        verbose_name='默认业务上下文',
+    )
+    mapping_rules = models.JSONField('业务上下文映射规则', default=list, blank=True)
+    token_digest = models.CharField('Token 摘要', max_length=64, blank=True, default='')
+    token_hint = models.CharField('Token 尾号', max_length=8, blank=True, default='')
+    is_enabled = models.BooleanField('允许接入', default=True)
+    notify_enabled = models.BooleanField('发送通知', default=False)
+    analyze_enabled = models.BooleanField('执行智能研判', default=True)
+    rate_limit_per_minute = models.PositiveIntegerField('每分钟请求上限', default=120)
+    last_received_at = models.DateTimeField('最近请求时间', null=True, blank=True)
+    last_success_at = models.DateTimeField('最近成功时间', null=True, blank=True)
+    last_error_at = models.DateTimeField('最近失败时间', null=True, blank=True)
+    last_error = models.CharField('最近失败原因', max_length=500, blank=True, default='')
+    total_requests = models.PositiveBigIntegerField('请求总数', default=0)
+    accepted_requests = models.PositiveBigIntegerField('成功请求数', default=0)
+    rejected_requests = models.PositiveBigIntegerField('拒绝请求数', default=0)
+    received_alerts = models.PositiveBigIntegerField('接收告警数', default=0)
+    description = models.TextField('说明', blank=True, default='')
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '外部告警接入源'
+        verbose_name_plural = '外部告警接入源'
+        ordering = ['name', 'id']
+
+    def issue_token(self):
+        token = secrets.token_urlsafe(32)
+        self.token_digest = hashlib.sha256(token.encode('utf-8')).hexdigest()
+        self.token_hint = token[-4:]
+        self.save(update_fields=['token_digest', 'token_hint', 'updated_at'])
+        return token
+
+    def verify_token(self, candidate):
+        candidate_digest = hashlib.sha256(str(candidate or '').strip().encode('utf-8')).hexdigest()
+        return bool(self.token_digest) and secrets.compare_digest(candidate_digest, self.token_digest)
+
+    def __str__(self):
+        return self.name
+
+
+class ExternalAlertIngressLog(models.Model):
+    STATUS_ACCEPTED = 'accepted'
+    STATUS_REJECTED = 'rejected'
+    STATUS_ERROR = 'error'
+    STATUS_CHOICES = [
+        (STATUS_ACCEPTED, '已接收'),
+        (STATUS_REJECTED, '已拒绝'),
+        (STATUS_ERROR, '处理失败'),
+    ]
+
+    source = models.ForeignKey(ExternalAlertSource, on_delete=models.CASCADE, related_name='ingress_logs', verbose_name='接入源')
+    request_id = models.UUIDField('请求 ID', default=uuid.uuid4, unique=True, editable=False)
+    status = models.CharField('状态', max_length=16, choices=STATUS_CHOICES)
+    http_status = models.PositiveSmallIntegerField('HTTP 状态码', default=200)
+    remote_addr = models.GenericIPAddressField('来源地址', null=True, blank=True)
+    alert_count = models.PositiveIntegerField('告警数量', default=0)
+    duration_ms = models.PositiveIntegerField('处理耗时毫秒', default=0)
+    message = models.CharField('处理结果', max_length=500, blank=True, default='')
+    payload_summary = models.JSONField('载荷摘要', default=dict, blank=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+
+    class Meta:
+        verbose_name = '外部告警接入日志'
+        verbose_name_plural = '外部告警接入日志'
+        ordering = ['-created_at', '-id']
+        indexes = [models.Index(fields=['source', 'created_at'])]
+
+
 class Alert(models.Model):
     SOURCE_PLATFORM = 'platform'
     SOURCE_ZABBIX = 'zabbix'
@@ -877,6 +966,21 @@ class Alert(models.Model):
     claimed_by = models.CharField('认领人', max_length=64, blank=True, default='')
     claimed_at = models.DateTimeField('认领时间', null=True, blank=True)
     host = models.ForeignKey(Host, on_delete=models.SET_NULL, null=True, blank=True, verbose_name='关联主机')
+    ingress_source = models.ForeignKey(
+        ExternalAlertSource,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='alerts',
+        verbose_name='外部告警接入源',
+    )
+    binding_status = models.CharField(
+        '业务上下文绑定状态',
+        max_length=16,
+        choices=[('not_applicable', '不适用'), ('bound', '已绑定'), ('unbound', '待绑定')],
+        default='not_applicable',
+        db_index=True,
+    )
     knowledge_environment = models.ForeignKey(
         'aiops.AIOpsKnowledgeEnvironment',
         on_delete=models.SET_NULL,
@@ -925,6 +1029,7 @@ class Alert(models.Model):
             models.Index(fields=['knowledge_environment', 'status', 'level'], name='ops_alert_ctx_status_level_idx'),
             models.Index(fields=['status', 'level']),
             models.Index(fields=['source_type', 'source']),
+            models.Index(fields=['ingress_source', 'binding_status']),
             models.Index(fields=['service', 'environment']),
             models.Index(fields=['cluster', 'namespace']),
             models.Index(fields=['resource_type', 'resource']),

@@ -641,7 +641,9 @@ def execute_lightweight_alert_analysis(analysis):
     ])
     _project_compatibility(analysis)
     analysis.alert.refresh_from_db(fields=['status'])
-    if analysis.alert.status in {Alert.STATUS_ACTIVE, Alert.STATUS_RESOLVED}:
+    ingress_source = analysis.alert.ingress_source if analysis.alert.ingress_source_id else None
+    notification_enabled = ingress_source is None or ingress_source.notify_enabled
+    if notification_enabled and analysis.alert.status in {Alert.STATUS_ACTIVE, Alert.STATUS_RESOLVED}:
         try:
             from .alerting import dispatch_alert_notifications
             dispatch_alert_notifications(analysis.alert, action='analysis', force=True)
@@ -873,6 +875,7 @@ def _analysis_notification_delivery(analysis):
         }
         for log in logs
     ]
+    ingress_source = analysis.alert.ingress_source if analysis.alert.ingress_source_id else None
     if any(log.status == AlertNotificationLog.STATUS_SUCCESS for log in logs):
         status, message = 'sent', '研判结果通知已发送'
     elif any(log.status == AlertNotificationLog.STATUS_ERROR for log in logs):
@@ -881,6 +884,8 @@ def _analysis_notification_delivery(analysis):
         status, message = 'skipped', '研判结果通知已跳过'
     elif analysis.status in {AlertAnalysis.STATUS_PENDING, AlertAnalysis.STATUS_RUNNING}:
         status, message = 'pending', '研判尚未完成'
+    elif ingress_source and not ingress_source.notify_enabled:
+        status, message = 'disabled', '研判已完成并入库，但该外部接入源已关闭通知'
     else:
         from .alerting import analysis_notification_gate, resolve_notification_policies
 

@@ -2,6 +2,7 @@ import re
 import uuid
 
 from django.contrib.auth import get_user_model
+from django.utils.text import slugify
 from rest_framework import serializers
 
 from cmdb.models import CIRelation, ConfigItem, ResourceNode
@@ -19,6 +20,8 @@ from .models import (
     AlertRecipientGroup,
     AlertRule,
     AlertSilence,
+    ExternalAlertIngressLog,
+    ExternalAlertSource,
     Deployment,
     DeploymentApprovalFlow,
     DeploymentApprovalNode,
@@ -2066,6 +2069,141 @@ class AlertClaimSerializer(serializers.ModelSerializer):
         fields = ['id', 'claimant', 'claimed_at']
 
 
+class ExternalAlertSourceSerializer(serializers.ModelSerializer):
+    provider_display = serializers.CharField(source='get_provider_display', read_only=True)
+    default_knowledge_environment_detail = serializers.SerializerMethodField()
+    endpoint = serializers.SerializerMethodField()
+    token_configured = serializers.SerializerMethodField()
+    health_status = serializers.SerializerMethodField()
+    active_alert_count = serializers.IntegerField(read_only=True, default=0)
+    unbound_alert_count = serializers.IntegerField(read_only=True, default=0)
+
+    class Meta:
+        model = ExternalAlertSource
+        fields = [
+            'id', 'name', 'code', 'public_id', 'provider', 'provider_display',
+            'default_knowledge_environment', 'default_knowledge_environment_detail',
+            'mapping_rules', 'endpoint', 'token_configured', 'token_hint', 'health_status',
+            'is_enabled', 'notify_enabled', 'analyze_enabled', 'rate_limit_per_minute',
+            'last_received_at', 'last_success_at', 'last_error_at', 'last_error',
+            'total_requests', 'accepted_requests', 'rejected_requests', 'received_alerts',
+            'active_alert_count', 'unbound_alert_count', 'description', 'created_at', 'updated_at',
+        ]
+        read_only_fields = [
+            'public_id', 'token_hint', 'last_received_at', 'last_success_at', 'last_error_at',
+            'last_error', 'total_requests', 'accepted_requests', 'rejected_requests',
+            'received_alerts', 'created_at', 'updated_at',
+        ]
+        extra_kwargs = {'code': {'required': False}}
+
+    def get_default_knowledge_environment_detail(self, obj):
+        context = obj.default_knowledge_environment
+        if not context:
+            return None
+        return {'id': context.id, 'name': context.name, 'code': context.code}
+
+    def get_endpoint(self, obj):
+        path = f'/api/ops/alert-ingress/{obj.public_id}/'
+        request = self.context.get('request')
+        return request.build_absolute_uri(path) if request else path
+
+    def get_token_configured(self, obj):
+        return bool(obj.token_digest)
+
+    def get_health_status(self, obj):
+        if not obj.is_enabled:
+            return 'disabled'
+        if obj.last_error_at and (not obj.last_success_at or obj.last_error_at > obj.last_success_at):
+            return 'error'
+        if obj.last_success_at:
+            return 'healthy'
+        return 'pending'
+
+    def validate_code(self, value):
+        normalized = slugify(value or '').strip('-')
+        if not normalized:
+            raise serializers.ValidationError('接入源编码只能包含字母、数字、下划线或连字符')
+        if self.instance and normalized != self.instance.code:
+            raise serializers.ValidationError('接入源编码创建后不可修改')
+        return normalized
+
+    def validate_provider(self, value):
+        if self.instance and value != self.instance.provider:
+            raise serializers.ValidationError('接入源类型创建后不可修改')
+        return value
+
+    def validate_default_knowledge_environment(self, value):
+        if value and not value.is_enabled:
+            raise serializers.ValidationError('默认业务上下文必须处于启用状态')
+        return value
+
+    def validate_rate_limit_per_minute(self, value):
+        if not 1 <= value <= 10000:
+            raise serializers.ValidationError('每分钟请求上限必须在 1 到 10000 之间')
+        return value
+
+    def validate_mapping_rules(self, value):
+        if not isinstance(value, list):
+            raise serializers.ValidationError('映射规则必须是列表')
+        context_ids = set()
+        normalized = []
+        valid_operators = {'=', '==', '!=', '=~', '!~', 'contains'}
+        for index, item in enumerate(value):
+            if not isinstance(item, dict):
+                raise serializers.ValidationError(f'第 {index + 1} 条映射规则格式错误')
+            context_id = item.get('knowledge_environment_id')
+            matchers = item.get('matchers')
+            if not isinstance(matchers, list) or not matchers:
+                raise serializers.ValidationError(f'第 {index + 1} 条映射规则必须包含匹配条件')
+            for matcher in matchers:
+                key = str(matcher.get('key') or '').strip() if isinstance(matcher, dict) else ''
+                operator = str(matcher.get('operator') or matcher.get('op') or '==').strip()
+                if not key or operator not in valid_operators:
+                    raise serializers.ValidationError(f'第 {index + 1} 条映射规则的匹配条件无效')
+                if operator in {'=~', '!~'}:
+                    try:
+                        re.compile(str(matcher.get('value') or ''))
+                    except re.error as exc:
+                        raise serializers.ValidationError(f'第 {index + 1} 条映射规则的正则表达式无效：{exc}')
+            try:
+                context_ids.add(int(context_id))
+            except (TypeError, ValueError):
+                raise serializers.ValidationError(f'第 {index + 1} 条映射规则缺少业务上下文')
+            try:
+                priority = int(item.get('priority') or (index + 1) * 10)
+            except (TypeError, ValueError):
+                raise serializers.ValidationError(f'第 {index + 1} 条映射规则的优先级必须是整数')
+            if not 1 <= priority <= 9999:
+                raise serializers.ValidationError(f'第 {index + 1} 条映射规则的优先级必须在 1 到 9999 之间')
+            normalized.append({
+                'priority': priority,
+                'matchers': matchers,
+                'knowledge_environment_id': int(context_id),
+            })
+        if context_ids:
+            from aiops.models import AIOpsKnowledgeEnvironment
+            existing_ids = set(AIOpsKnowledgeEnvironment.objects.filter(id__in=context_ids, is_enabled=True).values_list('id', flat=True))
+            if existing_ids != context_ids:
+                raise serializers.ValidationError('映射规则包含不存在或已停用的业务上下文')
+        return sorted(normalized, key=lambda item: item['priority'])
+
+    def create(self, validated_data):
+        if not validated_data.get('code'):
+            base = slugify(validated_data.get('name') or '') or validated_data.get('provider') or 'external-alert'
+            candidate = base[:54]
+            suffix = uuid.uuid4().hex[:8]
+            validated_data['code'] = f'{candidate}-{suffix}'
+        return super().create(validated_data)
+
+
+class ExternalAlertIngressLogSerializer(serializers.ModelSerializer):
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+
+    class Meta:
+        model = ExternalAlertIngressLog
+        fields = '__all__'
+
+
 class AlertSerializer(serializers.ModelSerializer):
     level_display = serializers.CharField(source='get_level_display', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
@@ -2078,6 +2216,7 @@ class AlertSerializer(serializers.ModelSerializer):
     current_user_claimed = serializers.SerializerMethodField()
     actions = AlertActionSerializer(many=True, read_only=True)
     recent_notifications = serializers.SerializerMethodField()
+    ingress_source_detail = serializers.SerializerMethodField()
 
     class Meta:
         model = Alert
@@ -2115,6 +2254,12 @@ class AlertSerializer(serializers.ModelSerializer):
     def get_recent_notifications(self, obj):
         logs = obj.notification_logs.all()[:5]
         return AlertNotificationLogSerializer(logs, many=True).data
+
+    def get_ingress_source_detail(self, obj):
+        source = obj.ingress_source
+        if not source:
+            return None
+        return {'id': source.id, 'name': source.name, 'code': source.code, 'provider': source.provider}
 
 
 class LogEntrySerializer(serializers.ModelSerializer):

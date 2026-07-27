@@ -20,6 +20,7 @@ router.register(r'deployment-approval-flows', views.DeploymentApprovalFlowViewSe
 router.register(r'deployments', views.DeploymentViewSet)
 router.register(r'transaction-tickets', views.TransactionTicketViewSet, basename='transaction-ticket')
 router.register(r'alerts', views.AlertViewSet)
+router.register(r'external-alert-sources', views.ExternalAlertSourceViewSet, basename='external-alert-source')
 router.register(r'alert-rules', views.AlertRuleViewSet, basename='alert-rule')
 router.register(r'alert-rule-templates', views.AlertRuleTemplateViewSet, basename='alert-rule-template')
 router.register(r'alert-silences', views.AlertSilenceViewSet, basename='alert-silence')
@@ -41,6 +42,7 @@ router.register(r'docker/hosts', docker_views.DockerHostViewSet)
 urlpatterns = [
     path('dashboard/stats/', views.dashboard_stats, name='dashboard-stats'),
     path('ops/alerts/ingest/', views.alert_ingest, name='external-alert-ingest'),
+    path('ops/alert-ingress/<uuid:source_key>/', views.external_alert_source_ingest, name='external-alert-source-ingest'),
     path('alerts/ingest/', views.alert_ingest, name='alert-ingest'),
     path('alerts/card-actions/<uuid:token>/', views.alert_card_action, name='alert-card-action'),
     path('log/providers/', log_views.log_providers, name='log-providers'),

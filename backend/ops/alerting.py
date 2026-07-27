@@ -141,6 +141,10 @@ def alert_dimension_value(alert, key):
         return ''
     if hasattr(alert, key):
         return _text(getattr(alert, key))
+    if key == 'ingress_source_id':
+        return _text(alert.ingress_source_id)
+    if key == 'ingress_source_code':
+        return _text(alert.ingress_source.code if alert.ingress_source_id else '')
     labels = alert.labels or {}
     annotations = alert.annotations or {}
     if key.startswith('label.'):
@@ -201,10 +205,15 @@ def upsert_alert(normalized, actor='system', action=None, action_note=None):
         'starts_at': normalized.get('starts_at'),
         'ends_at': normalized.get('ends_at') if status_value == Alert.STATUS_RESOLVED else None,
         'last_received_at': now,
+        'ingress_source': normalized.get('ingress_source'),
+        'binding_status': normalized.get('binding_status') or 'not_applicable',
     }
     defaults['host'] = _host_for(defaults['resource'], defaults['labels'])
     from aiops.business_context import resolve_business_context
-    defaults['knowledge_environment'] = resolve_business_context(defaults['environment'])
+    if 'knowledge_environment' in normalized:
+        defaults['knowledge_environment'] = normalized.get('knowledge_environment')
+    else:
+        defaults['knowledge_environment'] = resolve_business_context(defaults['environment'])
 
     created = existing is None
     if created:
@@ -262,6 +271,9 @@ def _alert_value_map(alert):
         'metric_name': alert.metric_name,
         'claimed_by': alert.claimed_by,
     }
+    if alert.ingress_source_id:
+        values['ingress_source_id'] = alert.ingress_source_id
+        values['ingress_source_code'] = alert.ingress_source.code
     values.update({f'label.{key}': value for key, value in (alert.labels or {}).items()})
     values.update({f'annotation.{key}': value for key, value in (alert.annotations or {}).items()})
     for key, value in (alert.labels or {}).items():

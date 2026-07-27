@@ -1,8 +1,10 @@
+import ipaddress
 import json
 from datetime import timedelta
+from time import monotonic
 import paramiko
 from django.conf import settings
-from django.db.models import Avg, Count, Prefetch, Q
+from django.db.models import Avg, Count, F, Prefetch, Q
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action, api_view, authentication_classes, permission_classes
@@ -26,6 +28,7 @@ from .alert_ingest import (
     check_ingest_rate_limit,
     configured_webhook_tokens,
     ingest_external_alert_payload,
+    prepare_external_alerts,
 )
 from .host_task_schedules import (
     build_schedule_snapshot,
@@ -44,6 +47,8 @@ from .models import (
     AlertRecipientGroup,
     AlertRule,
     AlertSilence,
+    ExternalAlertIngressLog,
+    ExternalAlertSource,
     Deployment,
     DeploymentApprovalFlow,
     DeploymentApprovalStep,
@@ -88,6 +93,8 @@ from .serializers import (
     HostTaskTemplateSerializer,
     InspectionReportExecutionSerializer,
     InspectionReportScheduleSerializer,
+    ExternalAlertIngressLogSerializer,
+    ExternalAlertSourceSerializer,
     LogEntrySerializer,
     TaskResourceGroupSerializer,
     TaskResourceSerializer,
@@ -109,39 +116,34 @@ from .alert_rules import trigger_alert_rule
 from .sla import build_dashboard_sla as build_sla_dashboard_summary
 
 
-@api_view(['POST'])
-@authentication_classes([])
-@permission_classes([AllowAny])
-def alert_ingest(request):
-    if not configured_webhook_tokens():
-        return Response(
-            {'detail': '外部告警 Webhook 尚未配置。'},
-            status=status.HTTP_503_SERVICE_UNAVAILABLE,
-        )
-    token = request.headers.get('X-Webhook-Token', '')
-    if not authenticate_webhook_token(token):
-        return Response({'detail': 'Webhook Token 无效。'}, status=status.HTTP_401_UNAUTHORIZED)
-    if not check_ingest_rate_limit(token):
-        return Response({'detail': 'Webhook 请求过于频繁。'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+def _request_webhook_token(request):
+    token = request.headers.get('X-Webhook-Token', '').strip()
+    if token:
+        return token
+    authorization = request.headers.get('Authorization', '').strip()
+    scheme, separator, credentials = authorization.partition(' ')
+    if separator and scheme.casefold() == 'bearer':
+        return credentials.strip()
+    return ''
 
+
+def _ingest_payload_or_response(request):
     max_body_bytes = max(int(getattr(settings, 'ALERT_INGEST_MAX_BODY_BYTES', 1_048_576) or 1_048_576), 1)
     try:
         content_length = int(request.META.get('CONTENT_LENGTH') or 0)
     except (TypeError, ValueError):
         content_length = 0
     if content_length > max_body_bytes:
-        return Response({'detail': 'Webhook 请求体过大。'}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
-
+        return None, Response({'detail': 'Webhook 请求体过大。'}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
     payload = request.data
     if not isinstance(payload, dict) or not payload:
-        return Response({'detail': 'Webhook 请求体必须是非空 JSON 对象。'}, status=status.HTTP_400_BAD_REQUEST)
+        return None, Response({'detail': 'Webhook 请求体必须是非空 JSON 对象。'}, status=status.HTTP_400_BAD_REQUEST)
     if len(json.dumps(payload, ensure_ascii=False, default=str).encode('utf-8')) > max_body_bytes:
-        return Response({'detail': 'Webhook 请求体过大。'}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
-    try:
-        outcome = ingest_external_alert_payload(payload)
-    except AlertIngestError as exc:
-        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return None, Response({'detail': 'Webhook 请求体过大。'}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+    return payload, None
 
+
+def _ingest_response_payload(outcome):
     results = outcome['results']
     response_payload = {
         'source': outcome['source'],
@@ -152,7 +154,129 @@ def alert_ingest(request):
     }
     if len(results) == 1:
         response_payload.update(results[0])
+    return response_payload
+
+
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def alert_ingest(request):
+    if not configured_webhook_tokens():
+        return Response(
+            {'detail': '外部告警 Webhook 尚未配置。'},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    token = _request_webhook_token(request)
+    if not authenticate_webhook_token(token):
+        return Response({'detail': 'Webhook Token 无效。'}, status=status.HTTP_401_UNAUTHORIZED)
+    if not check_ingest_rate_limit(token):
+        return Response({'detail': 'Webhook 请求过于频繁。'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+
+    payload, error_response = _ingest_payload_or_response(request)
+    if error_response:
+        return error_response
+    try:
+        outcome = ingest_external_alert_payload(payload)
+    except AlertIngestError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    response_payload = _ingest_response_payload(outcome)
+    results = outcome['results']
     response_status = status.HTTP_201_CREATED if any(item['created'] for item in results) else status.HTTP_200_OK
+    return Response(response_payload, status=response_status)
+
+
+def _record_external_ingress(source, request, result_status, http_status, started_at, message='', alert_count=0, payload=None):
+    now = timezone.now()
+    accepted = result_status == ExternalAlertIngressLog.STATUS_ACCEPTED
+    updates = {
+        'last_received_at': now,
+        'total_requests': F('total_requests') + 1,
+        'accepted_requests' if accepted else 'rejected_requests': F('accepted_requests' if accepted else 'rejected_requests') + 1,
+    }
+    if accepted:
+        updates.update({
+            'last_success_at': now,
+            'last_error': '',
+            'received_alerts': F('received_alerts') + max(int(alert_count or 0), 0),
+        })
+    else:
+        updates.update({'last_error_at': now, 'last_error': str(message or '')[:500]})
+    ExternalAlertSource.objects.filter(pk=source.pk).update(**updates)
+    summary = {}
+    if isinstance(payload, dict):
+        summary = {
+            'status': payload.get('status') or payload.get('event_status') or '',
+            'receiver': payload.get('receiver') or '',
+            'top_level_keys': sorted(str(key) for key in payload.keys())[:30],
+        }
+    remote_addr = str(request.META.get('REMOTE_ADDR') or '').strip()
+    try:
+        remote_addr = str(ipaddress.ip_address(remote_addr)) if remote_addr else None
+    except ValueError:
+        remote_addr = None
+    ExternalAlertIngressLog.objects.create(
+        source=source,
+        status=result_status,
+        http_status=http_status,
+        remote_addr=remote_addr,
+        alert_count=max(int(alert_count or 0), 0),
+        duration_ms=max(int((monotonic() - started_at) * 1000), 0),
+        message=str(message or '')[:500],
+        payload_summary=summary,
+    )
+
+
+def _should_record_external_rejection(source, request):
+    remote_addr = str(request.META.get('REMOTE_ADDR') or 'unknown').strip() or 'unknown'
+    limit = max(int(getattr(settings, 'ALERT_INGRESS_REJECTION_LOG_RATE_LIMIT', 10) or 10), 1)
+    return check_ingest_rate_limit(
+        remote_addr,
+        limit=limit,
+        namespace=f'source-rejection-log:{source.id}',
+    )
+
+
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def external_alert_source_ingest(request, source_key):
+    started_at = monotonic()
+    source = ExternalAlertSource.objects.select_related('default_knowledge_environment').filter(public_id=source_key).first()
+    if not source:
+        return Response({'detail': '外部告警接入源不存在。'}, status=status.HTTP_404_NOT_FOUND)
+    if not source.is_enabled:
+        if _should_record_external_rejection(source, request):
+            _record_external_ingress(source, request, ExternalAlertIngressLog.STATUS_REJECTED, 403, started_at, '接入源已停用')
+        return Response({'detail': '外部告警接入源已停用。'}, status=status.HTTP_403_FORBIDDEN)
+    token = _request_webhook_token(request)
+    if not source.verify_token(token):
+        if _should_record_external_rejection(source, request):
+            _record_external_ingress(source, request, ExternalAlertIngressLog.STATUS_REJECTED, 401, started_at, 'Webhook Token 无效')
+        return Response({'detail': 'Webhook Token 无效。'}, status=status.HTTP_401_UNAUTHORIZED)
+    if not check_ingest_rate_limit(token, limit=source.rate_limit_per_minute, namespace=f'source:{source.id}'):
+        if _should_record_external_rejection(source, request):
+            _record_external_ingress(source, request, ExternalAlertIngressLog.STATUS_REJECTED, 429, started_at, 'Webhook 请求过于频繁')
+        return Response({'detail': 'Webhook 请求过于频繁。'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+    payload, error_response = _ingest_payload_or_response(request)
+    if error_response:
+        _record_external_ingress(
+            source, request, ExternalAlertIngressLog.STATUS_REJECTED,
+            error_response.status_code, started_at, str(error_response.data.get('detail') or ''),
+        )
+        return error_response
+    try:
+        outcome = ingest_external_alert_payload(payload, ingress_source=source)
+    except AlertIngestError as exc:
+        _record_external_ingress(source, request, ExternalAlertIngressLog.STATUS_ERROR, 400, started_at, str(exc), payload=payload)
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    response_payload = _ingest_response_payload(outcome)
+    results = outcome['results']
+    response_status = status.HTTP_201_CREATED if any(item['created'] for item in results) else status.HTTP_200_OK
+    _record_external_ingress(
+        source, request, ExternalAlertIngressLog.STATUS_ACCEPTED, response_status,
+        started_at, '接入成功', alert_count=len(results), payload=payload,
+    )
     return Response(response_payload, status=response_status)
 
 
@@ -160,6 +284,104 @@ class AlertConfigPagination(PageNumberPagination):
     page_size = 20
     page_size_query_param = 'page_size'
     max_page_size = 500
+
+
+class ExternalAlertSourceViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
+    serializer_class = ExternalAlertSourceSerializer
+    pagination_class = AlertConfigPagination
+    search_fields = ['name', 'code', 'description']
+    filterset_fields = ['provider', 'is_enabled', 'notify_enabled', 'analyze_enabled', 'default_knowledge_environment']
+    event_module = 'ops'
+    event_resource_type = 'external_alert_source'
+    event_resource_label = '外部告警接入源'
+    event_resource_name_fields = ('name',)
+    rbac_permissions = {
+        'list': ['ops.alert.config.view'],
+        'retrieve': ['ops.alert.config.view'],
+        'create': ['ops.alert.config.manage'],
+        'update': ['ops.alert.config.manage'],
+        'partial_update': ['ops.alert.config.manage'],
+        'destroy': ['ops.alert.config.manage'],
+        'rotate_token': ['ops.alert.config.manage'],
+        'ingress_logs': ['ops.alert.config.view'],
+        'preview_payload': ['ops.alert.config.manage'],
+    }
+
+    def get_queryset(self):
+        return ExternalAlertSource.objects.select_related('default_knowledge_environment').annotate(
+            active_alert_count=Count('alerts', filter=Q(alerts__status=Alert.STATUS_ACTIVE), distinct=True),
+            unbound_alert_count=Count('alerts', filter=Q(alerts__binding_status='unbound'), distinct=True),
+        ).order_by('name', 'id')
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        source = serializer.save()
+        token = source.issue_token()
+        response_data = self.get_serializer(source).data
+        response_data['token'] = token
+        response_data['token_notice'] = 'Token 仅显示一次，请立即配置到外部告警系统。'
+        headers = self.get_success_headers(response_data)
+        return Response(response_data, status=status.HTTP_201_CREATED, headers=headers)
+
+    def destroy(self, request, *args, **kwargs):
+        source = self.get_object()
+        if source.alerts.exists() or source.ingress_logs.exists():
+            return Response(
+                {'detail': '该接入源已有告警或接入记录，请停用而不是删除。'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=True, methods=['post'], url_path='rotate-token')
+    def rotate_token(self, request, pk=None):
+        source = self.get_object()
+        token = source.issue_token()
+        return Response({
+            'id': source.id,
+            'token': token,
+            'token_hint': source.token_hint,
+            'token_notice': '旧 Token 已立即失效；新 Token 仅显示一次。',
+        })
+
+    @action(detail=True, methods=['get'], url_path='ingress-logs')
+    def ingress_logs(self, request, pk=None):
+        source = self.get_object()
+        queryset = source.ingress_logs.all()
+        result_status = request.query_params.get('status')
+        if result_status:
+            queryset = queryset.filter(status=result_status)
+        page = self.paginate_queryset(queryset)
+        serializer = ExternalAlertIngressLogSerializer(page if page is not None else queryset, many=True)
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'], url_path='preview-payload')
+    def preview_payload(self, request, pk=None):
+        source = self.get_object()
+        payload = request.data.get('payload') if isinstance(request.data.get('payload'), dict) else request.data
+        try:
+            detected_source, normalized_alerts = prepare_external_alerts(payload, source)
+        except AlertIngestError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        results = []
+        for item in normalized_alerts:
+            context = item.get('knowledge_environment')
+            results.append({
+                'title': item.get('title'),
+                'level': item.get('level'),
+                'status': item.get('status'),
+                'resource': item.get('resource'),
+                'namespace': item.get('namespace'),
+                'cluster': item.get('cluster'),
+                'binding_status': item.get('binding_status'),
+                'knowledge_environment': (
+                    {'id': context.id, 'name': context.name, 'code': context.code} if context else None
+                ),
+                'labels': item.get('labels') or {},
+            })
+        return Response({'source': detected_source, 'count': len(results), 'results': results})
 
 
 SLA_TARGET_PERCENT = 99.96
@@ -2190,10 +2412,14 @@ class TransactionTicketViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, 
 
 
 class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
-    queryset = Alert.objects.select_related('host').prefetch_related('actions', 'claim_records', 'notification_logs').all()
+    queryset = Alert.objects.select_related('host', 'ingress_source').prefetch_related('actions', 'claim_records', 'notification_logs').all()
     serializer_class = AlertSerializer
     search_fields = ['title', 'source', 'message', 'host__hostname', 'service', 'resource', 'business_line', 'cluster', 'namespace']
-    filterset_fields = ['level', 'status', 'source_type', 'source', 'is_acknowledged', 'is_suppressed', 'service', 'environment', 'cluster', 'namespace', 'region', 'business_line', 'claimed_by']
+    filterset_fields = [
+        'level', 'status', 'source_type', 'source', 'ingress_source', 'binding_status',
+        'is_acknowledged', 'is_suppressed', 'service', 'environment', 'cluster',
+        'namespace', 'region', 'business_line', 'claimed_by',
+    ]
     event_module = 'ops'
     event_resource_type = 'alert'
     event_resource_label = '告警'

@@ -2,24 +2,28 @@ from unittest.mock import patch
 from datetime import timedelta
 
 from django.core.cache import cache
+from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from ops.alert_analysis import execute_lightweight_alert_analysis
+from ops.alert_analysis import execute_lightweight_alert_analysis, serialize_analysis
 from ops.alert_ingest import (
     detect_source,
     normalize_alertmanager,
     normalize_zabbix,
     run_due_external_alert_escalations,
 )
-from ops.alerting import dispatch_alert_notifications
+from ops.alerting import alert_dimension_value, dispatch_alert_notifications
 from ops.models import (
     Alert,
     AlertAnalysis,
     AlertNotificationChannel,
     AlertNotificationPolicy,
+    ExternalAlertIngressLog,
+    ExternalAlertSource,
 )
+from aiops.models import AIOpsKnowledgeEnvironment
 
 
 @override_settings(
@@ -58,7 +62,48 @@ class ExternalAlertIngestApiTests(TestCase):
         client.credentials(HTTP_X_WEBHOOK_TOKEN='wrong-token')
         response = client.post(self.url, self.zabbix_payload(), format='json')
         self.assertEqual(response.status_code, 401)
+        client.credentials(HTTP_AUTHORIZATION='Bearer wrong-token')
+        response = client.post(self.url, self.zabbix_payload(), format='json')
+        self.assertEqual(response.status_code, 401)
+        client.credentials(HTTP_AUTHORIZATION='Basic dGVzdC10b2tlbg==')
+        response = client.post(self.url, self.zabbix_payload(), format='json')
+        self.assertEqual(response.status_code, 401)
         self.assertEqual(Alert.objects.count(), 0)
+
+    def test_accepts_authorization_bearer_token(self):
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION='Bearer test-token')
+        payload = {
+            'status': 'firing',
+            'receiver': 'xing-cloud',
+            'alerts': [
+                {
+                    'status': 'firing',
+                    'labels': {
+                        'alertname': 'ExternalPodWaiting',
+                        'severity': 'critical',
+                        'namespace': 'external-system',
+                        'pod': 'pod-a',
+                    },
+                    'annotations': {'summary': 'External Pod Waiting'},
+                    'startsAt': '2026-07-24T02:00:00Z',
+                    'fingerprint': 'bearer-alertmanager-a',
+                },
+            ],
+        }
+
+        response = client.post(self.url, payload, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['source'], 'alertmanager')
+        self.assertEqual(Alert.objects.count(), 1)
+        self.assertEqual(Alert.objects.get().source_type, Alert.SOURCE_ALERTMANAGER)
+
+    def test_keeps_x_webhook_token_compatibility(self):
+        response = self.client.post(self.url, self.zabbix_payload(), format='json')
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(Alert.objects.count(), 1)
 
     def test_ingests_zabbix_and_deduplicates_active_occurrences(self):
         first = self.client.post(self.url, self.zabbix_payload(), format='json')
@@ -137,6 +182,188 @@ class ExternalAlertIngestApiTests(TestCase):
         second = self.client.post(self.url, self.zabbix_payload(trigger_id='other'), format='json')
         self.assertEqual(first.status_code, 201)
         self.assertEqual(second.status_code, 429)
+
+
+class ManagedExternalAlertSourceTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = get_user_model().objects.create_superuser(
+            username='external-alert-admin',
+            email='external@example.com',
+            password='test-password',
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.context = AIOpsKnowledgeEnvironment.objects.create(name='外部生产环境', code='external-prod')
+
+    def alertmanager_payload(self, fingerprint='same-external-fingerprint', namespace='external-ns'):
+        return {
+            'status': 'firing',
+            'receiver': 'xing-cloud',
+            'alerts': [{
+                'status': 'firing',
+                'labels': {
+                    'alertname': 'ExternalPodWaiting',
+                    'severity': 'critical',
+                    'namespace': namespace,
+                    'pod': 'pod-a',
+                },
+                'annotations': {'summary': 'External Pod Waiting'},
+                'startsAt': '2026-07-24T02:00:00Z',
+                'fingerprint': fingerprint,
+            }],
+        }
+
+    def create_source(self, code, **overrides):
+        source = ExternalAlertSource.objects.create(
+            name=overrides.pop('name', code),
+            code=code,
+            provider=overrides.pop('provider', ExternalAlertSource.PROVIDER_ALERTMANAGER),
+            analyze_enabled=overrides.pop('analyze_enabled', False),
+            **overrides,
+        )
+        return source, source.issue_token()
+
+    def ingest(self, source, token, payload=None):
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+        return client.post(
+            f'/api/ops/alert-ingress/{source.public_id}/',
+            payload or self.alertmanager_payload(),
+            format='json',
+        )
+
+    def test_create_source_returns_token_once(self):
+        response = self.client.post('/api/external-alert-sources/', {
+            'name': '生产 Alertmanager',
+            'code': 'production-alertmanager',
+            'provider': 'alertmanager',
+            'default_knowledge_environment': self.context.id,
+        }, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.data['token'])
+        self.assertIn(str(response.data['public_id']), response.data['endpoint'])
+        detail = self.client.get(f"/api/external-alert-sources/{response.data['id']}/")
+        self.assertEqual(detail.status_code, 200)
+        self.assertNotIn('token', detail.data)
+        self.assertTrue(detail.data['token_configured'])
+
+    def test_source_token_ingests_and_applies_default_context(self):
+        source, token = self.create_source(
+            'production-alertmanager',
+            default_knowledge_environment=self.context,
+        )
+
+        response = self.ingest(source, token)
+
+        self.assertEqual(response.status_code, 201)
+        alert = Alert.objects.get()
+        self.assertEqual(alert.ingress_source, source)
+        self.assertEqual(alert.knowledge_environment, self.context)
+        self.assertEqual(alert.binding_status, 'bound')
+        self.assertEqual(alert.labels['namespace'], 'external-ns')
+        source.refresh_from_db()
+        self.assertEqual(source.accepted_requests, 1)
+        self.assertEqual(source.received_alerts, 1)
+        self.assertEqual(source.ingress_logs.get().status, ExternalAlertIngressLog.STATUS_ACCEPTED)
+
+    def test_same_external_fingerprint_is_isolated_by_source(self):
+        first_source, first_token = self.create_source('first-alertmanager')
+        second_source, second_token = self.create_source('second-alertmanager')
+
+        self.assertEqual(self.ingest(first_source, first_token).status_code, 201)
+        self.assertEqual(self.ingest(second_source, second_token).status_code, 201)
+
+        self.assertEqual(Alert.objects.count(), 2)
+        fingerprints = set(Alert.objects.values_list('fingerprint', flat=True))
+        self.assertEqual(len(fingerprints), 2)
+        self.assertEqual(set(Alert.objects.values_list('ingress_source_id', flat=True)), {first_source.id, second_source.id})
+
+    def test_mapping_rule_overrides_default_context(self):
+        mapped_context = AIOpsKnowledgeEnvironment.objects.create(name='映射环境', code='mapped-context')
+        source, token = self.create_source(
+            'mapping-alertmanager',
+            default_knowledge_environment=self.context,
+            mapping_rules=[{
+                'priority': 10,
+                'matchers': [{'key': 'namespace', 'operator': '==', 'value': 'mapped-ns'}],
+                'knowledge_environment_id': mapped_context.id,
+            }],
+        )
+
+        response = self.ingest(source, token, self.alertmanager_payload(namespace='mapped-ns'))
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(Alert.objects.get().knowledge_environment, mapped_context)
+
+    def test_source_without_mapping_creates_visible_unbound_alert(self):
+        source, token = self.create_source('unbound-alertmanager')
+
+        response = self.ingest(source, token)
+
+        self.assertEqual(response.status_code, 201)
+        alert = Alert.objects.get()
+        self.assertIsNone(alert.knowledge_environment)
+        self.assertEqual(alert.binding_status, 'unbound')
+        queryset = self.client.get('/api/alerts/?source_type=alertmanager&binding_status=unbound')
+        self.assertEqual(queryset.status_code, 200)
+        self.assertEqual(queryset.data['count'], 1)
+
+    def test_provider_mismatch_is_rejected_and_logged(self):
+        source, token = self.create_source('zabbix-source', provider=ExternalAlertSource.PROVIDER_ZABBIX)
+
+        response = self.ingest(source, token)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(Alert.objects.count(), 0)
+        source.refresh_from_db()
+        self.assertEqual(source.rejected_requests, 1)
+        self.assertEqual(source.ingress_logs.get().status, ExternalAlertIngressLog.STATUS_ERROR)
+
+    @override_settings(ALERT_INGRESS_REJECTION_LOG_RATE_LIMIT=1)
+    def test_invalid_token_rejections_are_log_rate_limited_by_source_and_address(self):
+        source, _token = self.create_source('protected-alertmanager')
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION='Bearer invalid-token')
+        url = f'/api/ops/alert-ingress/{source.public_id}/'
+
+        first = client.post(url, self.alertmanager_payload(), format='json', REMOTE_ADDR='192.0.2.10')
+        second = client.post(url, self.alertmanager_payload(), format='json', REMOTE_ADDR='192.0.2.10')
+
+        self.assertEqual(first.status_code, 401)
+        self.assertEqual(second.status_code, 401)
+        source.refresh_from_db()
+        self.assertEqual(source.rejected_requests, 1)
+        self.assertEqual(source.ingress_logs.count(), 1)
+
+    def test_invalid_remote_address_is_not_persisted(self):
+        source, _token = self.create_source('invalid-address-alertmanager')
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION='Bearer invalid-token')
+
+        response = client.post(
+            f'/api/ops/alert-ingress/{source.public_id}/',
+            self.alertmanager_payload(),
+            format='json',
+            REMOTE_ADDR='not-an-ip-address',
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertIsNone(source.ingress_logs.get().remote_addr)
+
+    def test_source_identity_fields_cannot_be_changed(self):
+        source, _token = self.create_source('immutable-alertmanager')
+
+        response = self.client.patch(
+            f'/api/external-alert-sources/{source.id}/',
+            {'code': 'changed-code', 'provider': 'zabbix'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('code', response.data)
+        self.assertIn('provider', response.data)
 
 
 class ExternalAlertNormalizationTests(TestCase):
@@ -229,8 +456,58 @@ class LightweightAlertAnalysisTests(TestCase):
         self.assertEqual(self.analysis.last_error, 'no model')
         self.assertIsNone(self.analysis.confidence)
 
+    @patch('ops.alerting.dispatch_alert_notifications', return_value=[])
+    @patch('ops.alert_analysis._llm_synthesis')
+    def test_lightweight_analysis_does_not_notify_when_ingress_source_notifications_are_disabled(self, synthesize, dispatch):
+        source = ExternalAlertSource.objects.create(
+            name='Silent Alertmanager',
+            code='silent-alertmanager',
+            provider=ExternalAlertSource.PROVIDER_ALERTMANAGER,
+            notify_enabled=False,
+            analyze_enabled=True,
+        )
+        self.alert.ingress_source = source
+        self.alert.binding_status = 'unbound'
+        self.alert.save(update_fields=['ingress_source', 'binding_status'])
+        synthesize.return_value = ('provider', 'model', {
+            'summary': '分析完成',
+            'root_cause': '仅基于外部告警文本',
+            'confidence': 0.4,
+            'candidates': [],
+            'suggestions': [],
+            'evidence_notes': [],
+        })
+
+        execute_lightweight_alert_analysis(self.analysis)
+
+        dispatch.assert_not_called()
+        self.analysis.refresh_from_db()
+        self.assertEqual(self.analysis.status, AlertAnalysis.STATUS_COMPLETED)
+        self.assertEqual(serialize_analysis(self.analysis)['notification_delivery']['status'], 'disabled')
+
 
 class ExternalAlertNotificationPolicyTests(TestCase):
+    def test_external_source_code_is_available_as_notification_dimension(self):
+        source = ExternalAlertSource.objects.create(
+            name='Production Alertmanager',
+            code='production-alertmanager',
+            provider=ExternalAlertSource.PROVIDER_ALERTMANAGER,
+        )
+        alert = Alert.objects.create(
+            title='External alert',
+            level='warning',
+            status=Alert.STATUS_ACTIVE,
+            source=source.code,
+            source_type=Alert.SOURCE_ALERTMANAGER,
+            ingress_source=source,
+            binding_status='unbound',
+            fingerprint='alertmanager:dimension',
+            starts_at=timezone.now(),
+        )
+
+        self.assertEqual(alert_dimension_value(alert, 'ingress_source_code'), source.code)
+        self.assertEqual(alert_dimension_value(alert, 'ingress_source_id'), str(source.id))
+
     def test_external_alert_without_rule_uses_notification_policy(self):
         channel = AlertNotificationChannel.objects.create(
             name='email-test',
