@@ -419,9 +419,30 @@ class AlertAnalysisTests(TestCase):
 
         body = _default_body(self.alert, action='fire')
 
-        self.assertIn('最近研判', body)
+        self.assertIn('历史研判', body)
         self.assertIn(analysis.root_cause, body)
         self.assertIn('79%', body)
+
+    def test_repeat_fire_body_keeps_completed_history_while_new_analysis_runs(self):
+        completed = AlertAnalysis.objects.create(
+            alert=self.alert,
+            status=AlertAnalysis.STATUS_COMPLETED,
+            confidence=0.82,
+            root_cause='资源不足',
+            completed_at=timezone.now(),
+        )
+        AlertAnalysis.objects.create(
+            alert=self.alert,
+            status=AlertAnalysis.STATUS_RUNNING,
+            requested_by='alert-engine',
+        )
+
+        body = _default_body(self.alert, action='fire')
+
+        self.assertIn('正在执行精准研判', body)
+        self.assertIn('历史研判', body)
+        self.assertIn(completed.root_cause, body)
+        self.assertIn('82%', body)
 
     def test_analysis_notification_uses_direct_k8s_event_evidence(self):
         AlertAnalysis.objects.create(

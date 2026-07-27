@@ -804,16 +804,19 @@ def _default_body(alert, action='fire'):
     else:
         lines.append(f'🕐 **发生时间：** {_format_datetime(alert.starts_at)}')
         latest_analysis = alert.analyses.order_by('-created_at', '-id').first()
+        latest_completed_analysis = alert.analyses.filter(
+            status__in={AlertAnalysis.STATUS_COMPLETED, AlertAnalysis.STATUS_PARTIAL},
+        ).order_by('-completed_at', '-created_at', '-id').first()
         ai_status = latest_analysis.status if latest_analysis else _dict(raw.get('ai_analysis')).get('status')
         if ai_status in {'pending', 'running'}:
             lines.append('⏳ **智能研判：** 正在执行精准研判，完成后将发送独立结果通知。')
-        elif latest_analysis and latest_analysis.status in {'completed', 'partial'}:
-            result = _dict(latest_analysis.result)
-            conclusion = _first(latest_analysis.root_cause, result.get('summary'), '尚未形成明确结论')
-            completed_at = _format_datetime(latest_analysis.completed_at)
-            confidence = latest_analysis.confidence
+        if latest_completed_analysis:
+            result = _dict(latest_completed_analysis.result)
+            conclusion = _first(latest_completed_analysis.root_cause, result.get('summary'), '尚未形成明确结论')
+            completed_at = _format_datetime(latest_completed_analysis.completed_at)
+            confidence = latest_completed_analysis.confidence
             confidence_text = f'{confidence * 100:.0f}%' if isinstance(confidence, (int, float)) else '未评估'
-            lines.append(f'🎯 **最近研判：** {conclusion}（置信度 {confidence_text}，{completed_at}）')
+            lines.append(f'🎯 **历史研判：** {conclusion}（置信度 {confidence_text}，{completed_at}）')
         title_text = f'{alert.title} {alert.message}'.lower()
         if any(token in title_text for token in ('重启', 'crashloop', 'pod', '容器')):
             lines.append('**简要建议：** 优先查看目标 Pod 的状态、Warning Event、当前日志和上次崩溃日志。')
@@ -1292,7 +1295,9 @@ def dispatch_alert_notifications(alert, action='fire', request=None, force=False
         return []
 
     rule = _alert_rule(alert)
-    if not rule or not _rule_can_send(rule, action):
+    if rule and not _rule_can_send(rule, action):
+        return []
+    if not rule and alert.source_type == Alert.SOURCE_PLATFORM:
         return []
 
     policies = resolve_notification_policies(alert, rule=rule)
@@ -1350,6 +1355,9 @@ def dispatch_alert_notifications(alert, action='fire', request=None, force=False
         return logs
 
     if action == 'analysis':
+        return []
+
+    if not rule:
         return []
 
     config = rule.notify_config or {}
@@ -1461,16 +1469,16 @@ def dispatch_alert_batch_notifications(alerts, action='fire', request=None, forc
 
 
 def apply_escalation_policy(alert, request=None):
-    if alert.status not in {Alert.STATUS_ACTIVE, Alert.STATUS_MUTED}:
+    if alert.status != Alert.STATUS_ACTIVE or alert.is_suppressed:
         return False
     rule = _alert_rule(alert)
-    if not rule:
-        return False
     now = timezone.now()
     started_at = alert.starts_at or alert.created_at or now
     duration_minutes = max(int((now - started_at).total_seconds() // 60), 0)
 
     for policy in resolve_notification_policies(alert, rule=rule):
+        if _policy_is_muted(policy, timezone.localtime(now)) or _policy_inhibits_alert(policy, alert):
+            continue
         steps = [item for item in (policy.escalation_steps or []) if isinstance(item, dict)]
         steps.sort(key=lambda item: int(item.get('after_minutes') or 0))
         next_index = int(alert.escalation_level or 0)
@@ -1491,11 +1499,14 @@ def apply_escalation_policy(alert, request=None):
             AlertAction.ACTION_ESCALATE,
             actor='system',
             note=f'通知策略 {policy.name} 执行第 {next_index + 1} 级升级',
-            metadata={'rule_id': rule.id, 'policy_id': policy.id, 'duration_minutes': duration_minutes},
+            metadata={'rule_id': getattr(rule, 'id', None), 'policy_id': policy.id, 'duration_minutes': duration_minutes},
         )
         for channel in channels:
             send_alert_notification(channel, alert, recipients, action='escalation', rule=rule, policy=policy, request=request)
         return True
+
+    if not rule:
+        return False
 
     if rule.escalation_minutes <= 0:
         return False

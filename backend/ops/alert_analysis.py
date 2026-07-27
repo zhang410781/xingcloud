@@ -380,6 +380,7 @@ def _llm_synthesis(evidence, candidates):
         raise RuntimeError('未配置可用的智能研判模型')
     prompt_data = {
         'alert': evidence.get('alert'),
+        'external_payload': evidence.get('external_payload'),
         'knowledge_environment': evidence.get('knowledge_environment'),
         'metric_datasource': evidence.get('metric_datasource'),
         'metric_anomalies': evidence.get('metric_anomalies'),
@@ -536,6 +537,119 @@ def execute_alert_analysis(analysis):
     return analysis
 
 
+def _lightweight_alert_evidence(alert):
+    return {
+        'profile': 'external_webhook_text_analysis',
+        'source_mode': 'webhook_text_only',
+        'stage_status': {
+            'queued_after_first_notification': 'completed',
+            'collecting_external_payload': 'completed',
+            'collecting_metrics': 'skipped',
+            'collecting_k8s': 'skipped',
+            'collecting_logs': 'skipped',
+            'collecting_changes': 'skipped',
+            'synthesizing': 'running',
+        },
+        'source_coverage': {'external_alert_text': True},
+        'alert': {
+            'id': alert.id,
+            'title': alert.title,
+            'level': alert.level,
+            'status': alert.status,
+            'message': _redact(alert.message),
+            'source': alert.source,
+            'source_type': alert.source_type,
+            'external_id': alert.external_id,
+            'environment': alert.environment,
+            'cluster': alert.cluster,
+            'namespace': alert.namespace,
+            'service': alert.service,
+            'resource_type': alert.resource_type,
+            'resource': alert.resource,
+            'labels': _redact_json(_dict(alert.labels)),
+            'annotations': _redact_json(_dict(alert.annotations)),
+            'starts_at': alert.starts_at.isoformat() if alert.starts_at else None,
+        },
+        'external_payload': _redact_json(_dict(alert.raw_payload)),
+        'diagnostics': [{
+            'code': 'external_webhook_text_only',
+            'message': '外部 Webhook 告警未绑定基础设施证据，本次仅基于告警文本进行轻量研判。',
+        }],
+        'evidence_quality': {
+            'source_count': 1,
+            'sources': ['external_alert_text'],
+            'direct_evidence': False,
+            'confidence_cap': 0.5,
+            'reasons': ['仅有外部告警文本，缺少可独立验证的指标、日志或 K8S 证据'],
+        },
+        'confidence_cap': 0.5,
+        'confidence_reasons': ['纯文本轻量研判置信度最高为 50%'],
+    }
+
+
+def execute_lightweight_alert_analysis(analysis):
+    claimed_started_at = analysis.started_at
+    lease_owned = analysis.status == AlertAnalysis.STATUS_RUNNING and claimed_started_at is not None
+    analysis.alert.refresh_from_db()
+    evidence = _lightweight_alert_evidence(analysis.alert)
+    candidates = []
+    provider_name = ''
+    model_name = ''
+    model_error = ''
+    try:
+        provider_name, model_name, result = _llm_synthesis(evidence, candidates)
+        status = AlertAnalysis.STATUS_COMPLETED
+    except Exception as exc:
+        model_error = str(exc)
+        result = {
+            'summary': _summary_without_model(evidence, candidates),
+            'root_cause': '',
+            'confidence': None,
+            'candidates': [],
+            'suggestions': ['补充指标、日志、事件或脚本判警输出后重新研判'],
+            'evidence_notes': [item.get('message') for item in evidence.get('diagnostics') or []],
+        }
+        status = AlertAnalysis.STATUS_PARTIAL
+    evidence['stage_status']['synthesizing'] = 'completed' if not model_error else 'partial'
+    evidence['stage_status']['completed'] = 'completed' if status == AlertAnalysis.STATUS_COMPLETED else 'partial'
+    confidence = result.get('confidence')
+    try:
+        confidence = max(0.0, min(float(confidence), 0.5)) if confidence is not None else None
+    except (TypeError, ValueError):
+        confidence = None
+    suggestions = result.get('suggestions') if isinstance(result.get('suggestions'), list) else []
+    analysis.status = status
+    analysis.evidence = evidence
+    analysis.candidates = result.get('candidates') if isinstance(result.get('candidates'), list) else []
+    analysis.confidence = confidence
+    analysis.result = result
+    analysis.root_cause = str(result.get('root_cause') or '')
+    analysis.suggestion = '\n'.join(str(item) for item in suggestions if str(item).strip())
+    analysis.provider = provider_name
+    analysis.model = model_name
+    analysis.last_error = model_error
+    analysis.completed_at = timezone.now()
+    analysis.next_retry_at = None
+    if lease_owned:
+        current = AlertAnalysis.objects.only('status', 'started_at').get(pk=analysis.pk)
+        if current.status != AlertAnalysis.STATUS_RUNNING or current.started_at != claimed_started_at:
+            logger.warning('discarding late lightweight result for alert analysis %s after lease changed', analysis.id)
+            return current
+    analysis.save(update_fields=[
+        'status', 'evidence', 'candidates', 'confidence', 'result', 'root_cause', 'suggestion',
+        'provider', 'model', 'last_error', 'completed_at', 'next_retry_at', 'updated_at',
+    ])
+    _project_compatibility(analysis)
+    analysis.alert.refresh_from_db(fields=['status'])
+    if analysis.alert.status in {Alert.STATUS_ACTIVE, Alert.STATUS_RESOLVED}:
+        try:
+            from .alerting import dispatch_alert_notifications
+            dispatch_alert_notifications(analysis.alert, action='analysis', force=True)
+        except Exception:
+            logger.exception('failed to dispatch lightweight analysis notification for alert %s', analysis.alert_id)
+    return analysis
+
+
 def enqueue_alert_analysis(alert, trigger=AlertAnalysis.TRIGGER_FIRST_ACTIVE, requested_by='', force=False):
     if not force and alert.status != Alert.STATUS_ACTIVE:
         return None, False
@@ -579,6 +693,24 @@ def enqueue_alert_analysis(alert, trigger=AlertAnalysis.TRIGGER_FIRST_ACTIVE, re
     return analysis, True
 
 
+def enqueue_lightweight_analysis(alert, requested_by='webhook'):
+    analysis, created = enqueue_alert_analysis(
+        alert,
+        trigger=AlertAnalysis.TRIGGER_FIRST_ACTIVE,
+        requested_by=requested_by,
+    )
+    if analysis and created:
+        evidence = _dict(analysis.evidence)
+        evidence['source_mode'] = 'webhook_text_only'
+        evidence['stage_status'] = {
+            **_dict(evidence.get('stage_status')),
+            'collecting_external_payload': 'waiting',
+        }
+        analysis.evidence = evidence
+        analysis.save(update_fields=['evidence', 'updated_at'])
+    return analysis, created
+
+
 def enqueue_for_rule_alert(alert, rule, created=False, previous_level='', reactivated=False):
     if not rule.auto_analyze or alert.status != Alert.STATUS_ACTIVE:
         return None, False
@@ -598,7 +730,7 @@ def enqueue_for_rule_alert(alert, rule, created=False, previous_level='', reacti
         )
     if previous_level and LEVEL_RANK.get(alert.level, 0) > LEVEL_RANK.get(previous_level, 0):
         return enqueue_alert_analysis(alert, AlertAnalysis.TRIGGER_SEVERITY_ESCALATION, requested_by='alert-engine')
-    return None, False
+    return (latest, False) if has_current_cycle_analysis else (None, False)
 
 
 def enqueue_missing_active_analyses(limit=100):
@@ -674,7 +806,10 @@ def run_due_alert_analyses(limit=20):
         if not analysis:
             break
         try:
-            execute_alert_analysis(analysis)
+            if _dict(analysis.evidence).get('source_mode') == 'webhook_text_only':
+                execute_lightweight_alert_analysis(analysis)
+            else:
+                execute_alert_analysis(analysis)
             analysis.refresh_from_db(fields=['status'])
             completed += analysis.status == AlertAnalysis.STATUS_COMPLETED
             partial += analysis.status == AlertAnalysis.STATUS_PARTIAL

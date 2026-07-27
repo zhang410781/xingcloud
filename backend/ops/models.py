@@ -837,8 +837,12 @@ class DeploymentApprovalStep(models.Model):
 
 class Alert(models.Model):
     SOURCE_PLATFORM = 'platform'
+    SOURCE_ZABBIX = 'zabbix'
+    SOURCE_ALERTMANAGER = 'alertmanager'
     SOURCE_TYPE_CHOICES = [
         (SOURCE_PLATFORM, '平台告警规则'),
+        (SOURCE_ZABBIX, 'Zabbix'),
+        (SOURCE_ALERTMANAGER, 'Alertmanager'),
     ]
 
     STATUS_ACTIVE = 'active'

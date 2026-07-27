@@ -2681,8 +2681,8 @@ class AlertBatchNotificationTests(TestCase):
             self.assertEqual(alert.raw_payload['notification_batch']['group_key'], 'prod|prod-k8s|xing-cloud|api')
 
 
-class AlertWebhookRetirementTests(TestCase):
-    def test_alert_webhook_route_is_not_exposed(self):
+class AlertIngressBoundaryTests(TestCase):
+    def test_retired_generic_webhook_route_is_not_exposed(self):
         response = self.client.post(
             '/api/alerts/webhooks/generic/',
             {'title': 'Generic alert', 'level': 'warning'},
@@ -2690,16 +2690,25 @@ class AlertWebhookRetirementTests(TestCase):
         )
         self.assertEqual(response.status_code, 404)
 
+    @override_settings(WEBHOOK_TOKENS={'default': 'configured-token'})
+    def test_external_ingest_route_requires_webhook_token(self):
+        response = self.client.post(
+            '/api/ops/alerts/ingest/',
+            {'event_id': '1', 'trigger_id': '2'},
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 401)
+
     def test_alert_integration_model_is_removed(self):
         from ops import models as ops_models
 
         self.assertFalse(hasattr(ops_models, 'AlertIntegration'))
 
-    def test_alert_sources_are_platform_owned(self):
+    def test_alert_sources_include_supported_external_providers(self):
         source_values = {value for value, _ in Alert.SOURCE_TYPE_CHOICES}
 
         self.assertEqual(Alert.SOURCE_PLATFORM, Alert._meta.get_field('source_type').default)
-        self.assertEqual({'platform'}, source_values)
+        self.assertEqual({'platform', 'zabbix', 'alertmanager'}, source_values)
 
 
 class AlertActionApiTests(TestCase):

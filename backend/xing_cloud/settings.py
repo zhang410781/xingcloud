@@ -294,6 +294,41 @@ ALLOWED_HOSTS = [
 ]
 XING_CLOUD_PUBLIC_BASE_URL = os.getenv('XING_CLOUD_PUBLIC_BASE_URL', '').rstrip('/')
 
+ALERT_INGEST_CONFIG = _app_config_section('alert_ingest', 'external_alerts')
+_webhook_token = _setting_value(
+    ALERT_INGEST_CONFIG,
+    ('webhook_token', 'webhookToken', 'token'),
+    ('WEBHOOK_TOKEN', 'ALERT_WEBHOOK_TOKEN'),
+    '',
+    allow_blank=True,
+)
+_configured_webhook_tokens = ALERT_INGEST_CONFIG.get('tokens')
+WEBHOOK_TOKENS = (
+    _configured_webhook_tokens
+    if isinstance(_configured_webhook_tokens, dict)
+    else {'default': _webhook_token}
+)
+ALERT_INGEST_RATE_LIMIT = _int_value(
+    _setting_value(
+        ALERT_INGEST_CONFIG,
+        ('rate_limit_per_minute', 'rateLimitPerMinute'),
+        ('ALERT_INGEST_RATE_LIMIT',),
+        120,
+    ),
+    'ALERT_INGEST_RATE_LIMIT',
+    120,
+)
+ALERT_INGEST_MAX_BODY_BYTES = _int_value(
+    _setting_value(
+        ALERT_INGEST_CONFIG,
+        ('max_body_bytes', 'maxBodyBytes'),
+        ('ALERT_INGEST_MAX_BODY_BYTES',),
+        1_048_576,
+    ),
+    'ALERT_INGEST_MAX_BODY_BYTES',
+    1_048_576,
+)
+
 X_FRAME_OPTIONS = os.getenv('X_FRAME_OPTIONS', 'SAMEORIGIN')
 
 

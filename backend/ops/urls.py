@@ -40,6 +40,8 @@ router.register(r'k8s/clusters', k8s_views.K8sClusterViewSet)
 router.register(r'docker/hosts', docker_views.DockerHostViewSet)
 urlpatterns = [
     path('dashboard/stats/', views.dashboard_stats, name='dashboard-stats'),
+    path('ops/alerts/ingest/', views.alert_ingest, name='external-alert-ingest'),
+    path('alerts/ingest/', views.alert_ingest, name='alert-ingest'),
     path('alerts/card-actions/<uuid:token>/', views.alert_card_action, name='alert-card-action'),
     path('log/providers/', log_views.log_providers, name='log-providers'),
     path('log/providers/<str:provider>/catalog/', log_views.log_provider_catalog, name='log-provider-catalog'),

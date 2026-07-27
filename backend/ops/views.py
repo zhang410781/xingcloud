@@ -1,10 +1,11 @@
 import json
 from datetime import timedelta
 import paramiko
+from django.conf import settings
 from django.db.models import Avg, Count, Prefetch, Q
 from django.utils import timezone
 from rest_framework import status, viewsets
-from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework.decorators import action, api_view, authentication_classes, permission_classes
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -19,6 +20,13 @@ from . import deployer
 from .alert_engine import engine_status as alert_engine_status
 from .alert_engine import evaluate_rule
 from .alert_annotation_templates import notification_preview
+from .alert_ingest import (
+    AlertIngestError,
+    authenticate_webhook_token,
+    check_ingest_rate_limit,
+    configured_webhook_tokens,
+    ingest_external_alert_payload,
+)
 from .host_task_schedules import (
     build_schedule_snapshot,
     preview_next_runs,
@@ -99,6 +107,53 @@ from .alert_analysis import enqueue_alert_analysis, serialize_analysis
 from .alert_rule_presets import LEGACY_K8S_TEMPLATE_CODES, instantiate_rule_from_template
 from .alert_rules import trigger_alert_rule
 from .sla import build_dashboard_sla as build_sla_dashboard_summary
+
+
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def alert_ingest(request):
+    if not configured_webhook_tokens():
+        return Response(
+            {'detail': '外部告警 Webhook 尚未配置。'},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    token = request.headers.get('X-Webhook-Token', '')
+    if not authenticate_webhook_token(token):
+        return Response({'detail': 'Webhook Token 无效。'}, status=status.HTTP_401_UNAUTHORIZED)
+    if not check_ingest_rate_limit(token):
+        return Response({'detail': 'Webhook 请求过于频繁。'}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+
+    max_body_bytes = max(int(getattr(settings, 'ALERT_INGEST_MAX_BODY_BYTES', 1_048_576) or 1_048_576), 1)
+    try:
+        content_length = int(request.META.get('CONTENT_LENGTH') or 0)
+    except (TypeError, ValueError):
+        content_length = 0
+    if content_length > max_body_bytes:
+        return Response({'detail': 'Webhook 请求体过大。'}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+
+    payload = request.data
+    if not isinstance(payload, dict) or not payload:
+        return Response({'detail': 'Webhook 请求体必须是非空 JSON 对象。'}, status=status.HTTP_400_BAD_REQUEST)
+    if len(json.dumps(payload, ensure_ascii=False, default=str).encode('utf-8')) > max_body_bytes:
+        return Response({'detail': 'Webhook 请求体过大。'}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+    try:
+        outcome = ingest_external_alert_payload(payload)
+    except AlertIngestError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    results = outcome['results']
+    response_payload = {
+        'source': outcome['source'],
+        'count': len(results),
+        'notification_log_count': outcome['notification_log_count'],
+        'storm_batches': outcome['storm_batches'],
+        'results': results,
+    }
+    if len(results) == 1:
+        response_payload.update(results[0])
+    response_status = status.HTTP_201_CREATED if any(item['created'] for item in results) else status.HTTP_200_OK
+    return Response(response_payload, status=response_status)
 
 
 class AlertConfigPagination(PageNumberPagination):
