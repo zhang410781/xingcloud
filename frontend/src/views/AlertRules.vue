@@ -18,9 +18,10 @@
     <ObservabilityRouteTabs group="observability" />
 
     <nav class="work-tabs">
-      <button :class="{ active: activeTab === 'rules' }" @click="activeTab = 'rules'">告警规则</button>
-      <button :class="{ active: activeTab === 'policies' }" @click="activeTab = 'policies'">通知策略</button>
-      <button :class="{ active: activeTab === 'resources' }" @click="activeTab = 'resources'">通知资源</button>
+      <button :class="{ active: activeTab === 'rules' }" @click="setActiveTab('rules')">告警规则</button>
+      <button :class="{ active: activeTab === 'policies' }" @click="setActiveTab('policies')">通知策略</button>
+      <button :class="{ active: activeTab === 'resources' }" @click="setActiveTab('resources')">通知资源</button>
+      <button :class="{ active: activeTab === 'external' }" @click="setActiveTab('external')">外部告警接入</button>
     </nav>
 
     <template v-if="activeTab === 'rules'">
@@ -176,7 +177,7 @@
       </section>
     </template>
 
-    <template v-else>
+    <template v-else-if="activeTab === 'resources'">
       <section class="resource-workspace">
         <nav class="resource-tabs panel">
           <button :class="{ active: resourceTab === 'channels' }" @click="resourceTab = 'channels'">通知渠道</button>
@@ -248,6 +249,12 @@
           </el-table>
         </div>
       </section>
+    </template>
+
+    <template v-else-if="activeTab === 'external'">
+      <div class="external-workspace">
+        <ExternalAlertSourcesPanel />
+      </div>
     </template>
 
     <el-dialog v-model="instantiateDialog" title="从模板创建规则实例" width="640px">
@@ -432,8 +439,10 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useRoute, useRouter } from 'vue-router'
 import { Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import ExternalAlertSourcesPanel from '@/components/observability/ExternalAlertSourcesPanel.vue'
 import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
 import { useBusinessContextStore } from '@/stores/businessContext'
 import {
@@ -474,7 +483,11 @@ import {
 
 const businessContextStore = useBusinessContextStore()
 const { contexts, currentContext, currentContextId } = storeToRefs(businessContextStore)
-const activeTab = ref('rules')
+const route = useRoute()
+const router = useRouter()
+const workspaceTabs = new Set(['rules', 'policies', 'resources', 'external'])
+const requestedTab = typeof route.query.tab === 'string' ? route.query.tab : 'rules'
+const activeTab = ref(workspaceTabs.has(requestedTab) ? requestedTab : 'rules')
 const loading = ref(false)
 const saving = ref(false)
 const previewing = ref(false)
@@ -1020,7 +1033,22 @@ async function removeInspectionReport(row) {
   }
 }
 
+function setActiveTab(value) {
+  if (!workspaceTabs.has(value)) return
+  activeTab.value = value
+  const currentTab = typeof route.query.tab === 'string' ? route.query.tab : 'rules'
+  if (currentTab === value) return
+  const query = { ...route.query }
+  if (value === 'rules') delete query.tab
+  else query.tab = value
+  void router.replace({ query })
+}
+
 watch(activeTab, async (value) => { if (value === 'policies') await loadPolicies() })
+watch(() => route.query.tab, (value) => {
+  const nextTab = typeof value === 'string' && workspaceTabs.has(value) ? value : 'rules'
+  if (activeTab.value !== nextTab) activeTab.value = nextTab
+})
 watch(currentContextId, async () => {
   if (contextReady.value) await loadAll()
 })
@@ -1033,7 +1061,7 @@ onMounted(async () => {
 
 <style scoped>
 .alert-rule-page { min-height: 100%; padding: 18px 22px 36px; color: #24364b; background: #f4f7fb; }
-.page-header, .work-tabs, .toolbar, .summary-grid, .table-panel, .resource-workspace { max-width: 1760px; margin-left: auto; margin-right: auto; }
+.page-header, .work-tabs, .toolbar, .summary-grid, .table-panel, .resource-workspace, .external-workspace { max-width: 1760px; margin-left: auto; margin-right: auto; }
 .page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 12px; }
 .eyebrow { color: #7890aa; font-size: 11px; letter-spacing: .08em; } h1 { margin: 5px 0; color: #172b42; font-size: 25px; } .page-header p, .section-head p { margin: 0; color: #73879d; font-size: 12px; }
 .header-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
