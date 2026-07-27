@@ -1281,11 +1281,19 @@ def _policy_is_muted(policy, now=None):
 def resolve_notification_policies(alert, rule=None, metric_datasource_id=None):
     labels = alert.labels if isinstance(alert.labels, dict) else {}
     datasource_id = metric_datasource_id or getattr(rule, 'metric_datasource_id', None) or labels.get('metric_datasource_id')
-    queryset = AlertNotificationPolicy.objects.filter(is_enabled=True).select_related('metric_datasource').prefetch_related('channels', 'recipient_groups')
-    if datasource_id not in (None, ''):
-        queryset = queryset.filter(Q(metric_datasource__isnull=True) | Q(metric_datasource_id=datasource_id))
+    queryset = AlertNotificationPolicy.objects.filter(is_enabled=True).select_related(
+        'metric_datasource', 'external_alert_source',
+    ).prefetch_related('channels', 'recipient_groups')
+    if alert.ingress_source_id:
+        queryset = queryset.filter(metric_datasource__isnull=True).filter(
+            Q(external_alert_source__isnull=True) | Q(external_alert_source_id=alert.ingress_source_id),
+        )
     else:
-        queryset = queryset.filter(metric_datasource__isnull=True)
+        queryset = queryset.filter(external_alert_source__isnull=True)
+        if datasource_id not in (None, ''):
+            queryset = queryset.filter(Q(metric_datasource__isnull=True) | Q(metric_datasource_id=datasource_id))
+        else:
+            queryset = queryset.filter(metric_datasource__isnull=True)
     matched = []
     for policy in queryset.order_by('priority', 'id'):
         if policy.min_level and LEVEL_RANK.get(alert.level, 0) < LEVEL_RANK.get(policy.min_level, 0):
@@ -1335,9 +1343,9 @@ def dispatch_alert_notifications(alert, action='fire', request=None, force=False
             if not channels:
                 continue
             group_by = list(policy.group_by or DEFAULT_GROUP_BY)
-            datasource_dimension = 'label.metric_datasource_id'
-            if datasource_dimension not in group_by:
-                group_by.insert(0, datasource_dimension)
+            source_dimension = 'ingress_source_code' if alert.ingress_source_id else 'label.metric_datasource_id'
+            if source_dimension not in group_by:
+                group_by.insert(0, source_dimension)
             alert.group_key = compute_group_key(alert, group_by)
             alert.save(update_fields=['group_key', 'updated_at'])
             started_at = alert.starts_at or alert.created_at or now

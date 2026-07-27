@@ -1301,6 +1301,10 @@ class AlertNotificationPolicy(models.Model):
         'MetricDataSource', on_delete=models.SET_NULL, null=True, blank=True,
         related_name='alert_notification_policies', verbose_name='指标数据源',
     )
+    external_alert_source = models.ForeignKey(
+        'ExternalAlertSource', on_delete=models.CASCADE, null=True, blank=True,
+        related_name='notification_policies', verbose_name='外部告警接入源',
+    )
     matchers = models.JSONField('标签匹配条件', default=list, blank=True)
     min_level = models.CharField('最低告警级别', max_length=16, blank=True, default='')
     priority = models.IntegerField('优先级', default=100, db_index=True)
@@ -1329,6 +1333,13 @@ class AlertNotificationPolicy(models.Model):
         ordering = ['priority', 'id']
         indexes = [
             models.Index(fields=['metric_datasource', 'is_enabled', 'priority'], name='ops_anp_ds_enabled_prio_idx'),
+            models.Index(fields=['external_alert_source', 'is_enabled', 'priority'], name='ops_anp_ext_enabled_prio_idx'),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(metric_datasource__isnull=True) | models.Q(external_alert_source__isnull=True),
+                name='ops_policy_single_source_scope',
+            ),
         ]
 
     def __str__(self):

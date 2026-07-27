@@ -2923,11 +2923,13 @@ class AlertNotificationChannelViewSet(EventWallModelViewSetMixin, RBACPermission
 
 
 class AlertNotificationPolicyViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
-    queryset = AlertNotificationPolicy.objects.select_related('metric_datasource').prefetch_related('channels', 'recipient_groups').all()
+    queryset = AlertNotificationPolicy.objects.select_related(
+        'metric_datasource', 'external_alert_source',
+    ).prefetch_related('channels', 'recipient_groups').all()
     serializer_class = AlertNotificationPolicySerializer
     pagination_class = AlertConfigPagination
     search_fields = ['name', 'description']
-    filterset_fields = ['metric_datasource', 'min_level', 'is_enabled']
+    filterset_fields = ['metric_datasource', 'external_alert_source', 'min_level', 'is_enabled']
     event_module = 'ops'
     event_resource_type = 'alert_notification_policy'
     event_resource_label = '告警通知策略'
@@ -2940,7 +2942,6 @@ class AlertNotificationPolicyViewSet(EventWallModelViewSetMixin, RBACPermissionM
         'partial_update': ['ops.alert.config.manage'],
         'destroy': ['ops.alert.config.manage'],
         'preview': ['ops.alert.config.view'],
-        'agent4_preset': ['ops.alert.config.view'],
     }
 
     def get_queryset(self):
@@ -2959,11 +2960,20 @@ class AlertNotificationPolicyViewSet(EventWallModelViewSetMixin, RBACPermissionM
     def preview(self, request):
         labels = request.data.get('labels') if isinstance(request.data.get('labels'), dict) else {}
         datasource_id = request.data.get('metric_datasource_id')
+        external_source_id = request.data.get('external_alert_source_id')
+        if datasource_id not in (None, '') and external_source_id not in (None, ''):
+            return Response({'detail': '指标数据源与外部告警接入源不能同时选择'}, status=status.HTTP_400_BAD_REQUEST)
+        external_source = None
+        if external_source_id not in (None, ''):
+            external_source = ExternalAlertSource.objects.filter(pk=external_source_id, is_enabled=True).first()
+            if not external_source:
+                return Response({'detail': '外部告警接入源不存在或已停用'}, status=status.HTTP_400_BAD_REQUEST)
         alert = Alert(
             title=str(request.data.get('title') or '通知策略预览'),
             level=str(request.data.get('level') or 'warning'),
-            source='preview',
-            source_type=Alert.SOURCE_PLATFORM,
+            source=external_source.code if external_source else 'preview',
+            source_type=external_source.provider if external_source else Alert.SOURCE_PLATFORM,
+            ingress_source=external_source,
             message='',
             environment=str(request.data.get('environment') or labels.get('environment') or ''),
             cluster=str(request.data.get('cluster') or labels.get('cluster') or ''),
@@ -2976,31 +2986,6 @@ class AlertNotificationPolicyViewSet(EventWallModelViewSetMixin, RBACPermissionM
         return Response({
             'matched_count': len(policies),
             'policies': self.get_serializer(policies, many=True).data,
-        })
-
-    @action(detail=False, methods=['get'], url_path='agent4-preset')
-    def agent4_preset(self, request):
-        return Response({
-            'name': 'Agent-4 标准通知策略',
-            'priority': 100,
-            'continue_matching': False,
-            'min_level': 'warning',
-            'matchers': [],
-            'group_by': ['environment', 'metric_datasource_id', 'namespace', 'alert_rule_code'],
-            'group_wait_seconds': 10,
-            'group_interval_seconds': 60,
-            'repeat_interval_minutes': 720,
-            'storm_threshold': 3,
-            'inhibition_matchers': [
-                {'source_level': 'critical', 'target_levels': ['warning', 'info'], 'equal': ['environment', 'namespace', 'alert_rule_code']},
-                {'source_level': 'warning', 'target_levels': ['info'], 'equal': ['environment', 'namespace', 'alert_rule_code']},
-            ],
-            'escalation_steps': [],
-            'notify_on_fire': True,
-            'notify_on_resolved': True,
-            'notify_on_analysis': True,
-            'is_enabled': True,
-            'description': 'Agent-4规范：10秒聚合等待、1分钟同组间隔、12小时重复通知，并发送研判与恢复通知。',
         })
 
 

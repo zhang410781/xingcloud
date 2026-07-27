@@ -135,7 +135,6 @@ export const createAlertNotificationPolicy = (data) => request.post('/alert-noti
 export const updateAlertNotificationPolicy = (id, data) => request.put(`/alert-notification-policies/${id}/`, data)
 export const deleteAlertNotificationPolicy = (id) => request.delete(`/alert-notification-policies/${id}/`)
 export const previewAlertNotificationPolicy = (data) => request.post('/alert-notification-policies/preview/', data)
-export const getAgent4NotificationPolicyPreset = () => request.get('/alert-notification-policies/agent4-preset/')
 export const getInspectionReportSchedules = (params) => request.get('/inspection-report-schedules/', { params })
 export const createInspectionReportSchedule = (data) => request.post('/inspection-report-schedules/', data)
 export const updateInspectionReportSchedule = (id, data) => request.put(`/inspection-report-schedules/${id}/`, data)

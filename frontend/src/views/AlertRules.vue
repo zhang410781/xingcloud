@@ -11,7 +11,6 @@
         <el-button v-if="activeTab === 'rules'" type="primary" :icon="Plus" :disabled="!currentContext?.metric_datasource" @click="openInstantiate">从模板创建</el-button>
         <el-button v-if="activeTab === 'rules'" type="primary" plain :disabled="!currentContext?.metric_datasource" @click="openCustomRule">自定义规则</el-button>
         <el-button v-if="activeTab === 'policies'" type="primary" :icon="Plus" @click="openPolicy">新增通知策略</el-button>
-        <el-button v-if="activeTab === 'policies'" plain @click="openAgent4Preset">Agent-4 标准策略</el-button>
       </div>
     </header>
 
@@ -127,7 +126,8 @@
           <span>策略作用域</span>
           <el-select v-model="policySourceFilter" clearable placeholder="全部策略">
             <el-option label="全局策略" value="global" />
-            <el-option v-for="item in metricSources" :key="item.id" :label="sourceLabel(item)" :value="String(item.id)" />
+            <el-option v-for="item in metricSources" :key="`metric-${item.id}`" :label="`Prometheus · ${sourceLabel(item)}`" :value="`metric:${item.id}`" />
+            <el-option v-for="item in externalSources" :key="`external-${item.id}`" :label="`${item.provider_display || item.provider} · ${item.name}`" :value="`external:${item.id}`" />
           </el-select>
         </div>
         <div class="toolbar-field search-field">
@@ -144,8 +144,13 @@
           </el-table-column>
           <el-table-column label="作用域" min-width="190">
             <template #default="{ row }">
-              <el-tag v-if="!row.metric_datasource" effect="plain">全局</el-tag>
-              <span v-else>{{ row.metric_datasource_detail?.cluster_name || row.metric_datasource_detail?.name }}</span>
+              <span v-if="row.external_alert_source_detail">
+                {{ row.external_alert_source_detail.provider_display }} · {{ row.external_alert_source_detail.name }}
+              </span>
+              <span v-else-if="row.metric_datasource_detail">
+                Prometheus · {{ row.metric_datasource_detail.cluster_name || row.metric_datasource_detail.name }}
+              </span>
+              <el-tag v-else effect="plain">全局</el-tag>
             </template>
           </el-table-column>
           <el-table-column label="匹配条件" min-width="240">
@@ -307,11 +312,33 @@
       <el-form label-width="130px">
         <el-form-item label="策略名称" required><el-input v-model="policyForm.name" /></el-form-item>
         <div class="form-grid">
-          <el-form-item label="作用数据源"><el-select v-model="policyForm.metric_datasource" clearable placeholder="全局策略"><el-option v-for="item in metricSources" :key="item.id" :label="sourceLabel(item)" :value="item.id" /></el-select></el-form-item>
+          <el-form-item label="作用来源">
+            <el-select v-model="policyForm.scope_type" @change="handlePolicyScopeChange">
+              <el-option label="全部告警（全局）" value="global" />
+              <el-option label="Prometheus 指标源" value="metric" />
+              <el-option label="外部告警接入源" value="external" />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="policyForm.scope_type === 'metric'" label="指标数据源" required>
+            <el-select v-model="policyForm.metric_datasource" filterable placeholder="选择 Prometheus 数据源">
+              <el-option v-for="item in metricSources" :key="item.id" :label="sourceLabel(item)" :value="item.id" />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="policyForm.scope_type === 'external'" label="外部接入源" required>
+            <el-select v-model="policyForm.external_alert_source" filterable placeholder="选择 Alertmanager 或 Zabbix 接入源">
+              <el-option v-for="item in externalSources" :key="item.id" :label="`${item.provider_display || item.provider} · ${item.name}`" :value="item.id" />
+            </el-select>
+          </el-form-item>
           <el-form-item label="最低级别"><el-select v-model="policyForm.min_level" clearable placeholder="全部级别"><el-option label="信息" value="info" /><el-option label="警告" value="warning" /><el-option label="严重" value="critical" /></el-select></el-form-item>
           <el-form-item label="优先级"><el-input-number v-model="policyForm.priority" :min="0" /></el-form-item>
           <el-form-item label="继续匹配"><el-switch v-model="policyForm.continue_matching" /></el-form-item>
         </div>
+        <el-alert
+          v-if="selectedPolicyExternalSource && !selectedPolicyExternalSource.notify_enabled"
+          type="warning"
+          :closable="false"
+          title="该外部接入源当前关闭了通知发送；策略可以保存，但不会发送告警通知。"
+        />
         <el-form-item label="标签匹配">
           <div class="matcher-list">
             <div v-for="(item, index) in policyForm.matchers" :key="index" class="matcher-row">
@@ -341,7 +368,15 @@
 
     <el-dialog v-model="previewDialog" title="通知策略路由预览" width="650px">
       <el-form label-width="110px">
-        <el-form-item label="指标数据源"><el-select v-model="previewForm.metric_datasource_id"><el-option v-for="item in metricSources" :key="item.id" :label="sourceLabel(item)" :value="item.id" /></el-select></el-form-item>
+        <el-form-item label="告警来源">
+          <el-select v-model="previewForm.scope_type" @change="handlePreviewScopeChange">
+            <el-option label="平台告警" value="global" />
+            <el-option label="Prometheus 指标源" value="metric" />
+            <el-option label="外部告警接入源" value="external" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="previewForm.scope_type === 'metric'" label="指标数据源"><el-select v-model="previewForm.metric_datasource_id"><el-option v-for="item in metricSources" :key="item.id" :label="sourceLabel(item)" :value="item.id" /></el-select></el-form-item>
+        <el-form-item v-if="previewForm.scope_type === 'external'" label="外部接入源"><el-select v-model="previewForm.external_alert_source_id"><el-option v-for="item in externalSources" :key="item.id" :label="`${item.provider_display || item.provider} · ${item.name}`" :value="item.id" /></el-select></el-form-item>
         <el-form-item label="告警级别"><el-select v-model="previewForm.level"><el-option label="信息" value="info" /><el-option label="警告" value="warning" /><el-option label="严重" value="critical" /></el-select></el-form-item>
         <el-form-item label="标签 JSON"><el-input v-model="previewForm.labelsText" type="textarea" :rows="5" spellcheck="false" /></el-form-item>
         <el-form-item><el-button type="primary" :loading="previewing" @click="runPreview">开始匹配</el-button></el-form-item>
@@ -460,11 +495,11 @@ import {
   evaluateAlertRule,
   getAlertNotificationChannels,
   getAlertNotificationPolicies,
-  getAgent4NotificationPolicyPreset,
   getAlertRecipients,
   getAlertRecipientGroups,
   getAlertRuleTemplates,
   getAlertRules,
+  getExternalAlertSources,
   getInspectionReportSchedules,
   getMetricDataSources,
   getUsers,
@@ -503,6 +538,7 @@ const resourceSearch = ref('')
 const annotationPlaceholder = '例如：{{ $labels.cluster }} 集群 {{ $labels.namespace }}/{{ $labels.pod }} 当前值 {{ printf "%.2f" $value }}'
 const annotationVariables = ['{{ $labels.cluster }}', '{{ $labels.namespace }}', '{{ $labels.pod }}', '{{ $labels.node }}', '{{ $value }}']
 const metricSources = ref([])
+const externalSources = ref([])
 const templates = ref([])
 const rules = ref([])
 const policies = ref([])
@@ -525,11 +561,11 @@ const templateGroup = ref('')
 
 const viewModeOptions = [{ label: '统一列表', value: 'all' }, { label: '按 K8S 源', value: 'source' }]
 const matcherOperators = ['=', '!=', '=~', '!~']
-const groupByOptions = ['cluster', 'namespace', 'service', 'resource', 'resource_type', 'alert_rule_code', 'label.team']
+const groupByOptions = ['cluster', 'namespace', 'service', 'resource', 'resource_type', 'alert_rule_code', 'ingress_source_code', 'label.alertname', 'label.team']
 const instanceForm = reactive({ metric_datasource_id: '', template_code: '', name: '', interval_seconds: 60, duration_seconds: 0, auto_analyze: true })
 const ruleForm = reactive(emptyRuleForm())
 const policyForm = reactive(emptyPolicyForm())
-const previewForm = reactive({ metric_datasource_id: '', level: 'warning', labelsText: '{\n  "namespace": "xing-cloud",\n  "service": "api"\n}' })
+const previewForm = reactive({ scope_type: 'global', metric_datasource_id: '', external_alert_source_id: '', level: 'warning', labelsText: '{\n  "namespace": "xing-cloud",\n  "service": "api"\n}' })
 const channelForm = reactive(emptyChannelForm())
 const recipientForm = reactive(emptyRecipientForm())
 const recipientGroupForm = reactive(emptyRecipientGroupForm())
@@ -589,12 +625,18 @@ const ruleEmptyText = computed(() => {
 })
 const filteredPolicies = computed(() => policies.value.filter((item) => {
   const boundDatasourceId = String(currentContext.value?.metric_datasource || '')
-  if (!currentContextId.value || !boundDatasourceId) return false
+  if (!currentContextId.value) return false
   if (item.metric_datasource && String(item.metric_datasource) !== boundDatasourceId) return false
-  if (policySourceFilter.value === 'global' && item.metric_datasource) return false
-  if (policySourceFilter.value && policySourceFilter.value !== 'global' && String(item.metric_datasource) !== policySourceFilter.value) return false
+  if (policySourceFilter.value === 'global' && (item.metric_datasource || item.external_alert_source)) return false
+  if (policySourceFilter.value.startsWith('metric:') && String(item.metric_datasource) !== policySourceFilter.value.slice(7)) return false
+  if (policySourceFilter.value.startsWith('external:') && String(item.external_alert_source) !== policySourceFilter.value.slice(9)) return false
   return !policySearch.value.trim() || item.name.toLowerCase().includes(policySearch.value.trim().toLowerCase())
 }))
+const selectedPolicyExternalSource = computed(() => (
+  policyForm.scope_type === 'external'
+    ? externalSources.value.find((item) => String(item.id) === String(policyForm.external_alert_source))
+    : null
+))
 const normalizedResourceSearch = computed(() => resourceSearch.value.trim().toLowerCase())
 const filteredChannels = computed(() => channels.value.filter((item) => {
   const text = normalizedResourceSearch.value
@@ -645,7 +687,7 @@ function qualityType(value) { return { error: 'danger', no_data: 'warning', flap
 function emptyMatcher() { return { key: '', operator: '=', value: '' } }
 function cloneMatchers(value) { return Array.isArray(value) ? value.map((item) => ({ ...item })) : [] }
 function emptyRuleForm() { return { id: null, metric_datasource: '', name: '', promql: '', operator: '>', threshold: 80, level: 'warning', duration_seconds: 300, interval_seconds: 60, auto_analyze: true, description: '', summary_template: '', message_template: '', description_template: '' } }
-function emptyPolicyForm() { return { id: null, name: '', metric_datasource: '', min_level: '', priority: 100, continue_matching: false, matchers: [], channel_ids: [], recipient_group_ids: [], group_by: ['cluster', 'namespace', 'service'], group_wait_seconds: 30, group_interval_seconds: 300, repeat_interval_minutes: 30, storm_threshold: 3, mute_enabled: false, mute_range: [], inhibition_matchers: [], escalation_after_minutes: 0, notify_on_fire: true, notify_on_resolved: true, notify_on_analysis: true, is_enabled: true, description: '' } }
+function emptyPolicyForm() { return { id: null, name: '', scope_type: 'global', metric_datasource: '', external_alert_source: '', min_level: '', priority: 100, continue_matching: false, matchers: [], channel_ids: [], recipient_group_ids: [], group_by: ['cluster', 'namespace', 'service'], group_wait_seconds: 30, group_interval_seconds: 300, repeat_interval_minutes: 30, storm_threshold: 3, mute_enabled: false, mute_range: [], inhibition_matchers: [], escalation_after_minutes: 0, notify_on_fire: true, notify_on_resolved: true, notify_on_analysis: true, is_enabled: true, description: '' } }
 function emptyChannelForm() { return { id: null, name: '', channel_type: 'email', destination: '', secret: '', send_resolved: true, is_enabled: true, config: {} } }
 function emptyRecipientForm() { return { id: null, name: '', user: null, preferred_channels: [], phone: '', email: '', is_enabled: true, description: '' } }
 function emptyRecipientGroupForm() { return { id: null, name: '', recipient_ids: [], user_ids: [], policy_refs: [], is_enabled: true, description: '' } }
@@ -654,8 +696,9 @@ function emptyInspectionReportForm() { return { id: null, name: '', knowledge_en
 async function loadAll() {
   loading.value = true
   try {
-    const [sourceResult, templateResult, channelResult, recipientResult, groupResult, userResult, reportResult] = await Promise.all([
+    const [sourceResult, externalSourceResult, templateResult, channelResult, recipientResult, groupResult, userResult, reportResult] = await Promise.all([
       getMetricDataSources({ is_enabled: true, page_size: 200 }),
+      getExternalAlertSources({ page_size: 500 }),
       getAlertRuleTemplates({ page_size: 200 }),
       getAlertNotificationChannels({ page_size: 200 }),
       getAlertRecipients({ page_size: 200 }),
@@ -665,6 +708,7 @@ async function loadAll() {
     ])
     const boundDatasourceId = String(currentContext.value?.metric_datasource || '')
     metricSources.value = listOf(sourceResult).filter((item) => boundDatasourceId && String(item.id) === boundDatasourceId)
+    externalSources.value = listOf(externalSourceResult)
     templates.value = listOf(templateResult)
     channels.value = listOf(channelResult)
     recipients.value = listOf(recipientResult)
@@ -754,6 +798,7 @@ async function removeRule(row) { await deleteAlertRule(row.id); await loadRules(
 function openPolicy(row = null) {
   const base = emptyPolicyForm()
   if (row) Object.assign(base, row, {
+    scope_type: row.external_alert_source ? 'external' : (row.metric_datasource ? 'metric' : 'global'),
     channel_ids: (row.channels || []).map((item) => item.id),
     recipient_group_ids: (row.recipient_groups || []).map((item) => item.id),
     matchers: cloneMatchers(row.matchers),
@@ -766,22 +811,49 @@ function openPolicy(row = null) {
   Object.assign(policyForm, base)
   policyDialog.value = true
 }
-async function openAgent4Preset() {
-  try {
-    const preset = await getAgent4NotificationPolicyPreset()
-    Object.assign(policyForm, emptyPolicyForm(), preset, { id: null, channel_ids: [], recipient_group_ids: [] })
-    policyDialog.value = true
-  } catch (error) { ElMessage.error(error.response?.data?.detail || '标准策略加载失败') }
+function handlePolicyScopeChange(value) {
+  if (value !== 'metric') policyForm.metric_datasource = ''
+  if (value !== 'external') policyForm.external_alert_source = ''
+  if (value === 'metric' && !policyForm.metric_datasource) policyForm.metric_datasource = metricSources.value[0]?.id || ''
+  if (value === 'external') {
+    if (!policyForm.external_alert_source) policyForm.external_alert_source = externalSources.value[0]?.id || ''
+    if (!policyForm.group_by.includes('ingress_source_code')) policyForm.group_by.unshift('ingress_source_code')
+  }
 }
 async function savePolicy() {
   if (!policyForm.name.trim()) return ElMessage.warning('请输入策略名称')
-  const payload = { name: policyForm.name.trim(), metric_datasource: policyForm.metric_datasource || null, min_level: policyForm.min_level || '', priority: policyForm.priority, continue_matching: policyForm.continue_matching, matchers: policyForm.matchers.filter((item) => item.key && item.value !== ''), channel_ids: policyForm.channel_ids, recipient_group_ids: policyForm.recipient_group_ids, group_by: policyForm.group_by, group_wait_seconds: policyForm.group_wait_seconds, group_interval_seconds: policyForm.group_interval_seconds, repeat_interval_minutes: policyForm.repeat_interval_minutes, storm_threshold: policyForm.storm_threshold || 3, mute_schedule: policyForm.mute_enabled ? { enabled: true, start_time: policyForm.mute_range?.[0] || '00:00', end_time: policyForm.mute_range?.[1] || '00:00' } : {}, inhibition_matchers: policyForm.inhibition_matchers || [], escalation_steps: policyForm.escalation_after_minutes > 0 ? [{ name: '一级升级', after_minutes: policyForm.escalation_after_minutes, channel_ids: policyForm.channel_ids }] : [], notify_on_fire: policyForm.notify_on_fire, notify_on_resolved: policyForm.notify_on_resolved, notify_on_analysis: policyForm.notify_on_analysis, is_enabled: policyForm.is_enabled, description: policyForm.description || '' }
+  if (policyForm.scope_type === 'metric' && !policyForm.metric_datasource) return ElMessage.warning('请选择指标数据源')
+  if (policyForm.scope_type === 'external' && !policyForm.external_alert_source) return ElMessage.warning('请选择外部告警接入源')
+  const payload = { name: policyForm.name.trim(), metric_datasource: policyForm.scope_type === 'metric' ? policyForm.metric_datasource : null, external_alert_source: policyForm.scope_type === 'external' ? policyForm.external_alert_source : null, min_level: policyForm.min_level || '', priority: policyForm.priority, continue_matching: policyForm.continue_matching, matchers: policyForm.matchers.filter((item) => item.key && item.value !== ''), channel_ids: policyForm.channel_ids, recipient_group_ids: policyForm.recipient_group_ids, group_by: policyForm.group_by, group_wait_seconds: policyForm.group_wait_seconds, group_interval_seconds: policyForm.group_interval_seconds, repeat_interval_minutes: policyForm.repeat_interval_minutes, storm_threshold: policyForm.storm_threshold || 3, mute_schedule: policyForm.mute_enabled ? { enabled: true, start_time: policyForm.mute_range?.[0] || '00:00', end_time: policyForm.mute_range?.[1] || '00:00' } : {}, inhibition_matchers: policyForm.inhibition_matchers || [], escalation_steps: policyForm.escalation_after_minutes > 0 ? [{ name: '一级升级', after_minutes: policyForm.escalation_after_minutes, channel_ids: policyForm.channel_ids }] : [], notify_on_fire: policyForm.notify_on_fire, notify_on_resolved: policyForm.notify_on_resolved, notify_on_analysis: policyForm.notify_on_analysis, is_enabled: policyForm.is_enabled, description: policyForm.description || '' }
   saving.value = true
   try { if (policyForm.id) await updateAlertNotificationPolicy(policyForm.id, payload); else await createAlertNotificationPolicy(payload); policyDialog.value = false; await loadPolicies(); ElMessage.success('通知策略已保存') } catch (error) { ElMessage.error(error.response?.data?.detail || '通知策略保存失败') } finally { saving.value = false }
 }
 async function removePolicy(row) { await deleteAlertNotificationPolicy(row.id); await loadPolicies(); ElMessage.success('通知策略已删除') }
-function openPreview() { previewForm.metric_datasource_id ||= selectedSourceId.value || metricSources.value[0]?.id || ''; previewResult.value = null; previewDialog.value = true }
-async function runPreview() { previewing.value = true; try { previewResult.value = await previewAlertNotificationPolicy({ metric_datasource_id: previewForm.metric_datasource_id, level: previewForm.level, labels: JSON.parse(previewForm.labelsText || '{}') }) } catch (error) { ElMessage.error(error.message || '标签 JSON 格式错误') } finally { previewing.value = false } }
+function openPreview() {
+  previewForm.metric_datasource_id ||= selectedSourceId.value || metricSources.value[0]?.id || ''
+  previewForm.external_alert_source_id ||= externalSources.value[0]?.id || ''
+  previewResult.value = null
+  previewDialog.value = true
+}
+function handlePreviewScopeChange(value) {
+  if (value !== 'metric') previewForm.metric_datasource_id = ''
+  if (value !== 'external') previewForm.external_alert_source_id = ''
+  if (value === 'metric') previewForm.metric_datasource_id = selectedSourceId.value || metricSources.value[0]?.id || ''
+  if (value === 'external') previewForm.external_alert_source_id = externalSources.value[0]?.id || ''
+}
+async function runPreview() {
+  if (previewForm.scope_type === 'metric' && !previewForm.metric_datasource_id) return ElMessage.warning('请选择指标数据源')
+  if (previewForm.scope_type === 'external' && !previewForm.external_alert_source_id) return ElMessage.warning('请选择外部告警接入源')
+  previewing.value = true
+  try {
+    previewResult.value = await previewAlertNotificationPolicy({
+      metric_datasource_id: previewForm.scope_type === 'metric' ? previewForm.metric_datasource_id : null,
+      external_alert_source_id: previewForm.scope_type === 'external' ? previewForm.external_alert_source_id : null,
+      level: previewForm.level,
+      labels: JSON.parse(previewForm.labelsText || '{}'),
+    })
+  } catch (error) { ElMessage.error(error.response?.data?.detail || error.message || '标签 JSON 格式错误') } finally { previewing.value = false }
+}
 
 function openChannel(row = null) { const base = emptyChannelForm(); if (row) Object.assign(base, row, { destination: row.channel_type === 'email' ? (row.config?.to || []).join(', ') : row.config?.webhook_url || row.config?.url || '', secret: row.config?.secret || row.config?.sign_secret || '' }); Object.assign(channelForm, base); channelDialog.value = true }
 async function saveChannel() { if (!channelForm.name.trim()) return ElMessage.warning('请输入渠道名称'); if (channelForm.channel_type === 'feishu' && !channelForm.secret) return ElMessage.warning('飞书渠道必须填写签名密钥'); const config = channelForm.channel_type === 'email' ? { ...(channelForm.config || {}), to: channelForm.destination.split(',').map((item) => item.trim()).filter(Boolean) } : { ...(channelForm.config || {}), webhook_url: channelForm.destination.trim(), ...(channelForm.channel_type === 'feishu' ? { secret: channelForm.secret } : {}) }; const payload = { name: channelForm.name.trim(), channel_type: channelForm.channel_type, config, send_resolved: channelForm.send_resolved, is_enabled: channelForm.is_enabled }; saving.value = true; try { if (channelForm.id) await updateAlertNotificationChannel(channelForm.id, payload); else await createAlertNotificationChannel(payload); channelDialog.value = false; channels.value = listOf(await getAlertNotificationChannels()); ElMessage.success('通知渠道已保存') } catch (error) { ElMessage.error(error.response?.data?.detail || '渠道保存失败') } finally { saving.value = false } }

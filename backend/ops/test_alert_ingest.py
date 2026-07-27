@@ -14,7 +14,7 @@ from ops.alert_ingest import (
     normalize_zabbix,
     run_due_external_alert_escalations,
 )
-from ops.alerting import alert_dimension_value, dispatch_alert_notifications
+from ops.alerting import alert_dimension_value, dispatch_alert_notifications, resolve_notification_policies
 from ops.models import (
     Alert,
     AlertAnalysis,
@@ -22,7 +22,9 @@ from ops.models import (
     AlertNotificationPolicy,
     ExternalAlertIngressLog,
     ExternalAlertSource,
+    MetricDataSource,
 )
+from ops.serializers import AlertNotificationPolicySerializer
 from aiops.models import AIOpsKnowledgeEnvironment
 
 
@@ -487,6 +489,11 @@ class LightweightAlertAnalysisTests(TestCase):
 
 
 class ExternalAlertNotificationPolicyTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = get_user_model().objects.create_superuser(username='external-policy-admin', password='test-pass')
+        self.client.force_authenticate(self.user)
+
     def test_external_source_code_is_available_as_notification_dimension(self):
         source = ExternalAlertSource.objects.create(
             name='Production Alertmanager',
@@ -536,6 +543,86 @@ class ExternalAlertNotificationPolicyTests(TestCase):
         self.assertEqual(len(logs), 1)
         self.assertIsNone(logs[0].rule_id)
         self.assertEqual(logs[0].policy_id, policy.id)
+
+    def test_external_source_policy_only_matches_selected_source(self):
+        first_source = ExternalAlertSource.objects.create(
+            name='First Alertmanager', code='first-alertmanager', provider=ExternalAlertSource.PROVIDER_ALERTMANAGER,
+        )
+        second_source = ExternalAlertSource.objects.create(
+            name='Second Alertmanager', code='second-alertmanager', provider=ExternalAlertSource.PROVIDER_ALERTMANAGER,
+        )
+        first_policy = AlertNotificationPolicy.objects.create(
+            name='first-source-policy', external_alert_source=first_source, priority=10, continue_matching=True,
+        )
+        AlertNotificationPolicy.objects.create(
+            name='second-source-policy', external_alert_source=second_source, priority=20, continue_matching=True,
+        )
+        global_policy = AlertNotificationPolicy.objects.create(name='global-policy', priority=100)
+        external_alert = Alert(
+            title='External alert', level='warning', source=first_source.code,
+            source_type=Alert.SOURCE_ALERTMANAGER, ingress_source=first_source,
+        )
+        platform_alert = Alert(
+            title='Platform alert', level='warning', source='platform', source_type=Alert.SOURCE_PLATFORM,
+        )
+
+        self.assertEqual(resolve_notification_policies(external_alert), [first_policy, global_policy])
+        self.assertEqual(resolve_notification_policies(platform_alert), [global_policy])
+
+    @patch('ops.alerting.compute_group_key', return_value='external-source-group')
+    def test_external_notification_group_includes_ingress_source(self, compute_group_key):
+        source = ExternalAlertSource.objects.create(
+            name='Production Zabbix', code='production-zabbix', provider=ExternalAlertSource.PROVIDER_ZABBIX,
+        )
+        channel = AlertNotificationChannel.objects.create(
+            name='external-email', channel_type=AlertNotificationChannel.CHANNEL_EMAIL, config={},
+        )
+        policy = AlertNotificationPolicy.objects.create(
+            name='zabbix-policy', external_alert_source=source, group_by=['namespace'], group_wait_seconds=0,
+        )
+        policy.channels.add(channel)
+        alert = Alert.objects.create(
+            title='External alert', level='warning', status=Alert.STATUS_ACTIVE,
+            source=source.code, source_type=Alert.SOURCE_ZABBIX, ingress_source=source,
+            namespace='production', fingerprint='zabbix:group-source', starts_at=timezone.now(),
+        )
+
+        dispatch_alert_notifications(alert, action='fire', force=True)
+
+        self.assertEqual(compute_group_key.call_args.args[1], ['ingress_source_code', 'namespace'])
+
+    def test_policy_rejects_metric_and_external_sources_together(self):
+        metric_source = MetricDataSource.objects.create(name='Prometheus')
+        external_source = ExternalAlertSource.objects.create(
+            name='Zabbix', code='zabbix-source', provider=ExternalAlertSource.PROVIDER_ZABBIX,
+        )
+
+        serializer = AlertNotificationPolicySerializer(data={
+            'name': 'invalid-policy',
+            'metric_datasource': metric_source.id,
+            'external_alert_source': external_source.id,
+        })
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('指标数据源与外部告警接入源不能同时选择', str(serializer.errors))
+
+    def test_policy_preview_uses_external_source_scope(self):
+        external_source = ExternalAlertSource.objects.create(
+            name='Production Zabbix', code='production-zabbix', provider=ExternalAlertSource.PROVIDER_ZABBIX,
+        )
+        policy = AlertNotificationPolicy.objects.create(
+            name='zabbix-policy', external_alert_source=external_source, priority=10,
+        )
+
+        response = self.client.post('/api/alert-notification-policies/preview/', {
+            'external_alert_source_id': external_source.id,
+            'level': 'warning',
+            'labels': {'host': 'server-01'},
+        }, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['matched_count'], 1)
+        self.assertEqual(response.data['policies'][0]['id'], policy.id)
 
     def test_scheduler_applies_due_external_escalation(self):
         policy = AlertNotificationPolicy.objects.create(

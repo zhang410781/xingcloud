@@ -1843,11 +1843,13 @@ class AlertNotificationPolicySerializer(serializers.ModelSerializer):
     channels = serializers.SerializerMethodField()
     recipient_groups = serializers.SerializerMethodField()
     metric_datasource_detail = serializers.SerializerMethodField()
+    external_alert_source_detail = serializers.SerializerMethodField()
 
     class Meta:
         model = AlertNotificationPolicy
         fields = [
-            'id', 'name', 'metric_datasource', 'metric_datasource_detail', 'matchers', 'min_level',
+            'id', 'name', 'metric_datasource', 'metric_datasource_detail',
+            'external_alert_source', 'external_alert_source_detail', 'matchers', 'min_level',
             'priority', 'continue_matching', 'channel_ids', 'channels', 'recipient_group_ids',
             'recipient_groups', 'group_by', 'group_wait_seconds', 'group_interval_seconds',
             'repeat_interval_minutes', 'mute_schedule', 'inhibition_matchers', 'escalation_steps',
@@ -1868,6 +1870,26 @@ class AlertNotificationPolicySerializer(serializers.ModelSerializer):
         if not datasource:
             return None
         return {'id': datasource.id, 'name': datasource.name, 'environment': datasource.environment, 'cluster_name': datasource.cluster_name}
+
+    def get_external_alert_source_detail(self, obj):
+        source = obj.external_alert_source
+        if not source:
+            return None
+        return {
+            'id': source.id,
+            'name': source.name,
+            'code': source.code,
+            'provider': source.provider,
+            'provider_display': source.get_provider_display(),
+            'notify_enabled': source.notify_enabled,
+        }
+
+    def validate(self, attrs):
+        metric_datasource = attrs.get('metric_datasource', getattr(self.instance, 'metric_datasource', None))
+        external_source = attrs.get('external_alert_source', getattr(self.instance, 'external_alert_source', None))
+        if metric_datasource and external_source:
+            raise serializers.ValidationError('指标数据源与外部告警接入源不能同时选择')
+        return attrs
 
     def validate_matchers(self, value):
         if not isinstance(value, list):
