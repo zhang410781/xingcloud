@@ -183,7 +183,7 @@ def validate_context_bindings(context, *, live=False):
     checks.append({'code': 'asset_count', 'title': '已登记资产', 'status': 'ready', 'detail': str(asset_count), 'blocking': False})
     middleware_count = MiddlewareAsset.objects.filter(business_groups=asset_environment).distinct().count() if asset_environment else 0
     checks.append({'code': 'middleware_asset_count', 'title': '已登记中间件与数据库', 'status': 'ready', 'detail': str(middleware_count), 'blocking': False})
-    mismatched_alerts = context.alerts.exclude(environment=context.code).count()
+    mismatched_alerts = context.alerts.filter(source_type='platform').exclude(environment=context.code).count()
     add('alert_environment', '告警环境编码', mismatched_alerts == 0, f'{mismatched_alerts} 条不一致')
     checks.append({'code': 'rule_scope', 'title': '当前指标源规则', 'status': 'ready', 'detail': str(AlertRule.objects.filter(metric_datasource=metric).count() if metric else 0), 'blocking': False})
 

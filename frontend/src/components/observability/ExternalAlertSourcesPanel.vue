@@ -3,7 +3,7 @@
     <div class="section-head">
       <div>
         <h3>外部告警接入</h3>
-        <p>集中管理 Alertmanager 与 Zabbix 的接入地址、业务归属、通知和研判。</p>
+        <p>集中管理 Alertmanager 与 Zabbix 的接入地址、鉴权、通知和轻量研判。</p>
       </div>
       <div class="head-actions">
         <el-button :icon="Refresh" :loading="loading" @click="loadSources">刷新</el-button>
@@ -14,7 +14,7 @@
     <div class="source-stats">
       <div class="stat-item"><span>接入源</span><strong>{{ sources.length }}</strong></div>
       <div class="stat-item"><span>运行正常</span><strong>{{ sourceStats.healthy }}</strong></div>
-      <div class="stat-item"><span>待绑定告警</span><strong>{{ sourceStats.unbound }}</strong></div>
+      <div class="stat-item"><span>活跃告警</span><strong>{{ sourceStats.active }}</strong></div>
       <div class="stat-item"><span>已接收告警</span><strong>{{ sourceStats.received }}</strong></div>
     </div>
 
@@ -28,9 +28,6 @@
       <el-table-column label="类型" width="120">
         <template #default="{ row }">{{ row.provider_display || providerText(row.provider) }}</template>
       </el-table-column>
-      <el-table-column label="默认业务上下文" min-width="160">
-        <template #default="{ row }">{{ row.default_knowledge_environment_detail?.name || '未设置' }}</template>
-      </el-table-column>
       <el-table-column label="状态" width="100">
         <template #default="{ row }">
           <el-tag size="small" :type="healthTone(row.health_status)">{{ healthText(row.health_status) }}</el-tag>
@@ -41,9 +38,7 @@
           <span>{{ row.notify_enabled ? '通知开' : '通知关' }} / {{ row.analyze_enabled ? '研判开' : '研判关' }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="活跃 / 待绑定" width="120">
-        <template #default="{ row }">{{ row.active_alert_count || 0 }} / {{ row.unbound_alert_count || 0 }}</template>
-      </el-table-column>
+      <el-table-column prop="active_alert_count" label="活跃告警" width="100" />
       <el-table-column prop="received_alerts" label="接收数" width="90" />
       <el-table-column label="最近接收" width="170">
         <template #default="{ row }">{{ formatTime(row.last_received_at) }}</template>
@@ -76,11 +71,6 @@
         <el-form-item label="类型">
           <el-segmented v-model="sourceDialog.form.provider" :disabled="Boolean(sourceDialog.form.id)" :options="providerOptions" />
         </el-form-item>
-        <el-form-item label="默认业务上下文">
-          <el-select v-model="sourceDialog.form.default_knowledge_environment" clearable filterable placeholder="未匹配规则时的归属">
-            <el-option v-for="item in contextOptions" :key="item.id" :label="contextLabel(item)" :value="item.id" />
-          </el-select>
-        </el-form-item>
         <el-form-item label="每分钟请求上限"><el-input-number v-model="sourceDialog.form.rate_limit_per_minute" :min="1" :max="10000" /></el-form-item>
         <el-form-item label="运行开关" class="switch-row">
           <el-checkbox v-model="sourceDialog.form.is_enabled">允许接入</el-checkbox>
@@ -88,35 +78,6 @@
           <el-checkbox v-model="sourceDialog.form.analyze_enabled">智能研判</el-checkbox>
         </el-form-item>
       </div>
-      <el-form-item label="业务上下文映射">
-        <div class="mapping-editor">
-          <div v-for="(rule, ruleIndex) in sourceDialog.form.mapping_rules" :key="rule.local_id" class="mapping-rule">
-            <div class="mapping-head">
-              <span>规则 {{ ruleIndex + 1 }}</span>
-              <el-input-number v-model="rule.priority" :min="1" :max="9999" controls-position="right" />
-              <el-select v-model="rule.knowledge_environment_id" filterable placeholder="目标业务上下文">
-                <el-option v-for="item in contextOptions" :key="item.id" :label="contextLabel(item)" :value="item.id" />
-              </el-select>
-              <el-button text type="danger" :icon="Delete" title="删除映射规则" @click="removeMappingRule(ruleIndex)" />
-            </div>
-            <div v-for="(matcher, matcherIndex) in rule.matchers" :key="matcher.local_id" class="matcher-row">
-              <el-input v-model="matcher.key" placeholder="标签或字段，如 namespace" />
-              <el-select v-model="matcher.operator">
-                <el-option label="等于" value="==" />
-                <el-option label="不等于" value="!=" />
-                <el-option label="正则匹配" value="=~" />
-                <el-option label="正则不匹配" value="!~" />
-                <el-option label="包含" value="contains" />
-              </el-select>
-              <el-input v-model="matcher.value" placeholder="匹配值" />
-              <el-button text type="danger" :icon="Delete" title="删除条件" @click="removeMatcher(rule, matcherIndex)" />
-            </div>
-            <el-button text type="primary" :icon="Plus" @click="addMatcher(rule)">增加条件</el-button>
-          </div>
-          <el-button :icon="Plus" @click="addMappingRule">增加映射规则</el-button>
-          <span class="mapping-help">规则按优先级匹配；均未命中时使用默认业务上下文，否则进入待绑定告警。</span>
-        </div>
-      </el-form-item>
       <el-form-item label="说明"><el-input v-model="sourceDialog.form.description" type="textarea" :rows="2" /></el-form-item>
     </el-form>
     <template #footer>
@@ -144,15 +105,15 @@
     </el-table>
   </el-dialog>
 
-  <el-dialog v-model="previewDialog.visible" :title="`${previewDialog.source?.name || ''} · 载荷与归属预览`" width="min(900px, calc(100vw - 32px))" destroy-on-close>
+  <el-dialog v-model="previewDialog.visible" :title="`${previewDialog.source?.name || ''} · 载荷格式预览`" width="min(900px, calc(100vw - 32px))" destroy-on-close>
     <el-input v-model="previewDialog.text" type="textarea" :rows="14" spellcheck="false" />
     <div class="preview-actions"><el-button type="primary" :loading="previewDialog.loading" @click="previewPayload">验证载荷</el-button></div>
     <el-table v-if="previewDialog.results.length" :data="previewDialog.results" size="small" stripe>
       <el-table-column prop="title" label="告警" min-width="200" />
       <el-table-column prop="level" label="级别" width="90" />
+      <el-table-column prop="status" label="状态" width="90" />
+      <el-table-column prop="namespace" label="命名空间" min-width="120" />
       <el-table-column prop="resource" label="资源" min-width="150" />
-      <el-table-column prop="binding_status" label="归属" width="90" />
-      <el-table-column label="业务上下文" min-width="160"><template #default="{ row }">{{ row.knowledge_environment?.name || '待绑定' }}</template></el-table-column>
     </el-table>
   </el-dialog>
 </template>
@@ -160,9 +121,8 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CopyDocument, Delete, Plus, Refresh } from '@element-plus/icons-vue'
+import { CopyDocument, Plus, Refresh } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
-import { getAIOpsKnowledgeEnvironments } from '@/api/modules/aiops'
 import {
   createExternalAlertSource,
   deleteExternalAlertSource,
@@ -177,7 +137,6 @@ const authStore = useAuthStore()
 const canManage = computed(() => authStore.hasPermission('ops.alert.config.manage'))
 const loading = ref(false)
 const sources = ref([])
-const contextOptions = ref([])
 const providerOptions = [
   { label: 'Alertmanager', value: 'alertmanager' },
   { label: 'Zabbix', value: 'zabbix' },
@@ -185,7 +144,7 @@ const providerOptions = [
 
 const sourceStats = computed(() => ({
   healthy: sources.value.filter((item) => item.health_status === 'healthy').length,
-  unbound: sources.value.reduce((total, item) => total + Number(item.unbound_alert_count || 0), 0),
+  active: sources.value.reduce((total, item) => total + Number(item.active_alert_count || 0), 0),
   received: sources.value.reduce((total, item) => total + Number(item.received_alerts || 0), 0),
 }))
 
@@ -198,31 +157,12 @@ function listOf(response) {
   return Array.isArray(response) ? response : (response?.results || [])
 }
 
-function localId() {
-  return `${Date.now()}-${Math.random().toString(16).slice(2)}`
-}
-
-function emptyMatcher(value = {}) {
-  return { local_id: localId(), key: '', operator: '==', value: '', ...value }
-}
-
-function emptyRule(value = {}, index = 0) {
-  return {
-    local_id: localId(),
-    priority: value.priority || (index + 1) * 10,
-    knowledge_environment_id: value.knowledge_environment_id || null,
-    matchers: (value.matchers || []).map((item) => emptyMatcher(item)),
-  }
-}
-
 function emptySource() {
   return {
     id: null,
     name: '',
     code: '',
     provider: 'alertmanager',
-    default_knowledge_environment: null,
-    mapping_rules: [],
     rate_limit_per_minute: 120,
     is_enabled: true,
     notify_enabled: false,
@@ -234,12 +174,8 @@ function emptySource() {
 async function loadSources() {
   loading.value = true
   try {
-    const [sourceResponse, contextResponse] = await Promise.all([
-      getExternalAlertSources({ page_size: 500 }),
-      getAIOpsKnowledgeEnvironments({ page_size: 500, is_enabled: true }),
-    ])
+    const sourceResponse = await getExternalAlertSources({ page_size: 500 })
     sources.value = listOf(sourceResponse)
-    contextOptions.value = listOf(contextResponse)
   } catch (error) {
     ElMessage.error(error?.response?.data?.detail || '外部告警接入源加载失败')
   } finally {
@@ -252,44 +188,17 @@ function openSource(row = null) {
     ? {
         ...emptySource(),
         ...row,
-        mapping_rules: (row.mapping_rules || []).map((item, index) => emptyRule(item, index)),
       }
     : emptySource()
   sourceDialog.visible = true
 }
 
-function addMappingRule() {
-  const rule = emptyRule({}, sourceDialog.form.mapping_rules.length)
-  rule.matchers.push(emptyMatcher())
-  sourceDialog.form.mapping_rules.push(rule)
-}
-
-function removeMappingRule(index) {
-  sourceDialog.form.mapping_rules.splice(index, 1)
-}
-
-function addMatcher(rule) {
-  rule.matchers.push(emptyMatcher())
-}
-
-function removeMatcher(rule, index) {
-  rule.matchers.splice(index, 1)
-  if (!rule.matchers.length) rule.matchers.push(emptyMatcher())
-}
-
 function sourcePayload() {
   const form = sourceDialog.form
-  const mappingRules = form.mapping_rules.map((rule) => ({
-    priority: Number(rule.priority || 0),
-    knowledge_environment_id: rule.knowledge_environment_id,
-    matchers: rule.matchers.map((item) => ({ key: item.key.trim(), operator: item.operator, value: item.value })),
-  }))
   return {
     name: form.name.trim(),
     code: form.code.trim(),
     provider: form.provider,
-    default_knowledge_environment: form.default_knowledge_environment || null,
-    mapping_rules: mappingRules,
     rate_limit_per_minute: Number(form.rate_limit_per_minute || 120),
     is_enabled: Boolean(form.is_enabled),
     notify_enabled: Boolean(form.notify_enabled),
@@ -313,11 +222,6 @@ function apiErrorMessage(error, fallback) {
 async function saveSource() {
   if (!sourceDialog.form.name.trim()) return ElMessage.warning('请输入接入源名称')
   if (!sourceDialog.form.id && !sourceDialog.form.code.trim()) return ElMessage.warning('请输入接入源编码')
-  for (const rule of sourceDialog.form.mapping_rules) {
-    if (!rule.knowledge_environment_id || rule.matchers.some((item) => !item.key.trim())) {
-      return ElMessage.warning('请完整填写业务上下文映射规则')
-    }
-  }
   sourceDialog.saving = true
   try {
     const result = sourceDialog.form.id
@@ -404,7 +308,7 @@ async function previewPayload() {
   try {
     const result = await previewExternalAlertSourcePayload(previewDialog.source.id, payload)
     previewDialog.results = result.results || []
-    ElMessage.success('载荷格式和业务归属验证通过，不会创建真实告警')
+    ElMessage.success('载荷格式验证通过，不会创建真实告警')
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '载荷验证失败'))
   } finally {
@@ -437,10 +341,6 @@ function logTone(value) {
   return { accepted: 'success', rejected: 'warning', error: 'danger' }[value] || 'info'
 }
 
-function contextLabel(item) {
-  return `${item.name}${item.code ? ` (${item.code})` : ''}`
-}
-
 function formatTime(value) {
   if (!value) return '-'
   const date = new Date(value)
@@ -465,11 +365,6 @@ onMounted(loadSources)
 .source-error { margin-top: 14px; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 18px; }
 .switch-row :deep(.el-form-item__content) { flex-wrap: wrap; }
-.mapping-editor { width: 100%; display: grid; gap: 10px; }
-.mapping-rule { border: 1px solid var(--el-border-color-lighter); border-radius: 6px; padding: 10px; display: grid; gap: 8px; }
-.mapping-head { display: grid; grid-template-columns: 80px 120px minmax(180px, 1fr) 36px; gap: 8px; align-items: center; }
-.matcher-row { display: grid; grid-template-columns: minmax(150px, 1fr) 130px minmax(180px, 1fr) 36px; gap: 8px; align-items: center; }
-.mapping-help { color: var(--el-text-color-secondary); font-size: 12px; }
 .credential-row { display: grid; grid-template-columns: 100px minmax(0, 1fr) auto; gap: 10px; align-items: center; margin-top: 16px; }
 .credential-row code { display: block; padding: 9px; background: var(--el-fill-color-light); border-radius: 4px; overflow-wrap: anywhere; }
 .config-sample { margin: 16px 0 0; padding: 12px; background: #101418; color: #d7e0e8; border-radius: 6px; overflow: auto; }
@@ -477,6 +372,6 @@ onMounted(loadSources)
 @media (max-width: 768px) {
   .section-head { flex-direction: column; }
   .source-stats, .form-grid { grid-template-columns: 1fr; }
-  .mapping-head, .matcher-row, .credential-row { grid-template-columns: 1fr; }
+  .credential-row { grid-template-columns: 1fr; }
 }
 </style>

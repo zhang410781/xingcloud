@@ -31,6 +31,7 @@ from ops.models import (
     AlertNotificationLog,
     AlertNotificationPolicy,
     AlertRule,
+    ExternalAlertSource,
     LogDataSource,
     MetricDataSource,
 )
@@ -818,3 +819,20 @@ class AlertAnalysisApiTests(TestCase):
         self.assertEqual(history_response.status_code, 200)
         self.assertEqual(len(history_response.data['results']), 1)
         self.assertEqual(history_response.data['latest']['status'], AlertAnalysis.STATUS_PENDING)
+
+    def test_manual_external_analysis_uses_webhook_text_only(self):
+        source = ExternalAlertSource.objects.create(
+            name='External Alertmanager', code='external-alertmanager', provider='alertmanager',
+        )
+        self.alert.source = source.code
+        self.alert.source_type = Alert.SOURCE_ALERTMANAGER
+        self.alert.ingress_source = source
+        self.alert.binding_status = 'not_applicable'
+        self.alert.save(update_fields=['source', 'source_type', 'ingress_source', 'binding_status'])
+
+        response = self.client.post(reverse('alert-analyze', args=[self.alert.id]), {}, format='json')
+
+        self.assertEqual(response.status_code, 201)
+        analysis = AlertAnalysis.objects.get(alert=self.alert)
+        self.assertEqual(analysis.trigger, AlertAnalysis.TRIGGER_MANUAL)
+        self.assertEqual(analysis.evidence['source_mode'], 'webhook_text_only')

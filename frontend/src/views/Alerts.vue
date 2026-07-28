@@ -55,10 +55,10 @@
           <el-select v-model="filters.source_type" size="small" clearable placeholder="&#x6765;&#x6E90;" @change="handleFilterChange">
             <el-option v-for="item in providerOptions" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
-          <el-select v-model="filters.binding_scope" size="small" placeholder="业务归属" @change="handleFilterChange">
+          <el-select v-model="filters.binding_scope" size="small" placeholder="告警范围" @change="handleFilterChange">
             <el-option label="当前业务上下文" value="current" />
-            <el-option label="全部业务上下文" value="all" />
-            <el-option label="待绑定外部告警" value="unbound" />
+            <el-option label="全部外部告警" value="external" />
+            <el-option label="全部告警" value="all" />
           </el-select>
           <el-select v-model="filters.environment" size="small" clearable filterable allow-create default-first-option placeholder="&#x73AF;&#x5883;" @change="handleFilterChange">
             <el-option v-for="item in environmentOptions" :key="item" :label="item" :value="item" />
@@ -447,7 +447,6 @@
             <el-descriptions class="alert-detail-summary" :column="1" size="small" border>
               <el-descriptions-item label="&#x6765;&#x6E90;">{{ providerText(selectedAlert.source_type) }} / {{ selectedAlert.source }}</el-descriptions-item>
               <el-descriptions-item v-if="selectedAlert.ingress_source_detail" label="外部接入源">{{ selectedAlert.ingress_source_detail.name }} / {{ selectedAlert.ingress_source_detail.code }}</el-descriptions-item>
-              <el-descriptions-item v-if="selectedAlert.source_type !== 'platform'" label="业务归属">{{ selectedAlert.binding_status === 'bound' ? '已绑定' : '待绑定' }}</el-descriptions-item>
               <el-descriptions-item label="&#x8D44;&#x6E90;">{{ selectedAlert.resource || selectedAlert.host_name || '-' }}</el-descriptions-item>
               <el-descriptions-item label="&#x670D;&#x52A1;">{{ selectedAlert.service || '-' }}</el-descriptions-item>
               <el-descriptions-item label="&#x73AF;&#x5883;">{{ selectedAlert.environment || '-' }}</el-descriptions-item>
@@ -1541,8 +1540,11 @@ function groupMembers(row) {
 
 function buildAlertParams() {
   const params = { page: page.value }
-  if (filters.binding_scope === 'current' && currentContextId.value) params.knowledge_environment_id = currentContextId.value
-  if (filters.binding_scope === 'unbound') params.binding_status = 'unbound'
+  if (filters.binding_scope === 'current') {
+    params.alert_scope = 'platform'
+    if (currentContextId.value) params.knowledge_environment_id = currentContextId.value
+  }
+  if (filters.binding_scope === 'external') params.alert_scope = 'external'
   if (filters.search) params.search = filters.search
   if (filters.level) params.level = filters.level
   if (filters.status) params.status = filters.status

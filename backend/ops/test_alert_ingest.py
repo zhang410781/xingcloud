@@ -240,7 +240,6 @@ class ManagedExternalAlertSourceTests(TestCase):
             'name': '生产 Alertmanager',
             'code': 'production-alertmanager',
             'provider': 'alertmanager',
-            'default_knowledge_environment': self.context.id,
         }, format='json')
 
         self.assertEqual(response.status_code, 201)
@@ -250,8 +249,10 @@ class ManagedExternalAlertSourceTests(TestCase):
         self.assertEqual(detail.status_code, 200)
         self.assertNotIn('token', detail.data)
         self.assertTrue(detail.data['token_configured'])
+        self.assertNotIn('default_knowledge_environment', detail.data)
+        self.assertNotIn('mapping_rules', detail.data)
 
-    def test_source_token_ingests_and_applies_default_context(self):
+    def test_source_token_ingests_without_business_context(self):
         source, token = self.create_source(
             'production-alertmanager',
             default_knowledge_environment=self.context,
@@ -262,8 +263,9 @@ class ManagedExternalAlertSourceTests(TestCase):
         self.assertEqual(response.status_code, 201)
         alert = Alert.objects.get()
         self.assertEqual(alert.ingress_source, source)
-        self.assertEqual(alert.knowledge_environment, self.context)
-        self.assertEqual(alert.binding_status, 'bound')
+        self.assertIsNone(alert.knowledge_environment)
+        self.assertEqual(alert.binding_status, 'not_applicable')
+        self.assertEqual(alert.raw_payload['ingest']['binding_reason'], 'not_required')
         self.assertEqual(alert.labels['namespace'], 'external-ns')
         source.refresh_from_db()
         self.assertEqual(source.accepted_requests, 1)
@@ -282,7 +284,7 @@ class ManagedExternalAlertSourceTests(TestCase):
         self.assertEqual(len(fingerprints), 2)
         self.assertEqual(set(Alert.objects.values_list('ingress_source_id', flat=True)), {first_source.id, second_source.id})
 
-    def test_mapping_rule_overrides_default_context(self):
+    def test_legacy_context_mapping_is_ignored(self):
         mapped_context = AIOpsKnowledgeEnvironment.objects.create(name='映射环境', code='mapped-context')
         source, token = self.create_source(
             'mapping-alertmanager',
@@ -297,20 +299,40 @@ class ManagedExternalAlertSourceTests(TestCase):
         response = self.ingest(source, token, self.alertmanager_payload(namespace='mapped-ns'))
 
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(Alert.objects.get().knowledge_environment, mapped_context)
+        alert = Alert.objects.get()
+        self.assertIsNone(alert.knowledge_environment)
+        self.assertEqual(alert.binding_status, 'not_applicable')
 
-    def test_source_without_mapping_creates_visible_unbound_alert(self):
-        source, token = self.create_source('unbound-alertmanager')
+    def test_external_alert_is_visible_in_external_scope(self):
+        source, token = self.create_source('external-alertmanager')
 
         response = self.ingest(source, token)
 
         self.assertEqual(response.status_code, 201)
         alert = Alert.objects.get()
         self.assertIsNone(alert.knowledge_environment)
-        self.assertEqual(alert.binding_status, 'unbound')
-        queryset = self.client.get('/api/alerts/?source_type=alertmanager&binding_status=unbound')
+        self.assertEqual(alert.binding_status, 'not_applicable')
+        queryset = self.client.get('/api/alerts/?alert_scope=external')
         self.assertEqual(queryset.status_code, 200)
         self.assertEqual(queryset.data['count'], 1)
+
+    def test_payload_preview_has_no_business_context_assignment(self):
+        source, _token = self.create_source(
+            'preview-alertmanager',
+            default_knowledge_environment=self.context,
+        )
+
+        response = self.client.post(
+            f'/api/external-alert-sources/{source.id}/preview-payload/',
+            {'payload': self.alertmanager_payload()},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        result = response.data['results'][0]
+        self.assertNotIn('knowledge_environment', result)
+        self.assertNotIn('binding_status', result)
+        self.assertEqual(result['source'], source.code)
 
     def test_provider_mismatch_is_rejected_and_logged(self):
         source, token = self.create_source('zabbix-source', provider=ExternalAlertSource.PROVIDER_ZABBIX)
@@ -469,7 +491,7 @@ class LightweightAlertAnalysisTests(TestCase):
             analyze_enabled=True,
         )
         self.alert.ingress_source = source
-        self.alert.binding_status = 'unbound'
+        self.alert.binding_status = 'not_applicable'
         self.alert.save(update_fields=['ingress_source', 'binding_status'])
         synthesize.return_value = ('provider', 'model', {
             'summary': '分析完成',
@@ -507,7 +529,7 @@ class ExternalAlertNotificationPolicyTests(TestCase):
             source=source.code,
             source_type=Alert.SOURCE_ALERTMANAGER,
             ingress_source=source,
-            binding_status='unbound',
+            binding_status='not_applicable',
             fingerprint='alertmanager:dimension',
             starts_at=timezone.now(),
         )

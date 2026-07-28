@@ -8,7 +8,7 @@ from django.utils import timezone
 from aiops.business_context import assign_alert_context, validate_context_bindings
 from aiops.models import AIOpsKnowledgeEnvironment
 from ops.anomaly_detection import detect_anomaly
-from ops.models import Alert, AlertNotificationPolicy, AlertRule, K8sCluster, LogDataSource, MetricDataSource, TaskResource, TaskResourceGroup
+from ops.models import Alert, AlertNotificationPolicy, AlertRule, ExternalAlertSource, K8sCluster, LogDataSource, MetricDataSource, TaskResource, TaskResourceGroup
 from ops.observability_evidence import _k8s_evidence, _log_evidence, _series_values, collect_observability_evidence, inspection_result
 
 
@@ -55,6 +55,22 @@ class BusinessContextTests(TestCase):
         result = validate_context_bindings(self.context)
         self.assertTrue(result['ready'])
         self.assertEqual(result['context']['k8s_cluster_id'], self.cluster.id)
+
+    def test_external_alert_does_not_affect_binding_health(self):
+        source = ExternalAlertSource.objects.create(
+            name='Legacy Alertmanager', code='legacy-alertmanager', provider='alertmanager',
+        )
+        Alert.objects.create(
+            title='legacy external alert', source=source.code, source_type='alertmanager',
+            ingress_source=source, message='test', environment='', knowledge_environment=self.context,
+            binding_status='bound',
+        )
+
+        result = validate_context_bindings(self.context)
+        check = next(item for item in result['checks'] if item['code'] == 'alert_environment')
+
+        self.assertEqual(check['status'], 'ready')
+        self.assertEqual(check['detail'], '0 条不一致')
 
     def test_binding_health_reads_clickhouse_collection_field_mapping(self):
         self.logs.provider = 'clickhouse'
@@ -108,6 +124,27 @@ class BusinessContextTests(TestCase):
         self.assertEqual(response.status_code, 200)
         ids = [item['id'] for item in response.json()['results']]
         self.assertEqual(ids, [expected.id])
+
+    def test_alert_list_filters_platform_and_external_scopes(self):
+        platform_alert = Alert.objects.create(
+            title='platform alert', source='platform', source_type='platform', message='test',
+            environment='xing-prod', knowledge_environment=self.context,
+        )
+        source = ExternalAlertSource.objects.create(
+            name='External Zabbix', code='external-zabbix', provider='zabbix',
+        )
+        external_alert = Alert.objects.create(
+            title='external alert', source=source.code, source_type='zabbix', message='test',
+            ingress_source=source, binding_status='not_applicable',
+        )
+        user = get_user_model().objects.create_superuser(username='scope-admin', password='test-password')
+        self.client.force_login(user)
+
+        platform_response = self.client.get('/api/alerts/', {'alert_scope': 'platform'})
+        external_response = self.client.get('/api/alerts/', {'alert_scope': 'external'})
+
+        self.assertEqual([item['id'] for item in platform_response.json()['results']], [platform_alert.id])
+        self.assertEqual([item['id'] for item in external_response.json()['results']], [external_alert.id])
 
     def test_alert_rules_and_policies_filter_by_business_context(self):
         other_metric = MetricDataSource.objects.create(name='other-prom', environment='other', config={})

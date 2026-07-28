@@ -695,11 +695,17 @@ def enqueue_alert_analysis(alert, trigger=AlertAnalysis.TRIGGER_FIRST_ACTIVE, re
     return analysis, True
 
 
-def enqueue_lightweight_analysis(alert, requested_by='webhook'):
+def enqueue_lightweight_analysis(
+    alert,
+    requested_by='webhook',
+    trigger=AlertAnalysis.TRIGGER_FIRST_ACTIVE,
+    force=False,
+):
     analysis, created = enqueue_alert_analysis(
         alert,
-        trigger=AlertAnalysis.TRIGGER_FIRST_ACTIVE,
+        trigger=trigger,
         requested_by=requested_by,
+        force=force,
     )
     if analysis and created:
         evidence = _dict(analysis.evidence)

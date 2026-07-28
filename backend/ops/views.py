@@ -110,7 +110,7 @@ from .alerting import (
     match_matchers,
 )
 from .alert_log_evidence import build_alert_log_evidence
-from .alert_analysis import enqueue_alert_analysis, serialize_analysis
+from .alert_analysis import enqueue_alert_analysis, enqueue_lightweight_analysis, serialize_analysis
 from .alert_rule_presets import LEGACY_K8S_TEMPLATE_CODES, instantiate_rule_from_template
 from .alert_rules import trigger_alert_rule
 from .sla import build_dashboard_sla as build_sla_dashboard_summary
@@ -242,7 +242,7 @@ def _should_record_external_rejection(source, request):
 @permission_classes([AllowAny])
 def external_alert_source_ingest(request, source_key):
     started_at = monotonic()
-    source = ExternalAlertSource.objects.select_related('default_knowledge_environment').filter(public_id=source_key).first()
+    source = ExternalAlertSource.objects.filter(public_id=source_key).first()
     if not source:
         return Response({'detail': '外部告警接入源不存在。'}, status=status.HTTP_404_NOT_FOUND)
     if not source.is_enabled:
@@ -290,7 +290,7 @@ class ExternalAlertSourceViewSet(EventWallModelViewSetMixin, RBACPermissionMixin
     serializer_class = ExternalAlertSourceSerializer
     pagination_class = AlertConfigPagination
     search_fields = ['name', 'code', 'description']
-    filterset_fields = ['provider', 'is_enabled', 'notify_enabled', 'analyze_enabled', 'default_knowledge_environment']
+    filterset_fields = ['provider', 'is_enabled', 'notify_enabled', 'analyze_enabled']
     event_module = 'ops'
     event_resource_type = 'external_alert_source'
     event_resource_label = '外部告警接入源'
@@ -308,9 +308,8 @@ class ExternalAlertSourceViewSet(EventWallModelViewSetMixin, RBACPermissionMixin
     }
 
     def get_queryset(self):
-        return ExternalAlertSource.objects.select_related('default_knowledge_environment').annotate(
+        return ExternalAlertSource.objects.annotate(
             active_alert_count=Count('alerts', filter=Q(alerts__status=Alert.STATUS_ACTIVE), distinct=True),
-            unbound_alert_count=Count('alerts', filter=Q(alerts__binding_status='unbound'), distinct=True),
         ).order_by('name', 'id')
 
     def create(self, request, *args, **kwargs):
@@ -367,18 +366,14 @@ class ExternalAlertSourceViewSet(EventWallModelViewSetMixin, RBACPermissionMixin
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         results = []
         for item in normalized_alerts:
-            context = item.get('knowledge_environment')
             results.append({
                 'title': item.get('title'),
                 'level': item.get('level'),
                 'status': item.get('status'),
+                'source': item.get('source'),
                 'resource': item.get('resource'),
                 'namespace': item.get('namespace'),
                 'cluster': item.get('cluster'),
-                'binding_status': item.get('binding_status'),
-                'knowledge_environment': (
-                    {'id': context.id, 'name': context.name, 'code': context.code} if context else None
-                ),
                 'labels': item.get('labels') or {},
             })
         return Response({'source': detected_source, 'count': len(results), 'results': results})
@@ -2452,6 +2447,11 @@ class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.Mod
         queryset = super().get_queryset().order_by('-last_received_at', '-created_at', '-id')
         queryset = _apply_system_alias_filter(self.request, queryset, 'business_line', 'host__business_line')
         params = self.request.query_params
+        alert_scope = params.get('alert_scope')
+        if alert_scope == 'platform':
+            queryset = queryset.filter(source_type=Alert.SOURCE_PLATFORM)
+        elif alert_scope == 'external':
+            queryset = queryset.filter(source_type__in=[Alert.SOURCE_ALERTMANAGER, Alert.SOURCE_ZABBIX])
         knowledge_environment_id = params.get('knowledge_environment_id')
         if knowledge_environment_id:
             queryset = queryset.filter(knowledge_environment_id=knowledge_environment_id)
@@ -2580,12 +2580,20 @@ class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.Mod
     def analyze(self, request, pk=None):
         alert = self.get_object()
         actor = self._actor(request)
-        analysis, created = enqueue_alert_analysis(
-            alert,
-            trigger='manual',
-            requested_by=actor,
-            force=True,
-        )
+        if alert.source_type in {Alert.SOURCE_ALERTMANAGER, Alert.SOURCE_ZABBIX}:
+            analysis, created = enqueue_lightweight_analysis(
+                alert,
+                trigger='manual',
+                requested_by=actor,
+                force=True,
+            )
+        else:
+            analysis, created = enqueue_alert_analysis(
+                alert,
+                trigger='manual',
+                requested_by=actor,
+                force=True,
+            )
         return Response(
             {'created': created, 'analysis': serialize_analysis(analysis)},
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
