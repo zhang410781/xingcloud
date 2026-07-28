@@ -18,6 +18,16 @@
 
     <ObservabilityRouteTabs v-if="!embedded && activeTab === 'datasources'" group="datasources" />
 
+    <section v-if="activeTab === 'query'" class="toolbar panel feature-scope-bar">
+      <div class="toolbar-field">
+        <span>业务上下文</span>
+        <el-select v-model="currentContextId" size="small" filterable placeholder="请选择业务上下文">
+          <el-option v-for="item in contexts" :key="item.id" :label="item.name" :value="String(item.id)" />
+        </el-select>
+      </div>
+      <span class="scope-hint">指标查询使用当前页面选择上下文绑定的 Prometheus 数据源</span>
+    </section>
+
     <section v-if="activeTab === 'query'" class="metric-query-workbench">
       <div class="query-console">
         <section class="panel metric-query-unified-card metric-query-left-card">
@@ -363,14 +373,13 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { storeToRefs } from 'pinia'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { CaretRight, CollectionTag, CopyDocument, DataAnalysis, DataBoard, Plus, RefreshRight, Search } from '@element-plus/icons-vue'
 import echarts from '@/lib/echarts'
 import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
 import { useAuthStore } from '@/stores/auth'
-import { useBusinessContextStore } from '@/stores/businessContext'
+import { useFeatureBusinessContext } from '@/composables/useFeatureBusinessContext'
 import {
   createMetricDataSource,
   deleteMetricDataSource,
@@ -388,8 +397,8 @@ const props = defineProps({
 
 const route = useRoute()
 const authStore = useAuthStore()
-const businessContextStore = useBusinessContextStore()
-const { currentContext, currentContextId } = storeToRefs(businessContextStore)
+const businessContextScope = useFeatureBusinessContext('metrics-query', { autoLoad: false })
+const { contexts, currentContext, currentContextId } = businessContextScope
 const canQuery = computed(() => authStore.hasPermission('ops.metric.query'))
 const canManageDatasource = computed(() => authStore.hasPermission('ops.metric.datasource.manage'))
 const activeTab = ref(props.initialTab === 'datasources' || route.query.tab === 'datasources' ? 'datasources' : 'query')
@@ -1773,7 +1782,7 @@ watch(currentContextId, () => {
 })
 
 onMounted(async () => {
-  await businessContextStore.loadContexts()
+  await businessContextScope.loadContexts()
   await loadDataSources()
   await nextTick()
   refreshPromqlSuggestions()

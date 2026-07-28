@@ -2180,6 +2180,10 @@ class AlertSerializer(serializers.ModelSerializer):
     actions = AlertActionSerializer(many=True, read_only=True)
     recent_notifications = serializers.SerializerMethodField()
     ingress_source_detail = serializers.SerializerMethodField()
+    environment_display = serializers.SerializerMethodField()
+    scope_display = serializers.SerializerMethodField()
+    source_display = serializers.SerializerMethodField()
+    cluster_display = serializers.SerializerMethodField()
 
     class Meta:
         model = Alert
@@ -2223,6 +2227,30 @@ class AlertSerializer(serializers.ModelSerializer):
         if not source:
             return None
         return {'id': source.id, 'name': source.name, 'code': source.code, 'provider': source.provider}
+
+    def get_environment_display(self, obj):
+        if obj.ingress_source_id and obj.source_type in {Alert.SOURCE_ALERTMANAGER, Alert.SOURCE_ZABBIX}:
+            return obj.ingress_source.name
+        if obj.knowledge_environment_id:
+            return obj.knowledge_environment.name
+        labels = obj.labels or {}
+        return labels.get('environment_display_name') or obj.environment or ''
+
+    def get_scope_display(self, obj):
+        if obj.ingress_source_id and obj.source_type in {Alert.SOURCE_ALERTMANAGER, Alert.SOURCE_ZABBIX}:
+            return '外部接入'
+        if obj.knowledge_environment_id:
+            return obj.knowledge_environment.name
+        return '未绑定业务上下文'
+
+    def get_source_display(self, obj):
+        if obj.ingress_source_id:
+            return obj.ingress_source.name
+        return obj.source or obj.get_source_type_display()
+
+    def get_cluster_display(self, obj):
+        labels = obj.labels or {}
+        return labels.get('cluster_display_name') or obj.cluster or ''
 
 
 class LogEntrySerializer(serializers.ModelSerializer):

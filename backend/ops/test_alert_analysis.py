@@ -727,9 +727,24 @@ class AlertAnalysisTests(TestCase):
         body = _default_body(self.alert, action='fire')
 
         self.assertIn('Pod 15 分钟内重启超过阈值', body)
+        self.assertIn('业务上下文：** production', body)
         self.assertNotIn('当前值', body)
         self.assertNotIn('触发条件', body)
         self.assertNotIn('increase(restarts[15m])', body)
+
+    def test_external_notification_displays_ingress_source_name(self):
+        source = ExternalAlertSource.objects.create(
+            name='生产 Alertmanager', code='production-alertmanager', provider='alertmanager',
+        )
+        alert = Alert.objects.create(
+            title='外部告警', source=source.code, source_type=Alert.SOURCE_ALERTMANAGER,
+            ingress_source=source, message='外部系统告警', namespace='external',
+        )
+
+        body = _default_body(alert, action='fire')
+
+        self.assertIn('接入源：** 生产 Alertmanager', body)
+        self.assertNotIn('业务上下文：**', body)
 
     @patch('ops.alert_analysis.execute_alert_analysis')
     def test_stale_running_analysis_is_recovered_and_retried(self, execute):

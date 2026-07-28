@@ -136,18 +136,14 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { storeToRefs } from 'pinia'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Coin, Connection, Grid, Plus, Refresh } from '@element-plus/icons-vue'
 
 import { getMiddlewareOverview, getTaskResourceTree, runMiddlewareAction } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
-import { useBusinessContextStore } from '@/stores/businessContext'
 
 const authStore = useAuthStore()
-const businessContextStore = useBusinessContextStore()
-const { currentContext, currentContextId } = storeToRefs(businessContextStore)
 const loading = ref(false)
 const overview = ref({ assets: [], summary: { total: 0, by_type: {}, by_status: {} } })
 const activeType = ref('')
@@ -257,10 +253,7 @@ async function deleteAsset(row) {
   ElMessage.success(response.message || '中间件资产已删除')
 }
 
-watch(currentContextId, loadOverview)
-
 onMounted(async () => {
-  await businessContextStore.loadContexts()
   businessGroups.value = (await getTaskResourceTree()) || []
   await loadOverview()
 })

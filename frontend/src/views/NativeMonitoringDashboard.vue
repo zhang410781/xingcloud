@@ -16,6 +16,16 @@
 
     <ObservabilityRouteTabs group="observability" />
 
+    <section class="toolbar panel feature-scope-bar">
+      <div class="toolbar-field">
+        <span>业务上下文</span>
+        <el-select v-model="currentContextId" size="small" filterable placeholder="请选择业务上下文">
+          <el-option v-for="item in contexts" :key="item.id" :label="item.name" :value="String(item.id)" />
+        </el-select>
+      </div>
+      <span class="scope-hint">看板数据源由当前页面选择的业务上下文决定</span>
+    </section>
+
     <nav class="scope-switch" role="tablist" aria-label="监控对象">
       <button v-for="item in scopeItems" :key="item.key" type="button" :class="{ active: scope === item.key }" @click="changeScope(item.key)">
         <el-icon><component :is="item.icon" /></el-icon>{{ item.label }}
@@ -94,18 +104,17 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import { Connection, DataAnalysis, DataBoard, Monitor, RefreshRight, Search, SetUp } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
 import NativeDashboardChart from '@/components/observability/NativeDashboardChart.vue'
 import { getDashboardDefinitions, getLogDataSources, getMetricDataSources, queryDashboardDefinition, queryMetrics } from '@/api/modules/ops'
-import { useBusinessContextStore } from '@/stores/businessContext'
+import { useFeatureBusinessContext } from '@/composables/useFeatureBusinessContext'
 
 const router = useRouter()
-const businessContextStore = useBusinessContextStore()
-const { currentContext, currentContextId } = storeToRefs(businessContextStore)
+const businessContextScope = useFeatureBusinessContext('native-dashboard', { autoLoad: false })
+const { contexts, currentContext, currentContextId } = businessContextScope
 const scope = ref('k8s')
 const subtype = ref('mysql')
 const definitions = ref([])
@@ -143,7 +152,7 @@ const boundLogName = computed(() => {
   return name && source ? `${name} · ${providerLabel(source.provider)}` : name
 })
 const emptyHint = computed(() => {
-  if (!currentContext.value) return '请先在顶部选择业务上下文'
+  if (!currentContext.value) return '请先在当前页面选择业务上下文'
   if (scope.value === 'logs' && !selectedLogId.value) return '当前业务上下文未绑定日志数据源'
   if (scope.value !== 'logs' && !selectedMetricId.value) return '当前业务上下文未绑定指标数据源'
   return '请检查时间范围或筛选条件'
@@ -239,7 +248,7 @@ async function applyBusinessContext() {
 watch(currentContextId, applyBusinessContext)
 
 onMounted(async () => {
-  await businessContextStore.loadContexts()
+  await businessContextScope.loadContexts()
   await Promise.all([loadSources(), getDashboardDefinitions({ is_enabled: true }).then((response) => { definitions.value = listOf(response); refreshDefinition() })])
   dashboardMounted = true
   await loadDashboard()

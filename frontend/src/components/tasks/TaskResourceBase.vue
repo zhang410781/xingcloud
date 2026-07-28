@@ -69,7 +69,10 @@
             <el-option label="主机" value="host" />
             <el-option label="K8S 集群" value="k8s" />
           </el-select>
-          <div class="bound-asset-environment">当前上下文默认：{{ currentContext?.task_resource_environment_name || '未绑定' }}</div>
+          <el-select v-model="currentContextId" placeholder="业务上下文" clearable filterable size="small" style="width:170px">
+            <el-option v-for="item in contexts" :key="item.id" :label="item.name" :value="String(item.id)" />
+          </el-select>
+          <div class="bound-asset-environment">当前选择默认：{{ currentContext?.task_resource_environment_name || '未绑定' }}</div>
           <el-select v-model="filters.status" placeholder="状态" clearable style="width:110px" size="small" @change="refreshResourceView">
             <el-option label="可用" value="active" />
             <el-option label="异常" value="warning" />
@@ -284,7 +287,6 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Connection, Delete, Edit, Monitor, Plus, Search } from '@element-plus/icons-vue'
 import { getK8sClusters } from '@/api/modules/container'
@@ -300,12 +302,12 @@ import {
   updateTaskResourceGroup,
 } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
-import { useBusinessContextStore } from '@/stores/businessContext'
+import { useFeatureBusinessContext } from '@/composables/useFeatureBusinessContext'
 
 const emit = defineEmits(['tree-updated', 'stats-updated'])
 const auth = useAuthStore()
-const businessContextStore = useBusinessContextStore()
-const { currentContext, currentContextId } = storeToRefs(businessContextStore)
+const businessContextScope = useFeatureBusinessContext('task-resources', { autoLoad: false })
+const { contexts, currentContext, currentContextId } = businessContextScope
 const canManage = computed(() => auth.hasPermission('ops.task.resource.manage'))
 
 const treeRef = ref(null)
@@ -642,7 +644,7 @@ watch(currentContextId, async () => {
 })
 
 onMounted(async () => {
-  await businessContextStore.loadContexts()
+  await businessContextScope.loadContexts()
   await reloadAll()
 })
 </script>

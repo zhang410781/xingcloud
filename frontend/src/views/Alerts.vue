@@ -17,6 +17,20 @@
 
     <ObservabilityRouteTabs group="observability" />
 
+    <section v-if="activeTab === 'events'" class="toolbar panel feature-scope-bar">
+      <div v-if="filters.binding_scope === 'current'" class="toolbar-field">
+        <span>业务上下文</span>
+        <el-select v-model="currentContextId" size="small" filterable placeholder="请选择业务上下文">
+          <el-option v-for="item in contexts" :key="item.id" :label="item.name" :value="String(item.id)">
+            <span>{{ item.name }}</span><small class="scope-code">{{ item.code }}</small>
+          </el-option>
+        </el-select>
+      </div>
+      <span v-if="filters.binding_scope === 'current'" class="scope-hint">仅显示当前页面所选业务上下文的平台规则告警</span>
+      <span v-else-if="filters.binding_scope === 'external'" class="scope-hint">当前显示全部外部告警；外部告警不绑定业务上下文，环境位置显示接入源名称</span>
+      <span v-else class="scope-hint">当前显示平台与外部全部告警，不应用业务上下文过滤</span>
+    </section>
+
     <div v-if="isEventWorkspace" class="audit-grid alert-top-stats">
       <button
         v-for="card in statCards"
@@ -56,7 +70,7 @@
             <el-option v-for="item in providerOptions" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
           <el-select v-model="filters.binding_scope" size="small" placeholder="告警范围" @change="handleFilterChange">
-            <el-option label="当前业务上下文" value="current" />
+            <el-option label="所选业务上下文" value="current" />
             <el-option label="全部外部告警" value="external" />
             <el-option label="全部告警" value="all" />
           </el-select>
@@ -126,7 +140,9 @@
           <el-table-column prop="category" label="分类" width="90">
             <template #default="{ row }">{{ categoryText(row.category) }}</template>
           </el-table-column>
-          <el-table-column prop="environment" label="&#x73AF;&#x5883;" width="100" />
+          <el-table-column prop="environment_display" label="环境 / 接入源" min-width="140">
+            <template #default="{ row }">{{ row.environment_display || '-' }}</template>
+          </el-table-column>
           <el-table-column prop="claimed_by" label="&#x8BA4;&#x9886;&#x4EBA;" width="120">
             <template #default="{ row }">
               <div class="claimant-cell" v-if="row.claimants?.length">
@@ -445,11 +461,12 @@
           </div>
           <section class="alert-detail-card">
             <el-descriptions class="alert-detail-summary" :column="1" size="small" border>
-              <el-descriptions-item label="&#x6765;&#x6E90;">{{ providerText(selectedAlert.source_type) }} / {{ selectedAlert.source }}</el-descriptions-item>
+              <el-descriptions-item label="&#x6765;&#x6E90;">{{ providerText(selectedAlert.source_type) }} / {{ selectedAlert.source_display || selectedAlert.source }}</el-descriptions-item>
               <el-descriptions-item v-if="selectedAlert.ingress_source_detail" label="外部接入源">{{ selectedAlert.ingress_source_detail.name }} / {{ selectedAlert.ingress_source_detail.code }}</el-descriptions-item>
               <el-descriptions-item label="&#x8D44;&#x6E90;">{{ selectedAlert.resource || selectedAlert.host_name || '-' }}</el-descriptions-item>
               <el-descriptions-item label="&#x670D;&#x52A1;">{{ selectedAlert.service || '-' }}</el-descriptions-item>
-              <el-descriptions-item label="&#x73AF;&#x5883;">{{ selectedAlert.environment || '-' }}</el-descriptions-item>
+              <el-descriptions-item :label="selectedAlert.ingress_source_detail ? '接入源' : '业务上下文'">{{ selectedAlert.environment_display || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="集群">{{ selectedAlert.cluster_display || '-' }}</el-descriptions-item>
               <el-descriptions-item label="&#x8BA4;&#x9886;&#x4EBA;">
                 <div class="claimant-cell" v-if="selectedAlert.claimants?.length">
                   <el-tag v-for="item in selectedAlert.claimants" :key="item.id" size="small" class="mini-tag claimant-tag">{{ item.claimant }}</el-tag>
@@ -924,7 +941,6 @@
 
 <script setup>
 import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'vue'
-import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 import { Bell, Connection, Delete, Operation, Plus, Refresh, Search, Setting } from '@element-plus/icons-vue'
 import { ElButton, ElInput, ElMessage, ElMessageBox, ElOption, ElPopconfirm, ElSelect, ElTable, ElTableColumn, ElTag } from 'element-plus'
@@ -987,7 +1003,7 @@ import {
   updateAlertRule,
 } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
-import { useBusinessContextStore } from '@/stores/businessContext'
+import { useFeatureBusinessContext } from '@/composables/useFeatureBusinessContext'
 import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
 import AlertRuleWizard from '@/components/observability/AlertRuleWizard.vue'
 import ExternalAlertSourcesPanel from '@/components/observability/ExternalAlertSourcesPanel.vue'
@@ -996,8 +1012,8 @@ const props = defineProps({
   workspace: { type: String, default: 'events' },
 })
 
-const businessContextStore = useBusinessContextStore()
-const { currentContext, currentContextId } = storeToRefs(businessContextStore)
+const businessContextScope = useFeatureBusinessContext('alerts', { autoLoad: false })
+const { contexts, currentContext, currentContextId } = businessContextScope
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value || []))
@@ -2335,7 +2351,7 @@ watch(currentContextId, async () => {
 })
 
 onMounted(async () => {
-  await businessContextStore.loadContexts()
+  await businessContextScope.loadContexts()
   applyRouteFilters()
   users.value = listOf(await getUsers())
   await refreshAll()

@@ -21,6 +21,15 @@
     </el-empty>
 
     <template v-else>
+      <section class="toolbar panel feature-scope-bar">
+        <div class="toolbar-field">
+          <span>业务上下文</span>
+          <el-select v-model="currentContextId" size="small" filterable placeholder="请选择业务上下文">
+            <el-option v-for="item in contexts" :key="item.id" :label="item.name" :value="String(item.id)" />
+          </el-select>
+        </div>
+        <span class="scope-hint">日志查询使用当前页面选择上下文绑定的日志数据源</span>
+      </section>
       <section v-if="showQuerySessionTabs" class="tabs-panel tabs-panel--session">
         <div class="tabs-session-bar">
           <el-tabs v-model="activeTabName" type="card" class="session-tabs" @tab-remove="removeQueryTab">
@@ -330,19 +339,18 @@
 
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 import echarts from '@/lib/echarts'
 import { ElMessage } from 'element-plus'
 import { getLogDataSources, getLogProviderCatalog, queryLogs } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
-import { useBusinessContextStore } from '@/stores/businessContext'
+import { useFeatureBusinessContext } from '@/composables/useFeatureBusinessContext'
 
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
-const businessContextStore = useBusinessContextStore()
-const { currentContext, currentContextId } = storeToRefs(businessContextStore)
+const businessContextScope = useFeatureBusinessContext('logs-query', { autoLoad: false })
+const { contexts, currentContext, currentContextId } = businessContextScope
 const LAST_DATASOURCE_KEY = 'logs:last-datasource-id'
 const QUERY_HISTORY_KEY = 'logs:query-history'
 const QUERY_FAVORITES_KEY = 'logs:query-favorites'
@@ -1595,7 +1603,7 @@ let logsPageMounted = false
 
 onMounted(async () => {
   loadSavedQueries()
-  await businessContextStore.loadContexts()
+  await businessContextScope.loadContexts()
   await fetchDataSources()
   await initializeTabs()
   logsPageMounted = true

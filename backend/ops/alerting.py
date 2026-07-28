@@ -399,16 +399,26 @@ def _interaction_url(alert, action, provider='', request=None):
 
 
 def _alert_context(alert, action='fire'):
+    labels = alert.labels if isinstance(alert.labels, dict) else {}
+    if alert.ingress_source_id and alert.source_type in {Alert.SOURCE_ALERTMANAGER, Alert.SOURCE_ZABBIX}:
+        environment_display = alert.ingress_source.name
+        source_display = alert.ingress_source.name
+    elif alert.knowledge_environment_id:
+        environment_display = alert.knowledge_environment.name
+        source_display = alert.source
+    else:
+        environment_display = labels.get('environment_display_name') or alert.environment
+        source_display = alert.source
     return {
         'id': alert.id,
         'title': alert.title,
         'level': alert.level,
         'status': alert.status,
-        'source': alert.source,
+        'source': source_display,
         'source_type': alert.source_type,
         'service': alert.service,
-        'environment': alert.environment,
-        'cluster': alert.cluster,
+        'environment': environment_display,
+        'cluster': labels.get('cluster_display_name') or alert.cluster,
         'namespace': alert.namespace,
         'resource': alert.resource,
         'metric_name': alert.metric_name,
@@ -799,10 +809,13 @@ def _default_body(alert, action='fire'):
     level_icon = {'critical': '🔴', 'warning': '🟡', 'info': '🔵'}.get(alert.level, '🟡')
     status_text = '🟢 已恢复' if action == 'resolved' else '🔥 告警中'
     description = _text(_dict(alert.annotations).get('description')) or '无描述'
+    display_context = _alert_context(alert, action)
+    scope_label = '接入源' if alert.ingress_source_id else '业务上下文'
     lines = [
         f'📛 **告警名称：** {alert.title}',
         f'⚡ **严重程度：** {level_icon} {str(alert.level or "warning").upper()}',
         f'📍 **当前状态：** {status_text}',
+        f'🏷️ **{scope_label}：** {display_context.get("environment") or "-"}',
         f'🎯 **影响范围：** {alert.namespace or "-"}/{object_name}',
         f'📝 **告警摘要：** {alert.message or _human_description(alert, event)}',
         f'📋 **详细描述：** {description}',

@@ -603,7 +603,6 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { CircleCheck, CopyDocument, Delete, Fold, Plus, Promotion, TopRight } from '@element-plus/icons-vue'
@@ -621,7 +620,7 @@ import {
 } from '@/api/modules/aiops'
 import botAvatar from '@/assets/aiops-bot.svg'
 import { useAuthStore } from '@/stores/auth'
-import { useBusinessContextStore } from '@/stores/businessContext'
+import { useFeatureBusinessContext } from '@/composables/useFeatureBusinessContext'
 
 const props = defineProps({
   embedded: {
@@ -640,8 +639,8 @@ const AIOPS_SESSION_MISSING_MESSAGE = '会话不存在或已被删除，请刷�
 const router = useRouter()
 const route = useRoute()
 const authStore = useAuthStore()
-const businessContextStore = useBusinessContextStore()
-const { contexts: businessContexts, currentContextId: selectedContextId } = storeToRefs(businessContextStore)
+const businessContextScope = useFeatureBusinessContext('aiops-chat', { autoLoad: false })
+const { contexts: businessContexts, currentContextId: selectedContextId } = businessContextScope
 
 const embedded = computed(() => props.embedded)
 const visible = ref(props.embedded || localStorage.getItem(STORAGE_VISIBLE_KEY) === '1')
@@ -703,11 +702,11 @@ const currentEnvironmentName = computed(() => {
 })
 
 async function fetchBusinessContexts() {
-  await businessContextStore.loadContexts()
+  await businessContextScope.loadContexts()
 }
 
 async function handleContextChange(contextId) {
-  businessContextStore.selectContext(contextId)
+  businessContextScope.selectContext(contextId)
 }
 
 let contextSyncPromise = null

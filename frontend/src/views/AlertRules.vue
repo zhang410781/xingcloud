@@ -16,6 +16,18 @@
 
     <ObservabilityRouteTabs group="observability" />
 
+    <section class="toolbar panel feature-scope-bar">
+      <div class="toolbar-field">
+        <span>业务上下文</span>
+        <el-select v-model="currentContextId" size="small" filterable placeholder="请选择业务上下文">
+          <el-option v-for="item in contexts" :key="item.id" :label="item.name" :value="String(item.id)">
+            <span>{{ item.name }}</span><small class="scope-code">{{ item.code }}</small>
+          </el-option>
+        </el-select>
+      </div>
+      <span class="scope-hint">规则、通知策略和巡检计划均按当前页面选择的上下文管理</span>
+    </section>
+
     <nav class="work-tabs">
       <button :class="{ active: activeTab === 'rules' }" @click="setActiveTab('rules')">告警规则</button>
       <button :class="{ active: activeTab === 'policies' }" @click="setActiveTab('policies')">通知策略</button>
@@ -473,13 +485,12 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 import { Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import ExternalAlertSourcesPanel from '@/components/observability/ExternalAlertSourcesPanel.vue'
 import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
-import { useBusinessContextStore } from '@/stores/businessContext'
+import { useFeatureBusinessContext } from '@/composables/useFeatureBusinessContext'
 import {
   createAlertNotificationChannel,
   createAlertNotificationPolicy,
@@ -516,8 +527,8 @@ import {
   updateInspectionReportSchedule,
 } from '@/api/modules/ops'
 
-const businessContextStore = useBusinessContextStore()
-const { contexts, currentContext, currentContextId } = storeToRefs(businessContextStore)
+const businessContextScope = useFeatureBusinessContext('alert-rules', { autoLoad: false })
+const { contexts, currentContext, currentContextId } = businessContextScope
 const route = useRoute()
 const router = useRouter()
 const workspaceTabs = new Set(['rules', 'policies', 'resources', 'external'])
@@ -619,7 +630,7 @@ const filteredRules = computed(() => rules.value.filter((item) => {
 const enabledRuleCount = computed(() => filteredRules.value.filter((item) => item.is_enabled).length)
 const bindingRuleCount = computed(() => filteredRules.value.filter((item) => item.needs_binding).length)
 const ruleEmptyText = computed(() => {
-  if (!currentContext.value) return '请先在顶部选择业务上下文'
+  if (!currentContext.value) return '请先在当前页面选择业务上下文'
   if (!currentContext.value.metric_datasource) return '当前业务上下文未绑定指标数据源'
   return '当前数据源暂无规则实例'
 })
@@ -1125,7 +1136,7 @@ watch(currentContextId, async () => {
   if (contextReady.value) await loadAll()
 })
 onMounted(async () => {
-  await businessContextStore.loadContexts()
+  await businessContextScope.loadContexts()
   contextReady.value = true
   await loadAll()
 })

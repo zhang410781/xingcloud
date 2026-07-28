@@ -104,7 +104,7 @@
           <el-form-item label="告警环境"><el-input :model-value="form.code" disabled /><div class="field-hint inline">Prometheus 告警的 environment 必须完全等于此编码。</div></el-form-item>
         </div>
         <div v-show="wizardStep === 3" class="form-group-card">
-          <div class="form-group-card__head"><strong>确认业务上下文</strong><span>保存后监控、日志、告警、巡检、知识图谱和智能助手统一继承。</span></div>
+          <div class="form-group-card__head"><strong>确认业务上下文</strong><span>保存后各功能页可独立选择并使用该上下文。</span></div>
           <el-descriptions :column="2" border size="small"><el-descriptions-item label="业务上下文">{{ form.name || '-' }}</el-descriptions-item><el-descriptions-item label="环境编码">{{ form.code || '-' }}</el-descriptions-item><el-descriptions-item label="资产业务分组">{{ selectedAssetName }}</el-descriptions-item><el-descriptions-item label="K8S">{{ (selectedAssetGroup?.k8s_clusters || []).join('、') || '未登记' }}</el-descriptions-item><el-descriptions-item label="Prometheus">{{ selectedMetricName }}</el-descriptions-item><el-descriptions-item label="日志源">{{ selectedLogName }}</el-descriptions-item></el-descriptions>
         </div>
         <el-form-item label="启用">
@@ -133,7 +133,6 @@ import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'v
 import { ElMessage, ElMessageBox, ElTag } from 'element-plus'
 import { Plus, RefreshRight, Setting } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
-import { useBusinessContextStore } from '@/stores/businessContext'
 import {
   createAIOpsKnowledgeEnvironment,
   deleteAIOpsKnowledgeEnvironment,
@@ -165,7 +164,6 @@ defineProps({
 })
 
 const authStore = useAuthStore()
-const businessContextStore = useBusinessContextStore()
 const canManage = computed(() => authStore.hasPermission('aiops.knowledge.manage'))
 const loading = ref(false)
 const saving = ref(false)
@@ -374,9 +372,7 @@ async function submitForm() {
     dialog.visible = false
     await loadData()
     const saved = environments.value.find(item => item.code === form.code)
-    await businessContextStore.loadContexts({ force: true })
     if (saved) {
-      businessContextStore.selectContext(saved.id)
       await runBindingValidation(saved)
     }
   } finally {

@@ -2444,7 +2444,9 @@ class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.Mod
     }
 
     def get_queryset(self):
-        queryset = super().get_queryset().order_by('-last_received_at', '-created_at', '-id')
+        queryset = super().get_queryset().select_related(
+            'host', 'ingress_source', 'knowledge_environment',
+        ).order_by('-last_received_at', '-created_at', '-id')
         queryset = _apply_system_alias_filter(self.request, queryset, 'business_line', 'host__business_line')
         params = self.request.query_params
         alert_scope = params.get('alert_scope')

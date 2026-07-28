@@ -316,13 +316,16 @@ def _targeted_alert_metrics(context, alert, start_time, end_time):
             labels.append(f'container="{container.replace(chr(34), chr(92)+chr(34))}"')
         return '{' + ','.join(labels + ([extra] if extra else [])) + '}'
 
+    oom_selector = selector('reason="OOMKilled"')
+    cpu_resource_selector = selector('resource="cpu"')
+    memory_resource_selector = selector('resource="memory"')
     definitions = [
         ('restart_increase', '窗口内重启增量', '次', {'warning': 3, 'critical': 10}, f'sum by(namespace,pod,container) (increase(kube_pod_container_status_restarts_total{selector()}[15m]))'),
         ('cpu_peak', 'CPU 使用峰值', '核', {}, f'max_over_time(sum by(namespace,pod,container) (rate(container_cpu_usage_seconds_total{selector()}[5m]))[15m:])'),
         ('memory_peak', '内存使用峰值', '字节', {}, f'max_over_time(sum by(namespace,pod,container) (container_memory_working_set_bytes{selector()} )[15m:])'),
-        ('oom_killed', 'OOMKilled', '布尔', {'critical': 0}, f'max(kube_pod_container_status_last_terminated_reason{selector("reason=\\\"OOMKilled\\\"")})'),
-        ('resource_requests_cpu', 'CPU Request', '核', {}, f'sum(kube_pod_container_resource_requests{selector("resource=\\\"cpu\\\"")})'),
-        ('resource_limits_memory', '内存 Limit', '字节', {}, f'sum(kube_pod_container_resource_limits{selector("resource=\\\"memory\\\"")})'),
+        ('oom_killed', 'OOMKilled', '布尔', {'critical': 0}, f'max(kube_pod_container_status_last_terminated_reason{oom_selector})'),
+        ('resource_requests_cpu', 'CPU Request', '核', {}, f'sum(kube_pod_container_resource_requests{cpu_resource_selector})'),
+        ('resource_limits_memory', '内存 Limit', '字节', {}, f'sum(kube_pod_container_resource_limits{memory_resource_selector})'),
     ] if namespace and pod else []
     raw = alert.raw_payload if isinstance(alert.raw_payload, dict) else {}
     raw_rule = raw.get('rule') if isinstance(raw.get('rule'), dict) else {}

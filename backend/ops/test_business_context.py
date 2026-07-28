@@ -128,7 +128,8 @@ class BusinessContextTests(TestCase):
     def test_alert_list_filters_platform_and_external_scopes(self):
         platform_alert = Alert.objects.create(
             title='platform alert', source='platform', source_type='platform', message='test',
-            environment='xing-prod', knowledge_environment=self.context,
+            environment='xing-prod', cluster='ctx-k8s-code', knowledge_environment=self.context,
+            labels={'cluster_display_name': '生产 K8S 集群'},
         )
         source = ExternalAlertSource.objects.create(
             name='External Zabbix', code='external-zabbix', provider='zabbix',
@@ -145,6 +146,14 @@ class BusinessContextTests(TestCase):
 
         self.assertEqual([item['id'] for item in platform_response.json()['results']], [platform_alert.id])
         self.assertEqual([item['id'] for item in external_response.json()['results']], [external_alert.id])
+        platform_payload = platform_response.json()['results'][0]
+        self.assertEqual(platform_payload['environment_display'], self.context.name)
+        self.assertEqual(platform_payload['scope_display'], self.context.name)
+        self.assertEqual(platform_payload['cluster_display'], '生产 K8S 集群')
+        external_payload = external_response.json()['results'][0]
+        self.assertEqual(external_payload['environment_display'], source.name)
+        self.assertEqual(external_payload['scope_display'], '外部接入')
+        self.assertEqual(external_payload['source_display'], source.name)
 
     def test_alert_rules_and_policies_filter_by_business_context(self):
         other_metric = MetricDataSource.objects.create(name='other-prom', environment='other', config={})

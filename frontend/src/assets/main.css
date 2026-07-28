@@ -2479,3 +2479,48 @@ section.hero.panel .hero-actions .el-button:not(.is-link) {
   border-radius: 50%;
   background: currentColor;
 }
+
+.feature-scope-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+}
+
+.feature-scope-bar .toolbar-field {
+  display: grid;
+  gap: 5px;
+  min-width: 220px;
+}
+
+.feature-scope-bar .toolbar-field > span,
+.feature-scope-bar .scope-hint,
+.feature-scope-bar .scope-code {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.feature-scope-bar .scope-hint {
+  padding-bottom: 7px;
+}
+
+.feature-scope-bar .scope-code {
+  float: right;
+  margin-left: 16px;
+}
+
+@media (max-width: 760px) {
+  .feature-scope-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .feature-scope-bar .toolbar-field {
+    width: 100%;
+  }
+
+  .feature-scope-bar .scope-hint {
+    padding-bottom: 0;
+  }
+}

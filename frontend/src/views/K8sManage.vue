@@ -9,6 +9,9 @@
         </div>
       </div>
       <div class="K8s-hero-cluster-switcher">
+        <el-select v-model="currentContextId" size="small" filterable placeholder="选择业务上下文" class="K8s-context-select">
+          <el-option v-for="item in contexts" :key="item.id" :label="item.name" :value="String(item.id)" />
+        </el-select>
         <span class="K8s-hero-switcher-label">当前集群</span>
         <div class="K8s-bound-cluster">
           {{ selectedCluster?.name || '当前业务上下文未绑定 K8S 集群' }}
@@ -989,11 +992,10 @@
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
-import { storeToRefs } from 'pinia'
 import { useRouteTabState } from '@/composables/useRouteTabState'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
-import { useBusinessContextStore } from '@/stores/businessContext'
+import { useFeatureBusinessContext } from '@/composables/useFeatureBusinessContext'
 import { DocumentCopy, Document, Monitor, Bell, Plus, Connection, FolderOpened, Menu, RefreshRight, Box, WarningFilled, Setting } from '@element-plus/icons-vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
@@ -1014,8 +1016,8 @@ import {
 } from '@/api/modules/container'
 
 const authStore = useAuthStore()
-const businessContextStore = useBusinessContextStore()
-const { currentContext, currentContextId } = storeToRefs(businessContextStore)
+const businessContextScope = useFeatureBusinessContext('k8s-manage', { autoLoad: false })
+const { contexts, currentContext, currentContextId } = businessContextScope
 const canManageK8s = computed(() => authStore.hasPermission('ops.K8s.manage'))
 const canExecK8s = computed(() => authStore.hasPermission('ops.K8s.exec'))
 const clusterUserTypeOptions = [
@@ -2415,7 +2417,7 @@ watch(execDialogVisible, (visible) => {
 })
 
 onMounted(async () => {
-  await businessContextStore.loadContexts()
+  await businessContextScope.loadContexts()
   await fetchClusters()
 })
 onBeforeUnmount(() => { disposeExecTerminal() })
