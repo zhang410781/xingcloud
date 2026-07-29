@@ -112,7 +112,7 @@ Prometheus UI 中打开 `Status -> Rules`，应能看到：
 - Redis 存活：`redis_up == 0`
 - Redis 内存：`redis_memory_used_bytes / redis_memory_max_bytes > 0.85`
 
-在平台 `资产管理 / 中间件资产` 登记真实实例，并在 `可观测性 / 监控看板` 选择数据库或中间件类型验证数据。
+在平台 `资源中心` 登记真实实例并配置负责人，再在 `可观测性 / 监控看板` 选择数据库或中间件类型验证数据。
 
 ## 和参考教程的差异
 

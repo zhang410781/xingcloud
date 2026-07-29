@@ -85,17 +85,18 @@
           <el-form-item label="描述"><el-input v-model.trim="form.description" maxlength="255" show-word-limit /></el-form-item>
         </div>
         <div v-show="wizardStep === 1" class="form-group-card">
-          <div class="form-group-card__head"><strong>选择 CMDB 一级资产业务分组</strong><span>K8S、服务器和中间件范围从该分组自动读取，不重复配置。</span></div>
-          <el-form-item label="资产业务分组">
-            <el-select v-model="form.task_resource_environment" filterable clearable placeholder="选择已在资产管理中创建的一级业务分组">
-              <el-option v-for="item in catalog.task_resource_environments" :key="item.id" :label="taskResourceEnvironmentLabel(item)" :value="item.id" />
+          <div class="form-group-card__head"><strong>选择可选 K8S 集群</strong><span>集群管理、资源中心均可独立使用；仅在该上下文需要 K8S 证据时选择。</span></div>
+          <el-form-item label="K8S 集群">
+            <el-select v-model="form.k8s_cluster" filterable clearable placeholder="服务器或纯日志场景可不选择">
+              <el-option v-for="item in catalog.k8s_clusters" :key="item.id" :label="`${item.name} · ${item.status === 'connected' ? '已连接' : '未连接'}`" :value="item.id" />
             </el-select>
           </el-form-item>
-          <el-descriptions v-if="selectedAssetGroup" :column="2" border size="small">
-            <el-descriptions-item label="CMDB 资产">{{ selectedAssetGroup.resource_count || 0 }} 项</el-descriptions-item>
-            <el-descriptions-item label="K8S 集群">{{ (selectedAssetGroup.k8s_clusters || []).join('、') || '未登记' }}</el-descriptions-item>
-            <el-descriptions-item label="中间件" :span="2">{{ (selectedAssetGroup.middleware_assets || []).join('、') || '未登记' }}</el-descriptions-item>
+          <el-descriptions v-if="selectedK8sCluster" :column="2" border size="small">
+            <el-descriptions-item label="集群">{{ selectedK8sCluster.name }}</el-descriptions-item>
+            <el-descriptions-item label="状态">{{ selectedK8sCluster.status === 'connected' ? '已连接' : '未连接' }}</el-descriptions-item>
+            <el-descriptions-item label="API Server" :span="2">{{ selectedK8sCluster.api_server || '-' }}</el-descriptions-item>
           </el-descriptions>
+          <div class="field-hint">物理机、数据库和中间件请在资源中心按需绑定到本业务上下文。</div>
         </div>
         <div v-show="wizardStep === 2" class="form-group-card">
           <div class="form-group-card__head"><strong>数据源与告警</strong><span>数据源来自可观测性数据源目录，允许多个业务上下文复用。</span></div>
@@ -105,7 +106,7 @@
         </div>
         <div v-show="wizardStep === 3" class="form-group-card">
           <div class="form-group-card__head"><strong>确认业务上下文</strong><span>保存后各功能页可独立选择并使用该上下文。</span></div>
-          <el-descriptions :column="2" border size="small"><el-descriptions-item label="业务上下文">{{ form.name || '-' }}</el-descriptions-item><el-descriptions-item label="环境编码">{{ form.code || '-' }}</el-descriptions-item><el-descriptions-item label="资产业务分组">{{ selectedAssetName }}</el-descriptions-item><el-descriptions-item label="K8S">{{ (selectedAssetGroup?.k8s_clusters || []).join('、') || '未登记' }}</el-descriptions-item><el-descriptions-item label="Prometheus">{{ selectedMetricName }}</el-descriptions-item><el-descriptions-item label="日志源">{{ selectedLogName }}</el-descriptions-item></el-descriptions>
+          <el-descriptions :column="2" border size="small"><el-descriptions-item label="业务上下文">{{ form.name || '-' }}</el-descriptions-item><el-descriptions-item label="环境编码">{{ form.code || '-' }}</el-descriptions-item><el-descriptions-item label="K8S">{{ selectedK8sCluster?.name || '未绑定' }}</el-descriptions-item><el-descriptions-item label="资源范围">在资源中心按需绑定</el-descriptions-item><el-descriptions-item label="Prometheus">{{ selectedMetricName }}</el-descriptions-item><el-descriptions-item label="日志源">{{ selectedLogName }}</el-descriptions-item></el-descriptions>
         </div>
         <el-form-item label="启用">
           <el-switch v-model="form.is_enabled" />
@@ -201,10 +202,9 @@ const rules = {
   business_line: [{ required: true, message: '请填写业务线', trigger: 'blur' }],
 }
 
-const selectedAssetGroup = computed(() => catalog.task_resource_environments.find(item => Number(item.id) === Number(form.task_resource_environment)) || null)
+const selectedK8sCluster = computed(() => catalog.k8s_clusters.find(item => Number(item.id) === Number(form.k8s_cluster)) || null)
 const selectedMetricName = computed(() => catalog.metric_datasources.find(item => Number(item.id) === Number(form.metric_datasource))?.name || '未绑定')
 const selectedLogName = computed(() => catalog.log_datasources.find(item => Number(item.id) === Number(form.log_datasource))?.name || '未绑定')
-const selectedAssetName = computed(() => catalog.task_resource_environments.find(item => Number(item.id) === Number(form.task_resource_environment))?.name || '未绑定')
 
 function resetForm(row = null) {
   dialog.editingId = row?.id || null
@@ -225,7 +225,7 @@ function resetForm(row = null) {
 }
 
 function hasAnyBinding() {
-  return Boolean(form.metric_datasource && form.log_datasource && form.task_resource_environment)
+  return Boolean(form.metric_datasource && form.log_datasource)
 }
 
 function relationId(value) {
@@ -245,20 +245,6 @@ function datasourceNames(ids = [], type = 'log') {
       : catalog.log_datasources
   const nameMap = new Map(source.map(item => [Number(item.id), item.name]))
   return ids.map(id => nameMap.get(Number(id)) || `ID ${id}`)
-}
-
-function k8sClusterLabel(item) {
-  const endpoint = item.api_server ? ` / ${item.api_server}` : ''
-  return `${item.name}${endpoint}${bindingOwnerSuffix(item)}`
-}
-
-function namespaceOptionsForCluster(cluster) {
-  return cluster.namespaces || []
-}
-
-function taskResourceEnvironmentLabel(item) {
-  const suffix = Number(item.resource_count || 0) ? ` / ${item.resource_count} 个资源` : ''
-  return `${item.name}${suffix}${bindingOwnerSuffix(item)}`
 }
 
 function bindingOwnerSuffix(item) {
@@ -281,9 +267,9 @@ function observabilityNames(row) {
 }
 
 function infrastructureNames(row) {
-  const resourceEnvMap = new Map(catalog.task_resource_environments.map(item => [Number(item.id), `资产登记: ${item.name}`]))
+  const clusterMap = new Map(catalog.k8s_clusters.map(item => [Number(item.id), `K8S: ${item.name}`]))
   return [
-    ...(row.task_resource_environment ? [resourceEnvMap.get(Number(row.task_resource_environment)) || `资产登记 ID ${row.task_resource_environment}`] : []),
+    ...(row.k8s_cluster ? [clusterMap.get(Number(row.k8s_cluster)) || `K8S ID ${row.k8s_cluster}`] : []),
   ]
 }
 
@@ -294,7 +280,7 @@ async function discoverBindings() {
     const result = await discoverAIOpsKnowledgeEnvironmentBindings(form.code)
     if (result.metric_datasources?.length === 1) form.metric_datasource = result.metric_datasources[0].id
     if (result.log_datasources?.length === 1) form.log_datasource = result.log_datasources[0].id
-    if (result.asset_environments?.length === 1) form.task_resource_environment = result.asset_environments[0].id
+    if (result.k8s_clusters?.length === 1) form.k8s_cluster = result.k8s_clusters[0].id
     ElMessage.success(result.unambiguous ? '已填入唯一匹配的绑定' : '已发现候选项，请确认后继续')
   } finally { discovering.value = false }
 }
@@ -334,7 +320,7 @@ function openDialog(row = null) {
 async function submitForm() {
   await formRef.value?.validate()
   if (!hasAnyBinding()) {
-    ElMessage.warning('请选择 CMDB 一级资产业务分组、指标数据源和日志数据源')
+    ElMessage.warning('请选择指标数据源和日志数据源')
     return
   }
   const transferConflicts = bindingTransferConflicts()
@@ -358,7 +344,8 @@ async function submitForm() {
       description: form.description,
       metric_datasource: form.metric_datasource || null,
       log_datasource: form.log_datasource || null,
-      task_resource_environment: form.task_resource_environment || null,
+      k8s_cluster: form.k8s_cluster || null,
+      task_resource_environment: null,
       environment_type: 'prod',
       is_default: form.is_default,
       is_enabled: form.is_enabled,

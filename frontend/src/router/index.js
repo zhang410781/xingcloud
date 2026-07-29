@@ -49,12 +49,12 @@ const routes = [
       },
       {
         path: 'hosts',
-        redirect: '/assets/registration',
+        redirect: '/resource-center',
         meta: { hidden: true },
       },
       {
         path: 'hosts/assets',
-        redirect: '/assets/registration',
+        redirect: '/resource-center',
         meta: { hidden: true, title: '资产登记', icon: 'Monitor', anyPermissions: ['ops.task.resource.view', 'ops.task.resource.manage', 'ops.host.view', 'ops.host.manage', 'ops.host.terminal'] },
       },
       {
@@ -87,38 +87,29 @@ const routes = [
       },
       {
         path: 'tasks/resources',
-        redirect: '/assets/registration',
+        redirect: '/resource-center',
         meta: { hidden: true, anyPermissions: ['ops.task.resource.view', 'ops.task.resource.manage'] },
       },
       {
         path: 'assets',
-        redirect: () => {
-          const authStore = useAuthStore(pinia)
-          if (authStore.hasAnyPermission(['ops.task.resource.view', 'ops.task.resource.manage'])) return '/assets/registration'
-          if (authStore.hasAnyPermission(['ops.middleware.view', 'ops.middleware.manage'])) return '/assets/middleware'
-          return '/403'
-        },
-        meta: { hidden: true, anyPermissions: ['ops.task.resource.view', 'ops.task.resource.manage', 'ops.middleware.view', 'ops.middleware.manage'] },
+        redirect: '/resource-center',
+        meta: { hidden: true, permission: 'cmdb.ci.view' },
       },
       {
         path: 'assets/registration',
-        name: 'AssetRegistration',
-        component: () => import('@/views/TaskResources.vue'),
-        meta: {
-          title: '资产登记',
-          icon: 'Monitor',
-          anyPermissions: ['ops.task.resource.view', 'ops.task.resource.manage'],
-        },
+        redirect: '/resource-center',
+        meta: { hidden: true, permission: 'cmdb.ci.view' },
       },
       {
         path: 'assets/middleware',
-        name: 'MiddlewareAssets',
-        component: () => import('@/views/MiddlewareAssets.vue'),
-        meta: {
-          title: '中间件资产',
-          icon: 'Coin',
-          anyPermissions: ['ops.middleware.view', 'ops.middleware.manage'],
-        },
+        redirect: '/resource-center',
+        meta: { hidden: true, permission: 'cmdb.ci.view' },
+      },
+      {
+        path: 'resource-center',
+        name: 'ResourceCenter',
+        component: () => import('@/views/ResourceCenter.vue'),
+        meta: { title: '资源中心', icon: 'Files', permission: 'cmdb.ci.view' },
       },
       {
         path: 'tasks/workbench',

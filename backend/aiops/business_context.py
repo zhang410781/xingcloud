@@ -26,18 +26,7 @@ def resolve_business_context(value, *, enabled_only=True):
 def context_payload(context):
     if not context:
         return None
-    from ops.models import TaskResource
-
-    asset_group_id = context.task_resource_environment_id
-    k8s_cluster_ids = list(
-        TaskResource.objects.filter(
-            business_groups__id=asset_group_id,
-            resource_type=TaskResource.RESOURCE_K8S,
-            cluster__isnull=False,
-        ).order_by('cluster_id').values_list('cluster_id', flat=True).distinct()
-    ) if asset_group_id else []
-    if context.k8s_cluster_id and context.k8s_cluster_id not in k8s_cluster_ids:
-        k8s_cluster_ids.append(context.k8s_cluster_id)
+    k8s_cluster_ids = [context.k8s_cluster_id] if context.k8s_cluster_id else []
     return {
         'id': context.id,
         'name': context.name,
@@ -69,7 +58,7 @@ def assign_alert_context(alert):
 
 
 def discover_context_bindings(code):
-    from ops.models import K8sCluster, LogDataSource, MetricDataSource, TaskResourceGroup
+    from ops.models import K8sCluster, LogDataSource, MetricDataSource
 
     code = str(code or '').strip().lower()
     metrics = list(MetricDataSource.objects.filter(environment=code, is_enabled=True).values('id', 'name', 'environment', 'cluster_name'))
@@ -81,14 +70,13 @@ def discover_context_bindings(code):
             logs.append({'id': item.id, 'name': item.name, 'provider': item.provider})
     cluster_names = {str(item.get('cluster_name') or '').strip() for item in metrics if item.get('cluster_name')}
     clusters = list(K8sCluster.objects.filter(name__in=cluster_names).values('id', 'name', 'status')) if cluster_names else []
-    assets = list(TaskResourceGroup.objects.filter(group_type='environment', code=code).values('id', 'name', 'code'))
     return {
         'code': code,
         'metric_datasources': metrics,
         'log_datasources': logs,
         'k8s_clusters': clusters,
-        'asset_environments': assets,
-        'unambiguous': all(len(items) <= 1 for items in (metrics, logs, clusters, assets)),
+        'asset_environments': [],
+        'unambiguous': all(len(items) <= 1 for items in (metrics, logs, clusters)),
     }
 
 
@@ -139,7 +127,8 @@ def _configured_log_field_map(log):
 
 
 def validate_context_bindings(context, *, live=False):
-    from ops.models import AlertRule, MiddlewareAsset, TaskResource
+    from ops.models import AlertRule
+    from resource_center.models import Resource
 
     checks = []
 
@@ -164,24 +153,11 @@ def validate_context_bindings(context, *, live=False):
             '已配置' if not missing_log_fields else f"缺少 {', '.join(missing_log_fields)}",
             blocking=False,
         )
-    cluster_resources = list(
-        TaskResource.objects.filter(
-            business_groups=context.task_resource_environment,
-            resource_type=TaskResource.RESOURCE_K8S,
-            cluster__isnull=False,
-        ).select_related('cluster').order_by('cluster__name', 'id')
-    ) if context.task_resource_environment_id else []
-    cluster = cluster_resources[0].cluster if cluster_resources else None
-    add('k8s_cluster', 'K8s 集群', bool(cluster_resources), ', '.join(item.cluster.name for item in cluster_resources) or 'CMDB 分组未登记 K8S')
-    asset_environment = context.task_resource_environment
-    add(
-        'asset_environment', '资产环境分组',
-        bool(asset_environment and asset_environment.group_type == 'environment'),
-        getattr(asset_environment, 'name', '') or '未绑定',
-    )
-    asset_count = TaskResource.objects.filter(business_groups=asset_environment).distinct().count() if asset_environment else 0
+    cluster = context.k8s_cluster
+    add('k8s_cluster', 'K8s 集群', True, getattr(cluster, 'name', '') or '未绑定（服务器场景可不选）', blocking=False)
+    asset_count = Resource.objects.filter(business_contexts=context).distinct().count()
     checks.append({'code': 'asset_count', 'title': '已登记资产', 'status': 'ready', 'detail': str(asset_count), 'blocking': False})
-    middleware_count = MiddlewareAsset.objects.filter(business_groups=asset_environment).distinct().count() if asset_environment else 0
+    middleware_count = Resource.objects.filter(business_contexts=context, resource_type__category='platform').distinct().count()
     checks.append({'code': 'middleware_asset_count', 'title': '已登记中间件与数据库', 'status': 'ready', 'detail': str(middleware_count), 'blocking': False})
     mismatched_alerts = context.alerts.filter(source_type='platform').exclude(environment=context.code).count()
     add('alert_environment', '告警环境编码', mismatched_alerts == 0, f'{mismatched_alerts} 条不一致')

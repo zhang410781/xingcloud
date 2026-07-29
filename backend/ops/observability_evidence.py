@@ -610,23 +610,50 @@ def _log_findings(logs):
 
 
 def _asset_and_topology_evidence(context):
-    from .models import MiddlewareAsset, TaskResource
+    from resource_center.models import Resource, ResourceRelation, ResourceSourceBinding
 
-    environment = context.task_resource_environment
-    if not environment:
-        return [], [], []
-    resources = list(
-        TaskResource.objects
-        .filter(business_groups=environment)
-        .distinct()
-        .values('id', 'name', 'resource_type', 'status', 'ip_address', 'cluster_id', 'owner')[:100]
-    )
-    middleware = list(
-        MiddlewareAsset.objects
-        .filter(business_groups=environment)
-        .distinct()
-        .values('id', 'name', 'asset_type', 'status', 'endpoint', 'version')[:100]
-    )
+    resource_ids = set(Resource.objects.filter(business_contexts=context).values_list('id', flat=True))
+    if context.k8s_cluster_id:
+        cluster_id = ResourceSourceBinding.objects.filter(
+            source__k8s_cluster_id=context.k8s_cluster_id,
+            external_type='cluster',
+        ).values_list('resource_id', flat=True).first()
+        if cluster_id:
+            resource_ids.add(cluster_id)
+            resource_ids.update(ResourceRelation.objects.filter(
+                source_id=cluster_id, relation_type='contains',
+            ).values_list('target_id', flat=True))
+            resource_ids.update(ResourceRelation.objects.filter(
+                target_id=cluster_id, relation_type='deployed_on',
+            ).values_list('source_id', flat=True))
+
+    queryset = Resource.objects.filter(id__in=resource_ids).select_related('resource_type').prefetch_related(
+        'contacts__user', 'contacts__recipient',
+    )[:200]
+    resources = []
+    middleware = []
+    for item in queryset:
+        owner = next((contact.contact_name or getattr(contact.user, 'username', '') or getattr(contact.recipient, 'name', '') for contact in item.contacts.all() if contact.is_primary), '')
+        if item.resource_type.category == 'platform':
+            middleware.append({
+                'id': item.id,
+                'name': item.display_name or item.name,
+                'asset_type': item.resource_type.code,
+                'status': item.status,
+                'endpoint': (item.attributes or {}).get('endpoint') or item.primary_ip or '',
+                'version': (item.attributes or {}).get('version', ''),
+                'owner': owner,
+            })
+        else:
+            resources.append({
+                'id': item.id,
+                'name': item.display_name or item.name,
+                'resource_type': item.resource_type.code,
+                'status': item.status,
+                'ip_address': str(item.primary_ip or ''),
+                'cluster_id': (item.attributes or {}).get('connection_id'),
+                'owner': owner,
+            })
     topology = [
         {
             'relation': 'business_context_binding',
@@ -639,10 +666,20 @@ def _asset_and_topology_evidence(context):
             ('metric_datasource', context.metric_datasource_id, getattr(context.metric_datasource, 'name', '')),
             ('log_datasource', context.log_datasource_id, getattr(context.log_datasource, 'name', '')),
             ('k8s_cluster', context.k8s_cluster_id, getattr(context.k8s_cluster, 'name', '')),
-            ('asset_environment', context.task_resource_environment_id, environment.name),
+            ('resource_center', context.id, f'{len(resources) + len(middleware)} 项稳定资源'),
         ]
         if target_id
     ]
+    topology.extend({
+        'relation': relation.relation_type,
+        'source': relation.source_id,
+        'source_name': relation.source.display_name or relation.source.name,
+        'target_type': relation.target.resource_type.code,
+        'target_id': relation.target_id,
+        'target_name': relation.target.display_name or relation.target.name,
+    } for relation in ResourceRelation.objects.filter(
+        source_id__in=resource_ids, target_id__in=resource_ids,
+    ).select_related('source', 'target', 'target__resource_type')[:300])
     return resources, middleware, topology
 
 

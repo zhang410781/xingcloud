@@ -22,6 +22,7 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include('rbac.urls')),
     path('api/', include('ops.urls')),
+    path('api/resource-center/', include('resource_center.urls')),
     path('api/aiops/', include('aiops.urls')),
     # Vite emits fingerprinted files below /assets and /promo.  Require a file
     # extension here so SPA routes such as /assets/registration and

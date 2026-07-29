@@ -250,11 +250,10 @@ const menuItems = [
   },
   {
     moduleKey: 'assets',
-    title: '资产管理',
+    title: '资源中心',
     icon: 'Files',
     children: [
-      { path: '/assets/registration', title: '资产登记', icon: 'Monitor', anyPermissions: ['ops.task.resource.view', 'ops.task.resource.manage'] },
-      { path: '/assets/middleware', title: '中间件资产', icon: 'Coin', anyPermissions: ['ops.middleware.view', 'ops.middleware.manage'] },
+      { path: '/resource-center', title: '资源中心', icon: 'Files', permission: 'cmdb.ci.view' },
     ],
   },
   {

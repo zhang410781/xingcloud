@@ -467,6 +467,25 @@
               <el-descriptions-item label="&#x670D;&#x52A1;">{{ selectedAlert.service || '-' }}</el-descriptions-item>
               <el-descriptions-item :label="selectedAlert.ingress_source_detail ? '接入源' : '业务上下文'">{{ selectedAlert.environment_display || '-' }}</el-descriptions-item>
               <el-descriptions-item label="集群">{{ selectedAlert.cluster_display || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="资源中心匹配">
+                <template v-if="selectedAlert.matched_resource_detail">
+                  <strong>{{ selectedAlert.matched_resource_detail.name }}</strong>
+                  <span> / {{ selectedAlert.matched_resource_detail.type_name }}</span>
+                  <span v-if="selectedAlert.matched_resource_detail.primary_ip"> / {{ selectedAlert.matched_resource_detail.primary_ip }}</span>
+                </template>
+                <span v-else>{{ selectedAlert.resource_match_status === 'conflict' ? '匹配冲突' : '未匹配' }}</span>
+              </el-descriptions-item>
+              <el-descriptions-item label="匹配依据">
+                <span>{{ selectedAlert.resource_match_reason || '-' }}</span>
+                <el-button
+                  v-if="canManageAlerts"
+                  link
+                  type="primary"
+                  size="small"
+                  :loading="resourceRematchLoading"
+                  @click="rematchSelectedAlertResource"
+                >重新匹配</el-button>
+              </el-descriptions-item>
               <el-descriptions-item label="&#x8BA4;&#x9886;&#x4EBA;">
                 <div class="claimant-cell" v-if="selectedAlert.claimants?.length">
                   <el-tag v-for="item in selectedAlert.claimants" :key="item.id" size="small" class="mini-tag claimant-tag">{{ item.claimant }}</el-tag>
@@ -988,6 +1007,7 @@ import {
   getUsers,
   muteAlert,
   notifyAlert,
+  rematchAlertResource,
   reopenAlert,
   testAlertNotificationChannel,
   triggerAlertRule,
@@ -1307,6 +1327,7 @@ const alertLogEvidenceLoading = ref(false)
 const alertAnalysis = ref(null)
 const alertAnalysisLoading = ref(false)
 const alertAnalysisSubmitting = ref(false)
+const resourceRematchLoading = ref(false)
 const alertAnalysisUnavailable = ref(false)
 
 const canViewAlerts = computed(() => authStore.hasPermission('ops.alert.view'))
@@ -1701,6 +1722,23 @@ function openDetail(row) {
   detailVisible.value = true
   fetchAlertLogEvidence(row)
   fetchAlertAnalysis(row)
+}
+
+async function rematchSelectedAlertResource() {
+  if (!selectedAlert.value?.id) return
+  resourceRematchLoading.value = true
+  try {
+    selectedAlert.value = await rematchAlertResource(selectedAlert.value.id)
+    const matched = selectedAlert.value.resource_match_status === 'matched'
+    ElMessage[matched ? 'success' : 'warning'](
+      matched ? '已重新关联资源中心资源' : (selectedAlert.value.resource_match_reason || '仍未找到唯一资源'),
+    )
+    await refreshEvents()
+  } catch (error) {
+    ElMessage.error(error?.response?.data?.detail || '重新匹配资源失败')
+  } finally {
+    resourceRematchLoading.value = false
+  }
 }
 
 async function openRouteAlertDetail() {

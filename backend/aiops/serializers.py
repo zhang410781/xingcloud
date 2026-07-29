@@ -1,7 +1,7 @@
 from django.db import transaction
 from rest_framework import serializers
 
-from ops.models import AlertRule, TaskResource, TaskResourceGroup
+from ops.models import AlertRule, TaskResource
 
 from .models import (
     AIOpsAgentConfig,
@@ -213,30 +213,25 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
                     'namespaces': list(dict.fromkeys(str(item).strip() for item in namespaces if str(item).strip()))
                 }
 
-        asset_environment = attrs.get('task_resource_environment', getattr(self.instance, 'task_resource_environment', None))
-        if asset_environment and asset_environment.group_type != TaskResourceGroup.GROUP_ENVIRONMENT:
-            raise serializers.ValidationError({'task_resource_environment': '只能绑定资产登记中的环境分组'})
-
         metric = attrs.get('metric_datasource', getattr(self.instance, 'metric_datasource', None))
         log = attrs.get('log_datasource', getattr(self.instance, 'log_datasource', None))
-        if not asset_environment:
-            raise serializers.ValidationError({'task_resource_environment': '请选择已在 CMDB 创建的一级资产业务分组'})
         if not metric:
             raise serializers.ValidationError({'metric_datasource': '请选择已登记的指标数据源'})
         if not log:
             raise serializers.ValidationError({'log_datasource': '请选择已登记的日志数据源'})
-        k8s_resource = (
-            TaskResource.objects
-            .filter(
-                business_groups=asset_environment,
-                resource_type=TaskResource.RESOURCE_K8S,
-                cluster__isnull=False,
+        # Compatibility: old clients may still submit an asset group without the direct cluster field.
+        cluster = attrs.get('k8s_cluster', getattr(self.instance, 'k8s_cluster', None))
+        asset_environment = attrs.get('task_resource_environment', getattr(self.instance, 'task_resource_environment', None))
+        if not cluster and asset_environment:
+            k8s_resource = (
+                TaskResource.objects.filter(
+                    business_groups=asset_environment,
+                    resource_type=TaskResource.RESOURCE_K8S,
+                    cluster__isnull=False,
+                ).select_related('cluster').order_by('cluster__name', 'cluster_id', 'id').first()
             )
-            .select_related('cluster')
-            .order_by('cluster__name', 'cluster_id', 'id')
-            .first()
-        )
-        attrs['k8s_cluster'] = k8s_resource.cluster if k8s_resource else None
+            if k8s_resource:
+                attrs['k8s_cluster'] = k8s_resource.cluster
 
         instance = self.instance
         has_association = any(
@@ -333,17 +328,11 @@ class AIOpsKnowledgeEnvironmentSerializer(serializers.ModelSerializer):
         return instance
 
     def get_binding_status(self, instance):
-        asset_group = instance.task_resource_environment
-        has_k8s_asset = TaskResource.objects.filter(
-            business_groups=asset_group,
-            resource_type=TaskResource.RESOURCE_K8S,
-            cluster__isnull=False,
-        ).exists() if asset_group else False
         checks = {
             'metric_datasource': bool(instance.metric_datasource_id and instance.metric_datasource.is_enabled),
             'log_datasource': bool(instance.log_datasource_id and instance.log_datasource.is_enabled),
-            'k8s_cluster': has_k8s_asset,
-            'asset_environment': bool(instance.task_resource_environment_id),
+            'k8s_cluster': not instance.k8s_cluster_id or instance.k8s_cluster.status == 'connected',
+            'resource_center': True,
             'alert_environment': not instance.alerts.exclude(environment=instance.code).exists(),
         }
         missing = [key for key, ready in checks.items() if not ready]

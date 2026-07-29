@@ -642,13 +642,8 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
         )
         options = []
         for item in queryset:
-            cluster_rows = list(TaskResource.objects.filter(
-                business_groups__id=item.task_resource_environment_id,
-                resource_type=TaskResource.RESOURCE_K8S,
-                cluster__isnull=False,
-            ).select_related('cluster').order_by('cluster__name', 'cluster_id').distinct()) if item.task_resource_environment_id else []
-            cluster_ids = list(dict.fromkeys(row.cluster_id for row in cluster_rows))
-            cluster_names = list(dict.fromkeys(row.cluster.name for row in cluster_rows))
+            cluster_ids = [item.k8s_cluster_id] if item.k8s_cluster_id else []
+            cluster_names = [item.k8s_cluster.name] if item.k8s_cluster_id else []
             options.append({
                 'id': item.id,
                 'name': item.name,
@@ -660,8 +655,8 @@ class AIOpsKnowledgeEnvironmentViewSet(RBACPermissionMixin, viewsets.ModelViewSe
                 'metric_datasource_name': getattr(item.metric_datasource, 'name', ''),
                 'log_datasource': item.log_datasource_id,
                 'log_datasource_name': getattr(item.log_datasource, 'name', ''),
-                'k8s_cluster': cluster_ids[0] if cluster_ids else item.k8s_cluster_id,
-                'k8s_cluster_name': cluster_names[0] if cluster_names else getattr(item.k8s_cluster, 'name', ''),
+                'k8s_cluster': item.k8s_cluster_id,
+                'k8s_cluster_name': getattr(item.k8s_cluster, 'name', ''),
                 'k8s_cluster_ids': cluster_ids,
                 'k8s_cluster_names': cluster_names,
                 'task_resource_environment': item.task_resource_environment_id,

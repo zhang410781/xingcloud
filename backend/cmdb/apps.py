@@ -5,4 +5,7 @@ class CmdbConfig(AppConfig):
     name = 'cmdb'
 
     def ready(self):
-        from . import signals  # noqa: F401
+        from django.conf import settings
+
+        if settings.ENABLE_LEGACY_CMDB_SYNC:
+            from . import signals  # noqa: F401

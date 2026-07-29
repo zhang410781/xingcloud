@@ -2441,11 +2441,13 @@ class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.Mod
         'log_evidence': ['ops.alert.view'],
         'analysis': ['ops.alert.view'],
         'analyze': ['ops.alert.manage'],
+        'rematch_resource': ['ops.alert.manage'],
     }
 
     def get_queryset(self):
         queryset = super().get_queryset().select_related(
             'host', 'ingress_source', 'knowledge_environment',
+            'matched_resource', 'matched_resource__resource_type',
         ).order_by('-last_received_at', '-created_at', '-id')
         queryset = _apply_system_alias_filter(self.request, queryset, 'business_line', 'host__business_line')
         params = self.request.query_params
@@ -2600,6 +2602,40 @@ class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.Mod
             {'created': created, 'analysis': serialize_analysis(analysis)},
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
+
+    @action(detail=True, methods=['post'], url_path='rematch-resource')
+    def rematch_resource(self, request, pk=None):
+        from resource_center.alert_matching import attach_alert_resource
+
+        alert = self.get_object()
+        previous_resource_id = alert.matched_resource_id
+        previous_status = alert.resource_match_status
+        attach_alert_resource(alert)
+        record_event(
+            request=request,
+            module='ops',
+            category='alert',
+            action='rematch_resource',
+            title='重新匹配告警资源',
+            summary=(
+                f'{self._actor(request)} 重新匹配告警 {alert.title}：'
+                f'{previous_status}/{previous_resource_id or "-"} -> '
+                f'{alert.resource_match_status}/{alert.matched_resource_id or "-"}'
+            ),
+            resource_type='alert',
+            resource_id=alert.id,
+            resource_name=alert.title,
+            severity=EventRecord.SEVERITY_INFO,
+            correlation_id=f'alert:{alert.id}',
+            metadata={
+                'previous_resource_id': previous_resource_id,
+                'previous_status': previous_status,
+                'resource_id': alert.matched_resource_id,
+                'match_status': alert.resource_match_status,
+                'match_reason': alert.resource_match_reason,
+            },
+        )
+        return Response(self.get_serializer(alert).data)
 
 
 

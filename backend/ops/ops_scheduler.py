@@ -9,6 +9,7 @@ from .alert_ingest import run_due_external_alert_escalations
 from .datasource_health import run_datasource_health_checks
 from .host_task_schedules import run_due_schedules
 from .inspection_reports import run_due_inspection_reports
+from resource_center.discovery import run_due_discoveries
 
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,7 @@ def run_ops_scheduler_once(limit=20, actor='system-scheduler', alert_rule_limit=
     external_escalation_result = run_due_external_alert_escalations(limit=alert_rule_limit)
     analysis_result = run_due_alert_analyses(limit=limit)
     inspection_report_result = run_due_inspection_reports(limit=limit)
+    resource_discovery_result = run_due_discoveries(limit=min(limit, 10))
     return {
         'host_tasks': host_result,
         'datasource_health': health_result,
@@ -28,6 +30,7 @@ def run_ops_scheduler_once(limit=20, actor='system-scheduler', alert_rule_limit=
         'external_alert_escalations': external_escalation_result,
         'alert_analyses': analysis_result,
         'inspection_reports': inspection_report_result,
+        'resource_discovery': resource_discovery_result,
     }
 
 

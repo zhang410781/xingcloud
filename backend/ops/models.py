@@ -966,6 +966,16 @@ class Alert(models.Model):
     claimed_by = models.CharField('认领人', max_length=64, blank=True, default='')
     claimed_at = models.DateTimeField('认领时间', null=True, blank=True)
     host = models.ForeignKey(Host, on_delete=models.SET_NULL, null=True, blank=True, verbose_name='关联主机')
+    matched_resource = models.ForeignKey(
+        'resource_center.Resource', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='alerts', verbose_name='关联资源中心资源',
+    )
+    resource_match_status = models.CharField(
+        '资源匹配状态', max_length=16,
+        choices=[('unmatched', '未匹配'), ('matched', '已匹配'), ('conflict', '匹配冲突')],
+        default='unmatched', db_index=True,
+    )
+    resource_match_reason = models.CharField('资源匹配依据', max_length=255, blank=True, default='')
     ingress_source = models.ForeignKey(
         ExternalAlertSource,
         on_delete=models.SET_NULL,
@@ -1312,6 +1322,7 @@ class AlertNotificationPolicy(models.Model):
     channels = models.ManyToManyField(AlertNotificationChannel, blank=True, related_name='notification_policies', verbose_name='通知渠道')
     level_channel_ids = models.JSONField('分级通知渠道', default=dict, blank=True)
     recipient_groups = models.ManyToManyField(AlertRecipientGroup, blank=True, related_name='notification_policies', verbose_name='接收组')
+    use_resource_contacts = models.BooleanField('追加资源负责人', default=False)
     group_by = models.JSONField('聚合维度', default=list, blank=True)
     group_wait_seconds = models.PositiveIntegerField('首次聚合等待秒', default=30)
     group_interval_seconds = models.PositiveIntegerField('同组通知间隔秒', default=300)

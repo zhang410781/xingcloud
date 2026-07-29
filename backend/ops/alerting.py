@@ -899,14 +899,21 @@ def build_recipient_contacts(*, groups=None, recipients=None):
     return {key: sorted(value) for key, value in result.items()}
 
 
-def _recipient_contacts(rule=None, policy=None):
+def _recipient_contacts(rule=None, policy=None, alert=None):
     config = (rule.notify_config or {}) if rule else {}
     if policy is not None:
         groups = policy.recipient_groups.filter(is_enabled=True).prefetch_related('recipients', 'users')
     else:
         group_ids = _list(config.get('recipient_group_ids'))
         groups = AlertRecipientGroup.objects.filter(id__in=group_ids, is_enabled=True).prefetch_related('recipients', 'users')
-    return build_recipient_contacts(groups=groups)
+    resource_recipients = []
+    if alert is not None and policy is not None and policy.use_resource_contacts and alert.matched_resource_id:
+        from resource_center.alert_matching import resource_contact_recipients
+        from .models import AlertRecipient
+
+        recipient_ids = resource_contact_recipients(alert.matched_resource, level=alert.level)
+        resource_recipients = AlertRecipient.objects.filter(id__in=recipient_ids, is_enabled=True)
+    return build_recipient_contacts(groups=groups, recipients=resource_recipients)
 
 
 def _post_json(url, payload, timeout=8, headers=None):
@@ -1415,7 +1422,7 @@ def dispatch_alert_notifications(alert, action='fire', request=None, force=False
                 created_at__gte=now - timedelta(minutes=policy.repeat_interval_minutes),
             ).exists():
                 continue
-            recipients = _recipient_contacts(policy=policy)
+            recipients = _recipient_contacts(policy=policy, alert=alert)
             logs.extend([
                 send_alert_notification(channel, alert, recipients, action=action, rule=rule, policy=policy, request=request)
                 for channel in channels
@@ -1589,7 +1596,7 @@ def apply_escalation_policy(alert, request=None):
             channel for channel in channels
             if channel.id not in previous_success_ids and channel.id not in recent_attempt_ids
         ]
-        recipients = _recipient_contacts(policy=policy)
+        recipients = _recipient_contacts(policy=policy, alert=alert)
         logs = [
             send_alert_notification(
                 channel,

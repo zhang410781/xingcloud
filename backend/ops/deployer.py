@@ -9,7 +9,8 @@ from django.utils.text import slugify
 from kubernetes import utils as k8s_utils
 from kubernetes.client.exceptions import ApiException
 
-from cmdb.models import CIType, CIRelation, ConfigItem
+from resource_center.discovery import ensure_builtin_resource_types
+from resource_center.models import Resource, ResourceIdentifier, ResourceRelation, ResourceSourceBinding
 from .eventwall_stub import EventRecord
 from .eventwall_stub import build_resource, record_event
 from ops.k8s_views import _get_k8s_client, _is_demo
@@ -20,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 SERVICE_STATUS_CACHE_TTL = 8
 SERVICE_STATUS_STALE_CACHE_TTL = 300
-CMDB_ENV_MAP = {
+RESOURCE_ENV_MAP = {
     'production': 'prod',
     'staging': 'test',
     'testing': 'test',
@@ -47,126 +48,75 @@ def _service_status_cache_key(deployment):
     )
 
 
-def _cmdb_environment(value):
-    return CMDB_ENV_MAP.get(value, value or 'test')
+def _resource_environment(value):
+    return RESOURCE_ENV_MAP.get(value, value or 'test')
 
 
-def _cmdb_ci_name(deployment):
-    return f'{deployment.app_name}-{_cmdb_environment(deployment.environment)}'
+def _application_resource_name(deployment):
+    return f'{deployment.app_name}-{_resource_environment(deployment.environment)}'
 
 
-def _cmdb_status_for_deployment(deployment, override=None):
-    if override:
-        return override
+def _resource_status_for_deployment(deployment, override=None):
+    if override in {'active', 'warning', 'offline', 'retired'}:
+        return 'retired' if override == 'offline' else override
+    if override == 'idle':
+        return 'offline'
     if deployment.status == 'running':
         return 'active'
     if deployment.status == 'stopped':
-        return 'idle'
-    if deployment.status == 'removed':
         return 'offline'
+    if deployment.status == 'removed':
+        return 'retired'
     return 'active'
 
 
-def _ensure_cmdb_app_ci_type():
-    ci_type, _ = CIType.objects.get_or_create(
-        name='应用服务',
-        defaults={
-            'icon': 'Promotion',
-            'color': '#3b82f6',
-            'description': '\u7531\u5e94\u7528\u53d1\u5e03\u6a21\u5757\u81ea\u52a8\u540c\u6b65\u7684\u4e1a\u52a1\u5e94\u7528\u914d\u7f6e\u9879',
-        },
-    )
-    changed = False
-    if not ci_type.icon:
-        ci_type.icon = 'Promotion'
-        changed = True
-    if not ci_type.color:
-        ci_type.color = '#3b82f6'
-        changed = True
-    if not ci_type.description:
-        ci_type.description = '\u7531\u5e94\u7528\u53d1\u5e03\u6a21\u5757\u81ea\u52a8\u540c\u6b65\u7684\u4e1a\u52a1\u5e94\u7528\u914d\u7f6e\u9879'
-        changed = True
-    if changed:
-        ci_type.save(update_fields=['icon', 'color', 'description'])
-    return ci_type
+def _deployment_cluster_resource(deployment):
+    if not deployment.cluster_id:
+        return None
+    return ResourceSourceBinding.objects.filter(
+        source__k8s_cluster_id=deployment.cluster_id,
+        external_type='cluster',
+    ).select_related('resource').values_list('resource_id', flat=True).first()
 
 
-def _ensure_cmdb_ci_type(name, icon, color, description):
-    ci_type, _ = CIType.objects.get_or_create(
-        name=name,
-        defaults={
-            'icon': icon,
-            'color': color,
-            'description': description,
-        },
-    )
-    changed = False
-    if not ci_type.icon:
-        ci_type.icon = icon
-        changed = True
-    if not ci_type.color:
-        ci_type.color = color
-        changed = True
-    if not ci_type.description:
-        ci_type.description = description
-        changed = True
-    if changed:
-        ci_type.save(update_fields=['icon', 'color', 'description'])
-    return ci_type
-
-
-def _ensure_target_cmdb_item(deployment):
-    environment = _cmdb_environment(deployment.environment)
-    if deployment.cluster_id:
-        ci_type = _ensure_cmdb_ci_type('K8s 集群', 'Connection', '#0ea5e9', '由应用发布模块自动同步的集群发布目标')
-        ci, _ = ConfigItem.objects.get_or_create(
-            ci_type=ci_type,
-            name=deployment.cluster.name,
-            business_line=deployment.business_line,
-            environment=environment,
-            defaults={
-                'admin_user': '',
-                'status': 'active',
-                'attributes': {},
-            },
-        )
-        ci.status = 'active'
-        ci.attributes = {
-            **(ci.attributes or {}),
-            'source': 'app_release_target',
-            'target_kind': 'cluster',
-            'cluster_name': deployment.cluster.name,
-            'api_server': deployment.cluster.api_server,
-            'namespace': deployment.namespace or 'default',
-        }
-        ci.save()
-        return ci
-
-    return None
-
-
-def sync_deployment_to_cmdb(deployment, override_status=None):
+@transaction.atomic
+def sync_deployment_to_resource_center(deployment, override_status=None):
     if not deployment.business_line:
         return None
 
-    ci_type = _ensure_cmdb_app_ci_type()
-    environment = _cmdb_environment(deployment.environment)
-    ci_name = _cmdb_ci_name(deployment)
-    ci, _ = ConfigItem.objects.get_or_create(
-        ci_type=ci_type,
-        name=ci_name,
-        business_line=deployment.business_line,
-        environment=environment,
-        defaults={
-            'admin_user': deployment.deployer or deployment.submitter or '',
-            'status': _cmdb_status_for_deployment(deployment, override_status),
-            'attributes': {},
-        },
-    )
-    ci.admin_user = deployment.deployer or deployment.submitter or ci.admin_user
-    ci.status = _cmdb_status_for_deployment(deployment, override_status)
-    ci.attributes = {
-        **(ci.attributes or {}),
+    resource_type = ensure_builtin_resource_types()['application_service']
+    environment = _resource_environment(deployment.environment)
+    identity_scope = f'app_release:{deployment.business_line}:{environment}'
+    identity_value = deployment.app_name
+    identifier = ResourceIdentifier.objects.select_related('resource').filter(
+        kind='application', scope=identity_scope, value=identity_value,
+    ).first()
+    if identifier:
+        resource = identifier.resource
+    else:
+        resource = Resource.objects.create(
+            resource_type=resource_type,
+            name=_application_resource_name(deployment),
+            display_name=deployment.app_name,
+            environment=environment,
+            status=_resource_status_for_deployment(deployment, override_status),
+            business_system=deployment.business_line,
+            source='app_release',
+            created_by='app_release',
+            updated_by='app_release',
+        )
+        ResourceIdentifier.objects.create(
+            resource=resource, kind='application', scope=identity_scope,
+            value=identity_value, source='app_release', is_primary=True,
+        )
+    resource.name = _application_resource_name(deployment)
+    resource.display_name = deployment.app_name
+    resource.environment = environment
+    resource.business_system = deployment.business_line
+    resource.status = _resource_status_for_deployment(deployment, override_status)
+    resource.updated_by = 'app_release'
+    resource.attributes = {
+        **(resource.attributes or {}),
         'source': 'app_release',
         'deployment_id': deployment.id,
         'app_name': deployment.app_name,
@@ -187,29 +137,46 @@ def sync_deployment_to_cmdb(deployment, override_status=None):
         'submitter': deployment.submitter,
         'deployer': deployment.deployer,
         'cluster_name': deployment.cluster.name if deployment.cluster_id else '',
-        'ip_address': (ci.attributes or {}).get('ip_address', ''),
     }
-    ci.save()
-    target_ci = _ensure_target_cmdb_item(deployment)
-    if target_ci:
-        CIRelation.objects.get_or_create(
-            source=ci,
-            target=target_ci,
-            relation_type='runs_on',
-            defaults={'description': '搴旂敤鍙戝竷鑷姩鍏宠仈鍙戝竷鐩爣'},
+    resource.save()
+    if deployment.cluster_id:
+        contexts = deployment.cluster.aiops_knowledge_environments.filter(is_enabled=True)
+        resource.business_contexts.add(*contexts)
+    cluster_resource_id = _deployment_cluster_resource(deployment)
+    if cluster_resource_id:
+        relation, relation_created = ResourceRelation.objects.get_or_create(
+            source=resource,
+            target_id=cluster_resource_id,
+            relation_type='deployed_on',
+            defaults={
+                'origin': 'app_release',
+                'attributes': {'namespace': deployment.namespace or 'default'},
+                'first_seen_at': timezone.now(),
+                'last_seen_at': timezone.now(),
+            },
         )
-    return ci
+        if not relation_created:
+            relation.origin = 'app_release'
+            relation.attributes = {'namespace': deployment.namespace or 'default'}
+            relation.last_seen_at = timezone.now()
+            relation.save(update_fields=['origin', 'attributes', 'last_seen_at', 'updated_at'])
+    return resource
 
 
-def sync_current_deployments_to_cmdb():
+def sync_current_deployments_to_resource_center():
     for deployment in (
         Deployment.objects.select_related('cluster')
         .filter(is_current=True, approval_status='approved', status__in=['running', 'stopped', 'removed'])
     ):
         try:
-            sync_deployment_to_cmdb(deployment)
+            sync_deployment_to_resource_center(deployment)
         except Exception:
-            logger.exception('sync_current_deployments_to_cmdb error for deployment %s', deployment.id)
+            logger.exception('sync_current_deployments_to_resource_center error for deployment %s', deployment.id)
+
+
+# Compatibility aliases for callers during one release cycle.
+sync_deployment_to_cmdb = sync_deployment_to_resource_center
+sync_current_deployments_to_cmdb = sync_current_deployments_to_resource_center
 
 
 def _build_k8s_documents(deployment):

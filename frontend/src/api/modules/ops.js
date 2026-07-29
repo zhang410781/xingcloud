@@ -95,6 +95,7 @@ export const getAlertGroups = (params) => request.get('/alerts/groups/', { param
 export const getAlertLogEvidence = (id, params) => request.get(`/alerts/${id}/log-evidence/`, { params })
 export const getAlertAnalysis = (id) => request.get(`/alerts/${id}/analysis/`)
 export const analyzeAlert = (id, data = {}) => request.post(`/alerts/${id}/analyze/`, data)
+export const rematchAlertResource = (id) => request.post(`/alerts/${id}/rematch-resource/`)
 export const updateAlert = (id, data) => request.patch(`/alerts/${id}/`, data)
 export const deleteAlert = (id) => request.delete(`/alerts/${id}/`)
 export const acknowledgeAlert = (id, data = {}) => request.post(`/alerts/${id}/acknowledge/`, data)

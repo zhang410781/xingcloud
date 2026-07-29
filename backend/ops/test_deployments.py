@@ -5,7 +5,9 @@ from django.core.cache import cache
 from django.test import TestCase
 from rest_framework.test import APIClient
 
-from cmdb.models import CIRelation, ConfigItem, ResourceNode
+from cmdb.models import ResourceNode
+from resource_center.discovery import ensure_builtin_resource_types
+from resource_center.models import Resource, ResourceRelation, ResourceSourceBinding
 from ops import deployer
 from ops.models import (
     Deployment,
@@ -207,17 +209,27 @@ class AppReleaseRuntimeTests(DeploymentTestCase):
         self.assertEqual(deployment.batch_current, 2)
         self.assertIn('2/3', deployment.deploy_log)
 
-    def test_sync_deployment_to_cmdb_creates_cluster_relation(self):
+    def test_sync_deployment_to_resource_center_creates_cluster_relation(self):
+        types = ensure_builtin_resource_types()
+        cluster_resource = Resource.objects.create(
+            resource_type=types['k8s_cluster'], name=self.cluster.name,
+            display_name=self.cluster.name, source='k8s',
+        )
+        ResourceSourceBinding.objects.create(
+            source=self.cluster.resource_discovery_source,
+            resource=cluster_resource,
+            external_type='cluster',
+            external_id='test-cluster-uid',
+        )
         deployment = Deployment.objects.create(
             app_name='member-center', business_line=self.business_line, version='2.1.0', image='registry.internal/member-center:2.1.0',
             environment='prod', deploy_mode='k8s', cluster=self.cluster, namespace='members', approval_status='approved',
             status='running', is_current=True, submitter='dev-a', deployer='ops-admin',
         )
-        deployer.sync_deployment_to_cmdb(deployment)
-        ci = ConfigItem.objects.get(name='member-center-prod')
-        self.assertEqual(ci.business_line, self.business_line)
-        self.assertEqual(ci.environment, 'prod')
-        self.assertEqual(ci.status, 'active')
-        self.assertEqual(ci.attributes['deployment_id'], deployment.id)
-        relation = CIRelation.objects.get(source=ci, relation_type='runs_on')
-        self.assertEqual(relation.target.name, self.cluster.name)
+        resource = deployer.sync_deployment_to_resource_center(deployment)
+        self.assertEqual(resource.business_system, self.business_line)
+        self.assertEqual(resource.environment, 'prod')
+        self.assertEqual(resource.status, 'active')
+        self.assertEqual(resource.attributes['deployment_id'], deployment.id)
+        relation = ResourceRelation.objects.get(source=resource, relation_type='deployed_on')
+        self.assertEqual(relation.target, cluster_resource)

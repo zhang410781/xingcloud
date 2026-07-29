@@ -3,6 +3,7 @@ import uuid
 
 from django.contrib.auth import get_user_model
 from django.utils.text import slugify
+from django.core.exceptions import ObjectDoesNotExist
 from rest_framework import serializers
 
 from cmdb.models import CIRelation, ConfigItem, ResourceNode
@@ -333,6 +334,11 @@ class DockerHostSerializer(serializers.ModelSerializer):
 
 class K8sClusterSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source='get_status_display', read_only=True)
+    discovery_status = serializers.SerializerMethodField()
+    discovery_last_success_at = serializers.SerializerMethodField()
+    discovery_last_error = serializers.SerializerMethodField()
+    resource_center_id = serializers.SerializerMethodField()
+    discovered_node_count = serializers.SerializerMethodField()
 
     class Meta:
         model = K8sCluster
@@ -344,6 +350,11 @@ class K8sClusterSerializer(serializers.ModelSerializer):
             'user_type',
             'status',
             'status_display',
+            'discovery_status',
+            'discovery_last_success_at',
+            'discovery_last_error',
+            'resource_center_id',
+            'discovered_node_count',
             'description',
             'created_at',
             'updated_at',
@@ -355,6 +366,35 @@ class K8sClusterSerializer(serializers.ModelSerializer):
                 'allow_blank': True,
             },
         }
+
+    @staticmethod
+    def _discovery_source(obj):
+        try:
+            return obj.resource_discovery_source
+        except ObjectDoesNotExist:
+            return None
+
+    def get_discovery_status(self, obj):
+        source = self._discovery_source(obj)
+        return source.status if source else 'pending'
+
+    def get_discovery_last_success_at(self, obj):
+        source = self._discovery_source(obj)
+        return source.last_success_at if source else None
+
+    def get_discovery_last_error(self, obj):
+        source = self._discovery_source(obj)
+        return source.last_error if source else ''
+
+    def get_resource_center_id(self, obj):
+        source = self._discovery_source(obj)
+        if not source:
+            return None
+        return source.bindings.filter(external_type='cluster').values_list('resource_id', flat=True).first()
+
+    def get_discovered_node_count(self, obj):
+        source = self._discovery_source(obj)
+        return source.bindings.filter(external_type='node').count() if source else 0
 
 
 class TaskResourceGroupSerializer(serializers.ModelSerializer):
@@ -1863,8 +1903,9 @@ class AlertNotificationPolicySerializer(serializers.ModelSerializer):
             'external_alert_source', 'external_alert_source_detail', 'matchers', 'min_level',
             'priority', 'continue_matching', 'channel_ids', 'channels', 'recipient_group_ids',
             'recipient_groups', 'level_channel_ids', 'group_by', 'group_wait_seconds', 'group_interval_seconds',
-            'repeat_interval_minutes', 'mute_schedule', 'inhibition_matchers', 'escalation_steps',
-            'notify_on_fire', 'notify_on_resolved', 'notify_on_analysis', 'is_enabled', 'description', 'created_at', 'updated_at',
+            'repeat_interval_minutes', 'storm_threshold', 'mute_schedule', 'inhibition_matchers', 'escalation_steps',
+            'notify_on_fire', 'notify_on_resolved', 'notify_on_analysis', 'use_resource_contacts',
+            'is_enabled', 'description', 'created_at', 'updated_at',
         ]
 
     def get_channels(self, obj):
@@ -2230,6 +2271,7 @@ class AlertSerializer(serializers.ModelSerializer):
     scope_display = serializers.SerializerMethodField()
     source_display = serializers.SerializerMethodField()
     cluster_display = serializers.SerializerMethodField()
+    matched_resource_detail = serializers.SerializerMethodField()
 
     class Meta:
         model = Alert
@@ -2240,6 +2282,20 @@ class AlertSerializer(serializers.ModelSerializer):
         if records is not None:
             return list(records)
         return list(obj.claim_records.all())
+
+    def get_matched_resource_detail(self, obj):
+        resource = obj.matched_resource
+        if not resource:
+            return None
+        return {
+            'id': resource.id,
+            'uid': str(resource.uid),
+            'name': resource.display_name or resource.name,
+            'type': resource.resource_type.code,
+            'type_name': resource.resource_type.name,
+            'product': resource.product,
+            'primary_ip': resource.primary_ip,
+        }
 
     def get_claimed_by(self, obj):
         names = [item.claimant for item in self._claim_records(obj)]

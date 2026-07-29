@@ -9,12 +9,16 @@
         </div>
       </div>
       <div class="K8s-hero-cluster-switcher">
-        <el-select v-model="currentContextId" size="small" filterable placeholder="选择业务上下文" class="K8s-context-select">
-          <el-option v-for="item in contexts" :key="item.id" :label="item.name" :value="String(item.id)" />
+        <el-select v-model="selectedClusterId" size="small" filterable placeholder="选择 K8S 集群" class="K8s-context-select" @change="onClusterChange">
+          <el-option v-for="item in clusters" :key="item.id" :label="item.name" :value="item.id">
+            <div class="K8s-cluster-option">
+              <span>{{ item.name }}</span>
+              <span class="K8s-cluster-option__meta">{{ item.status === 'connected' ? '在线' : '离线' }} · {{ item.api_server || '-' }}</span>
+            </div>
+          </el-option>
         </el-select>
-        <span class="K8s-hero-switcher-label">当前集群</span>
         <div class="K8s-bound-cluster">
-          {{ selectedCluster?.name || '当前业务上下文未绑定 K8S 集群' }}
+          {{ selectedCluster?.name || '请选择已登记的 K8S 集群' }}
         </div>
         <span v-if="selectedCluster" class="K8s-hero-cluster-meta">
           <span class="state-pulse" :class="selectedClusterConnected ? 'running' : 'exited'"></span>
@@ -91,6 +95,16 @@
           <el-table-column prop="status" label="状态" width="90">
             <template #default="{ row }">
               <el-tag :type="row.status === 'connected' ? 'success' : 'danger'" size="small">{{ row.status === 'connected' ? '运行中' : '未连接' }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="资源发现" min-width="170">
+            <template #default="{ row }">
+              <div class="K8s-discovery-cell">
+                <el-tag :type="row.discovery_status === 'healthy' ? 'success' : row.discovery_status === 'degraded' ? 'warning' : row.discovery_status === 'failed' ? 'danger' : 'info'" size="small">
+                  {{ row.discovery_status === 'healthy' ? '已同步' : row.discovery_status === 'degraded' ? '部分同步' : row.discovery_status === 'failed' ? '同步失败' : '待发现' }}
+                </el-tag>
+                <span>{{ row.discovered_node_count || 0 }} 个节点</span>
+              </div>
             </template>
           </el-table-column>
           <el-table-column prop="description" label="描述" min-width="180" show-overflow-tooltip />
@@ -995,7 +1009,6 @@ import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { useRouteTabState } from '@/composables/useRouteTabState'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
-import { useFeatureBusinessContext } from '@/composables/useFeatureBusinessContext'
 import { DocumentCopy, Document, Monitor, Bell, Plus, Connection, FolderOpened, Menu, RefreshRight, Box, WarningFilled, Setting } from '@element-plus/icons-vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
@@ -1016,8 +1029,6 @@ import {
 } from '@/api/modules/container'
 
 const authStore = useAuthStore()
-const businessContextScope = useFeatureBusinessContext('k8s-manage', { autoLoad: false })
-const { contexts, currentContext, currentContextId } = businessContextScope
 const canManageK8s = computed(() => authStore.hasPermission('ops.K8s.manage'))
 const canExecK8s = computed(() => authStore.hasPermission('ops.K8s.exec'))
 const clusterUserTypeOptions = [
@@ -1244,7 +1255,9 @@ const namespacePopperStyle = {
 
 // ====== 集群 ======
 const clusters = ref([])
-const selectedClusterId = ref(null)
+const CLUSTER_STORAGE_KEY = 'xing-cloud-feature-scope:k8s-manage:cluster'
+const storedClusterId = Number(window.localStorage.getItem(CLUSTER_STORAGE_KEY))
+const selectedClusterId = ref(Number.isFinite(storedClusterId) && storedClusterId > 0 ? storedClusterId : null)
 const selectedNamespace = ref('_all')
 const namespaces = ref([])
 const tableSearchKeyword = ref('')
@@ -1596,9 +1609,9 @@ async function fetchClusters() {
     const res = await getK8sClusters()
     clusters.value = res.results || res
 
-    const boundClusterId = Number(currentContext.value?.k8s_cluster)
-    const current = clusters.value.find(item => item.id === boundClusterId)
-    selectedClusterId.value = current?.id || null
+    const current = clusters.value.find(item => item.id === Number(selectedClusterId.value))
+    const fallback = clusters.value.find(item => item.status === 'connected') || clusters.value[0]
+    selectedClusterId.value = current?.id || fallback?.id || null
     if (!selectedClusterId.value) {
       summary.value = createEmptySummary()
     }
@@ -1608,7 +1621,12 @@ async function fetchClusters() {
     } else if (!selectedClusterId.value) {
       summary.value = createEmptySummary()
     }
-  } catch (e) { /* */ }
+  } catch (error) {
+    clusters.value = []
+    selectedClusterId.value = null
+    summary.value = createEmptySummary()
+    ElMessage.error(error?.response?.data?.detail || 'K8S 集群列表加载失败')
+  }
   loading.value = false
 }
 
@@ -2391,8 +2409,9 @@ watch(activeTab, (tab, prev) => {
   }
 })
 
-watch(currentContextId, () => {
-  void fetchClusters()
+watch(selectedClusterId, (clusterId) => {
+  if (clusterId) window.localStorage.setItem(CLUSTER_STORAGE_KEY, String(clusterId))
+  else window.localStorage.removeItem(CLUSTER_STORAGE_KEY)
 })
 
 watch(workloadSub, (tab, prev) => {
@@ -2417,7 +2436,6 @@ watch(execDialogVisible, (visible) => {
 })
 
 onMounted(async () => {
-  await businessContextScope.loadContexts()
   await fetchClusters()
 })
 onBeforeUnmount(() => { disposeExecTerminal() })
@@ -2428,6 +2446,25 @@ onBeforeUnmount(() => { disposeExecTerminal() })
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.K8s-cluster-option {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.K8s-cluster-option__meta {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.K8s-discovery-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #64748b;
+  font-size: 12px;
 }
 
 .K8s-page-shell :deep(.panel) {

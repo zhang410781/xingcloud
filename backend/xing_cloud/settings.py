@@ -286,6 +286,7 @@ SECRET_KEY = os.getenv(
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = _bool_value(os.getenv('DEBUG'), True)
+ENABLE_LEGACY_CMDB_SYNC = _bool_value(os.getenv('ENABLE_LEGACY_CMDB_SYNC'), False)
 
 ALLOWED_HOSTS = [
     host.strip()
@@ -351,6 +352,7 @@ INSTALLED_APPS = [
     # Local
     'ops.apps.OpsConfig',
     'cmdb',
+    'resource_center.apps.ResourceCenterConfig',
     'aiops.apps.AiopsConfig',
     'rbac',
 ]
