@@ -1310,6 +1310,7 @@ class AlertNotificationPolicy(models.Model):
     priority = models.IntegerField('优先级', default=100, db_index=True)
     continue_matching = models.BooleanField('继续匹配后续策略', default=False)
     channels = models.ManyToManyField(AlertNotificationChannel, blank=True, related_name='notification_policies', verbose_name='通知渠道')
+    level_channel_ids = models.JSONField('分级通知渠道', default=dict, blank=True)
     recipient_groups = models.ManyToManyField(AlertRecipientGroup, blank=True, related_name='notification_policies', verbose_name='接收组')
     group_by = models.JSONField('聚合维度', default=list, blank=True)
     group_wait_seconds = models.PositiveIntegerField('首次聚合等待秒', default=30)

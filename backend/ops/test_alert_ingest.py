@@ -14,7 +14,7 @@ from ops.alert_ingest import (
     normalize_zabbix,
     run_due_external_alert_escalations,
 )
-from ops.alerting import alert_dimension_value, dispatch_alert_notifications, resolve_notification_policies
+from ops.alerting import alert_dimension_value, dispatch_alert_notifications, resolve_notification_policies, upsert_alert
 from ops.models import (
     Alert,
     AlertAnalysis,
@@ -633,6 +633,20 @@ class ExternalAlertNotificationPolicyTests(TestCase):
         self.assertFalse(serializer.is_valid())
         self.assertIn('指标数据源与外部告警接入源不能同时选择', str(serializer.errors))
 
+    def test_policy_rejects_level_channels_outside_selected_channels(self):
+        channel = AlertNotificationChannel.objects.create(
+            name='voice-critical', channel_type=AlertNotificationChannel.CHANNEL_VOICE, config={},
+        )
+
+        serializer = AlertNotificationPolicySerializer(data={
+            'name': 'invalid-level-route',
+            'channel_ids': [],
+            'level_channel_ids': {'critical': [channel.id]},
+        })
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('分级渠道必须包含在策略通知渠道中', str(serializer.errors))
+
     def test_policy_preview_uses_external_source_scope(self):
         external_source = ExternalAlertSource.objects.create(
             name='Production Zabbix', code='production-zabbix', provider=ExternalAlertSource.PROVIDER_ZABBIX,
@@ -651,15 +665,29 @@ class ExternalAlertNotificationPolicyTests(TestCase):
         self.assertEqual(response.data['matched_count'], 1)
         self.assertEqual(response.data['policies'][0]['id'], policy.id)
 
-    def test_scheduler_applies_due_external_escalation(self):
+    @patch('ops.alerting.EmailMessage.send', return_value=1)
+    def test_scheduler_applies_due_external_escalation(self, _send):
+        warning_channel = AlertNotificationChannel.objects.create(
+            name='warning-email', channel_type=AlertNotificationChannel.CHANNEL_EMAIL,
+            config={'to': ['warning@example.com']},
+        )
+        critical_channel = AlertNotificationChannel.objects.create(
+            name='critical-email', channel_type=AlertNotificationChannel.CHANNEL_EMAIL,
+            config={'to': ['critical@example.com']},
+        )
         policy = AlertNotificationPolicy.objects.create(
             name='external-escalation',
             matchers=[{'key': 'source_type', 'op': '==', 'value': 'zabbix'}],
             escalation_steps=[{'after_minutes': 5, 'channel_ids': []}],
+            level_channel_ids={
+                'warning': [warning_channel.id],
+                'critical': [critical_channel.id],
+            },
         )
+        policy.channels.add(warning_channel, critical_channel)
         alert = Alert.objects.create(
             title='External alert',
-            level='critical',
+            level='warning',
             status=Alert.STATUS_ACTIVE,
             source='zabbix',
             source_type=Alert.SOURCE_ZABBIX,
@@ -674,5 +702,154 @@ class ExternalAlertNotificationPolicyTests(TestCase):
         self.assertEqual(result['escalated'], 1)
         self.assertEqual(result['ids'], [alert.id])
         self.assertEqual(alert.escalation_level, 1)
+        self.assertEqual(alert.level, 'critical')
         self.assertEqual(alert.actions.filter(action='escalate').count(), 1)
+        escalation_log = alert.notification_logs.get(action='escalation')
+        self.assertEqual(escalation_log.channel_id, critical_channel.id)
+        self.assertIn('🔴', escalation_log.request_payload['title'])
+        action = alert.actions.get(action='escalate')
+        self.assertEqual(action.metadata['previous_level'], 'warning')
+        self.assertEqual(action.metadata['target_level'], 'critical')
         self.assertTrue(policy.is_enabled)
+
+        repeated, created = upsert_alert({
+            'title': alert.title,
+            'level': 'warning',
+            'status': Alert.STATUS_ACTIVE,
+            'source': 'zabbix',
+            'source_type': Alert.SOURCE_ZABBIX,
+            'fingerprint': alert.fingerprint,
+            'message': 'still active',
+            'starts_at': alert.starts_at,
+        })
+        self.assertFalse(created)
+        self.assertEqual(repeated.level, 'critical')
+        self.assertEqual(repeated.escalation_level, 1)
+
+    @patch('ops.alerting.EmailMessage.send', return_value=1)
+    def test_level_routes_send_warning_and_critical_to_different_channels(self, _send):
+        warning_channel = AlertNotificationChannel.objects.create(
+            name='warning-email', channel_type=AlertNotificationChannel.CHANNEL_EMAIL,
+            config={'to': ['warning@example.com']},
+        )
+        critical_channel = AlertNotificationChannel.objects.create(
+            name='critical-email', channel_type=AlertNotificationChannel.CHANNEL_EMAIL,
+            config={'to': ['critical@example.com']},
+        )
+        policy = AlertNotificationPolicy.objects.create(
+            name='level-routing',
+            level_channel_ids={
+                'warning': [warning_channel.id],
+                'critical': [critical_channel.id],
+            },
+        )
+        policy.channels.add(warning_channel, critical_channel)
+        warning_alert = Alert.objects.create(
+            title='Warning alert', level='warning', status=Alert.STATUS_ACTIVE,
+            source='zabbix', source_type=Alert.SOURCE_ZABBIX,
+            fingerprint='zabbix:warning-route', message='warning', starts_at=timezone.now(),
+        )
+        critical_alert = Alert.objects.create(
+            title='Critical alert', level='critical', status=Alert.STATUS_ACTIVE,
+            source='zabbix', source_type=Alert.SOURCE_ZABBIX,
+            fingerprint='zabbix:critical-route', message='critical', starts_at=timezone.now(),
+        )
+
+        warning_logs = dispatch_alert_notifications(warning_alert, action='fire', force=True)
+        critical_logs = dispatch_alert_notifications(critical_alert, action='fire', force=True)
+
+        self.assertEqual([item.channel_id for item in warning_logs], [warning_channel.id])
+        self.assertEqual([item.channel_id for item in critical_logs], [critical_channel.id])
+
+    @patch('ops.alerting.EmailMessage.send', return_value=1)
+    def test_acknowledged_or_claimed_alert_does_not_escalate(self, _send):
+        channel = AlertNotificationChannel.objects.create(
+            name='critical-email', channel_type=AlertNotificationChannel.CHANNEL_EMAIL,
+            config={'to': ['critical@example.com']},
+        )
+        policy = AlertNotificationPolicy.objects.create(
+            name='external-escalation', escalation_steps=[{'after_minutes': 5, 'channel_ids': []}],
+        )
+        policy.channels.add(channel)
+        acknowledged = Alert.objects.create(
+            title='Acknowledged', level='warning', status=Alert.STATUS_ACTIVE,
+            source='zabbix', source_type=Alert.SOURCE_ZABBIX,
+            fingerprint='zabbix:acknowledged', message='ack', is_acknowledged=True,
+            starts_at=timezone.now() - timedelta(minutes=10),
+        )
+        claimed = Alert.objects.create(
+            title='Claimed', level='warning', status=Alert.STATUS_ACTIVE,
+            source='zabbix', source_type=Alert.SOURCE_ZABBIX,
+            fingerprint='zabbix:claimed', message='claimed', claimed_by='operator',
+            starts_at=timezone.now() - timedelta(minutes=10),
+        )
+
+        result = run_due_external_alert_escalations()
+
+        acknowledged.refresh_from_db()
+        claimed.refresh_from_db()
+        self.assertEqual(result['escalated'], 0)
+        self.assertEqual(acknowledged.escalation_level, 0)
+        self.assertEqual(claimed.escalation_level, 0)
+
+    @patch('ops.alerting.EmailMessage.send', return_value=1)
+    def test_failed_escalation_delivery_remains_retryable(self, _send):
+        channel = AlertNotificationChannel.objects.create(
+            name='critical-email', channel_type=AlertNotificationChannel.CHANNEL_EMAIL, config={},
+        )
+        policy = AlertNotificationPolicy.objects.create(
+            name='retry-escalation',
+            escalation_steps=[{'after_minutes': 5, 'channel_ids': []}],
+            level_channel_ids={'critical': [channel.id]},
+        )
+        policy.channels.add(channel)
+        alert = Alert.objects.create(
+            title='Retry alert', level='warning', status=Alert.STATUS_ACTIVE,
+            source='zabbix', source_type=Alert.SOURCE_ZABBIX,
+            fingerprint='zabbix:retry-escalation', message='retry',
+            starts_at=timezone.now() - timedelta(minutes=10),
+        )
+
+        first = run_due_external_alert_escalations()
+        alert.refresh_from_db()
+        self.assertEqual(first['escalated'], 0)
+        self.assertEqual(alert.level, 'warning')
+        self.assertEqual(alert.escalation_level, 0)
+        self.assertEqual(alert.notification_logs.get(action='escalation').status, 'skipped')
+
+        alert.notification_logs.update(created_at=timezone.now() - timedelta(seconds=61))
+        channel.config = {'to': ['critical@example.com']}
+        channel.save(update_fields=['config', 'updated_at'])
+        second = run_due_external_alert_escalations()
+        alert.refresh_from_db()
+        self.assertEqual(second['escalated'], 1)
+        self.assertEqual(alert.level, 'critical')
+        self.assertEqual(alert.escalation_level, 1)
+
+    def test_reactivated_alert_resets_escalation_and_response_state(self):
+        alert = Alert.objects.create(
+            title='Resolved external alert', level='critical', status=Alert.STATUS_RESOLVED,
+            source='zabbix', source_type=Alert.SOURCE_ZABBIX,
+            fingerprint='zabbix:reactivate-escalation', message='resolved',
+            starts_at=timezone.now() - timedelta(minutes=30), ends_at=timezone.now(),
+            is_acknowledged=True, acknowledged_by='operator', claimed_by='operator',
+            escalation_level=1, escalated_at=timezone.now(),
+        )
+
+        updated, created = upsert_alert({
+            'title': alert.title,
+            'level': 'warning',
+            'status': Alert.STATUS_ACTIVE,
+            'source': 'zabbix',
+            'source_type': Alert.SOURCE_ZABBIX,
+            'fingerprint': alert.fingerprint,
+            'message': 'active again',
+            'starts_at': timezone.now(),
+        })
+
+        self.assertFalse(created)
+        self.assertEqual(updated.level, 'warning')
+        self.assertEqual(updated.escalation_level, 0)
+        self.assertIsNone(updated.escalated_at)
+        self.assertFalse(updated.is_acknowledged)
+        self.assertEqual(updated.claimed_by, '')

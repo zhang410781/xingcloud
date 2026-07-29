@@ -1,4 +1,5 @@
 import base64
+from copy import copy
 import hashlib
 import hmac
 import json
@@ -226,6 +227,13 @@ def upsert_alert(normalized, actor='system', action=None, action_note=None):
                 status_value == Alert.STATUS_ACTIVE and was_resolved
             ):
                 continue
+            if (
+                field == 'level'
+                and alert.escalation_level > 0
+                and not (status_value == Alert.STATUS_ACTIVE and was_resolved)
+                and LEVEL_RANK.get(value, 0) < LEVEL_RANK.get(alert.level, 0)
+            ):
+                continue
             setattr(alert, field, value)
         alert.occurrence_count = alert.occurrence_count + 1
         if status_value == Alert.STATUS_ACTIVE and was_resolved:
@@ -233,6 +241,11 @@ def upsert_alert(normalized, actor='system', action=None, action_note=None):
             alert.is_acknowledged = False
             alert.acknowledged_by = ''
             alert.acknowledged_at = None
+            alert.claim_records.all().delete()
+            alert.claimed_by = ''
+            alert.claimed_at = None
+            alert.escalation_level = 0
+            alert.escalated_at = None
             alert.ends_at = None
         alert.save()
 
@@ -1056,14 +1069,23 @@ def send_plain_notification(channel, recipients, *, title, body, action='inspect
     }
 
 
-def send_alert_notification(channel, alert, recipients, action='fire', rule=None, policy=None, request=None):
+def send_alert_notification(
+    channel, alert, recipients, action='fire', rule=None, policy=None, request=None,
+    notification_metadata=None, notification_level=None,
+):
     config = channel.config or {}
-    title = _render(channel.template_title, alert, action) or _default_title(alert, action)
-    body = _render(channel.template_body, alert, action) or _default_body(alert, action)
+    render_alert = alert
+    if notification_level and notification_level != alert.level:
+        render_alert = copy(alert)
+        render_alert.level = notification_level
+    title = _render(channel.template_title, render_alert, action) or _default_title(render_alert, action)
+    body = _render(channel.template_body, render_alert, action) or _default_body(render_alert, action)
     status = AlertNotificationLog.STATUS_SUCCESS
     response_body = ''
     error_message = ''
     request_summary = {'channel_type': channel.channel_type, 'title': title, 'action': action, 'group_key': alert.group_key}
+    if isinstance(notification_metadata, dict):
+        request_summary.update(notification_metadata)
     if action == 'analysis':
         latest_analysis = alert.analyses.order_by('-created_at', '-id').first()
         if latest_analysis:
@@ -1086,7 +1108,7 @@ def send_alert_notification(channel, alert, recipients, action='fire', rule=None
                 status = AlertNotificationLog.STATUS_SKIPPED
                 response_body = '没有手机号或渠道 webhook_url'
             else:
-                payload = {'phones': phones, 'title': title, 'content': body, 'alert': _alert_context(alert, action), 'config': {k: v for k, v in config.items() if k not in {'token', 'access_token', 'secret'}}}
+                payload = {'phones': phones, 'title': title, 'content': body, 'alert': _alert_context(render_alert, action), 'config': {k: v for k, v in config.items() if k not in {'token', 'access_token', 'secret'}}}
                 request_summary['recipient_count'] = len(phones)
                 response_body = _post_json(url, payload, timeout=channel.timeout_seconds)
         elif channel.channel_type == AlertNotificationChannel.CHANNEL_DINGTALK:
@@ -1124,7 +1146,7 @@ def send_alert_notification(channel, alert, recipients, action='fire', rule=None
                     'card': {
                         'config': {'wide_screen_mode': True, 'enable_forward': True},
                         'header': {
-                            'template': 'green' if action == 'resolved' else ('blue' if action == 'analysis' else ('red' if alert.level == 'critical' else 'orange')),
+                            'template': 'green' if action == 'resolved' else ('blue' if action == 'analysis' else ('red' if render_alert.level == 'critical' else 'orange')),
                             'title': {'tag': 'plain_text', 'content': title},
                         },
                         'elements': [
@@ -1319,6 +1341,19 @@ def resolve_notification_policies(alert, rule=None, metric_datasource_id=None):
     return matched
 
 
+def _policy_channels_for_alert(policy, alert, explicit_channel_ids=None, level=None):
+    queryset = policy.channels.filter(is_enabled=True)
+    channel_ids = [int(item) for item in _list(explicit_channel_ids) if str(item).isdigit()]
+    if channel_ids:
+        return list(queryset.filter(id__in=channel_ids))
+    level_routes = policy.level_channel_ids if isinstance(policy.level_channel_ids, dict) else {}
+    route_level = level or alert.level
+    if route_level in level_routes:
+        routed_ids = [int(item) for item in _list(level_routes.get(route_level)) if str(item).isdigit()]
+        return list(queryset.filter(id__in=routed_ids)) if routed_ids else []
+    return list(queryset)
+
+
 def dispatch_alert_notifications(alert, action='fire', request=None, force=False):
     if action == 'analysis' and alert.status not in {Alert.STATUS_ACTIVE, Alert.STATUS_RESOLVED}:
         return []
@@ -1348,7 +1383,7 @@ def dispatch_alert_notifications(alert, action='fire', request=None, force=False
                 if not allowed:
                     continue
                 analysis_channel_ids = _successful_fire_channel_ids(alert, policy=policy)
-            channels = list(policy.channels.filter(is_enabled=True))
+            channels = _policy_channels_for_alert(policy, alert)
             if analysis_channel_ids is not None:
                 channels = [channel for channel in channels if channel.id in analysis_channel_ids]
             if action == 'resolved':
@@ -1502,7 +1537,13 @@ def dispatch_alert_batch_notifications(alerts, action='fire', request=None, forc
 
 
 def apply_escalation_policy(alert, request=None):
-    if alert.status != Alert.STATUS_ACTIVE or alert.is_suppressed:
+    if (
+        alert.status != Alert.STATUS_ACTIVE
+        or alert.is_suppressed
+        or alert.is_acknowledged
+        or bool(alert.claimed_by)
+        or _has_claimants(alert)
+    ):
         return False
     rule = _alert_rule(alert)
     now = timezone.now()
@@ -1521,21 +1562,73 @@ def apply_escalation_policy(alert, request=None):
         after_minutes = max(int(step.get('after_minutes') or 0), 0)
         if duration_minutes < after_minutes:
             continue
-        channel_ids = _list(step.get('channel_ids'))
-        channels = list(policy.channels.filter(is_enabled=True)) if not channel_ids else list(AlertNotificationChannel.objects.filter(id__in=channel_ids, is_enabled=True))
+        step_number = next_index + 1
+        channels = _policy_channels_for_alert(
+            policy,
+            alert,
+            explicit_channel_ids=step.get('channel_ids'),
+            level='critical',
+        )
+        if not channels:
+            continue
+        previous_success_ids = set()
+        recent_attempt_ids = set()
+        for log in AlertNotificationLog.objects.filter(
+            alert=alert,
+            policy_id=policy.id,
+            action='escalation',
+        ).only('channel_id', 'status', 'request_payload', 'created_at'):
+            payload = log.request_payload if isinstance(log.request_payload, dict) else {}
+            if int(payload.get('escalation_step') or 0) != step_number:
+                continue
+            if log.status == AlertNotificationLog.STATUS_SUCCESS:
+                previous_success_ids.add(log.channel_id)
+            elif log.created_at >= now - timedelta(seconds=60):
+                recent_attempt_ids.add(log.channel_id)
+        pending_channels = [
+            channel for channel in channels
+            if channel.id not in previous_success_ids and channel.id not in recent_attempt_ids
+        ]
         recipients = _recipient_contacts(policy=policy)
-        alert.escalation_level = next_index + 1
+        logs = [
+            send_alert_notification(
+                channel,
+                alert,
+                recipients,
+                action='escalation',
+                rule=rule,
+                policy=policy,
+                request=request,
+                notification_metadata={'escalation_step': step_number},
+                notification_level='critical',
+            )
+            for channel in pending_channels
+        ]
+        successful_ids = previous_success_ids | {
+            log.channel_id for log in logs if log.status == AlertNotificationLog.STATUS_SUCCESS
+        }
+        if any(channel.id not in successful_ids for channel in channels):
+            return False
+        previous_level = alert.level
+        if LEVEL_RANK.get(alert.level, 0) < LEVEL_RANK['critical']:
+            alert.level = 'critical'
+        alert.escalation_level = step_number
         alert.escalated_at = now
-        alert.save(update_fields=['escalation_level', 'escalated_at', 'updated_at'])
+        alert.save(update_fields=['level', 'escalation_level', 'escalated_at', 'updated_at'])
         _save_action(
             alert,
             AlertAction.ACTION_ESCALATE,
             actor='system',
-            note=f'通知策略 {policy.name} 执行第 {next_index + 1} 级升级',
-            metadata={'rule_id': getattr(rule, 'id', None), 'policy_id': policy.id, 'duration_minutes': duration_minutes},
+            note=f'通知策略 {policy.name} 执行第 {step_number} 级升级',
+            metadata={
+                'rule_id': getattr(rule, 'id', None),
+                'policy_id': policy.id,
+                'duration_minutes': duration_minutes,
+                'previous_level': previous_level,
+                'target_level': alert.level,
+                'channel_ids': [channel.id for channel in channels],
+            },
         )
-        for channel in channels:
-            send_alert_notification(channel, alert, recipients, action='escalation', rule=rule, policy=policy, request=request)
         return True
 
     if not rule:
@@ -1593,9 +1686,10 @@ def apply_alert_action(alert, action, actor='', note='', metadata=None, request=
         alert.muted_reason = note or f'屏蔽 {mute_minutes} 分钟'
         update_fields = ['status', 'is_suppressed', 'suppressed_by', 'suppressed_until', 'mute_until', 'muted_by', 'muted_reason', 'updated_at']
     elif action == AlertAction.ACTION_ESCALATE:
+        alert.level = 'critical'
         alert.escalation_level = alert.escalation_level + 1
         alert.escalated_at = now
-        update_fields = ['escalation_level', 'escalated_at', 'updated_at']
+        update_fields = ['level', 'escalation_level', 'escalated_at', 'updated_at']
     elif action == AlertAction.ACTION_RESOLVE:
         alert.status = Alert.STATUS_RESOLVED
         alert.ends_at = now
@@ -1610,7 +1704,12 @@ def apply_alert_action(alert, action, actor='', note='', metadata=None, request=
         alert.ends_at = None
         alert.is_acknowledged = False
         alert.is_suppressed = False
-        update_fields = ['status', 'closed_at', 'ends_at', 'is_acknowledged', 'is_suppressed', 'updated_at']
+        alert.escalation_level = 0
+        alert.escalated_at = None
+        update_fields = [
+            'status', 'closed_at', 'ends_at', 'is_acknowledged', 'is_suppressed',
+            'escalation_level', 'escalated_at', 'updated_at',
+        ]
     else:
         update_fields = ['updated_at']
     alert.save(update_fields=update_fields)

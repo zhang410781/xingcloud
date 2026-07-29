@@ -1851,7 +1851,7 @@ class AlertNotificationPolicySerializer(serializers.ModelSerializer):
             'id', 'name', 'metric_datasource', 'metric_datasource_detail',
             'external_alert_source', 'external_alert_source_detail', 'matchers', 'min_level',
             'priority', 'continue_matching', 'channel_ids', 'channels', 'recipient_group_ids',
-            'recipient_groups', 'group_by', 'group_wait_seconds', 'group_interval_seconds',
+            'recipient_groups', 'level_channel_ids', 'group_by', 'group_wait_seconds', 'group_interval_seconds',
             'repeat_interval_minutes', 'mute_schedule', 'inhibition_matchers', 'escalation_steps',
             'notify_on_fire', 'notify_on_resolved', 'notify_on_analysis', 'is_enabled', 'description', 'created_at', 'updated_at',
         ]
@@ -1889,7 +1889,42 @@ class AlertNotificationPolicySerializer(serializers.ModelSerializer):
         external_source = attrs.get('external_alert_source', getattr(self.instance, 'external_alert_source', None))
         if metric_datasource and external_source:
             raise serializers.ValidationError('指标数据源与外部告警接入源不能同时选择')
+        selected_channels = attrs.get('channel_ids')
+        if selected_channels is None and self.instance:
+            selected_channels = list(self.instance.channels.all())
+        selected_ids = {item.id for item in (selected_channels or [])}
+        routed_ids = {
+            channel_id
+            for channel_ids in (attrs.get('level_channel_ids', getattr(self.instance, 'level_channel_ids', {})) or {}).values()
+            for channel_id in channel_ids
+        }
+        if not routed_ids.issubset(selected_ids):
+            raise serializers.ValidationError({'level_channel_ids': '分级渠道必须包含在策略通知渠道中'})
         return attrs
+
+    def validate_level_channel_ids(self, value):
+        if value in (None, ''):
+            return {}
+        if not isinstance(value, dict):
+            raise serializers.ValidationError('分级通知渠道必须是对象')
+        allowed_levels = {'info', 'warning', 'critical'}
+        normalized = {}
+        for level, channel_ids in value.items():
+            if level not in allowed_levels:
+                raise serializers.ValidationError(f'不支持的告警级别：{level}')
+            if not isinstance(channel_ids, list):
+                raise serializers.ValidationError(f'{level} 的渠道必须是列表')
+            try:
+                normalized[level] = list(dict.fromkeys(int(item) for item in channel_ids))
+            except (TypeError, ValueError):
+                raise serializers.ValidationError(f'{level} 包含无效渠道 ID')
+        existing_ids = set(AlertNotificationChannel.objects.filter(
+            id__in={item for items in normalized.values() for item in items},
+        ).values_list('id', flat=True))
+        requested_ids = {item for items in normalized.values() for item in items}
+        if existing_ids != requested_ids:
+            raise serializers.ValidationError('分级通知渠道包含不存在的渠道')
+        return normalized
 
     def validate_matchers(self, value):
         if not isinstance(value, list):

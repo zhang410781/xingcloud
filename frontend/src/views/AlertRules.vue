@@ -173,8 +173,8 @@
               </div>
             </template>
           </el-table-column>
-          <el-table-column label="渠道" min-width="180">
-            <template #default="{ row }"><span>{{ (row.channels || []).map((item) => item.name).join('、') || '-' }}</span></template>
+          <el-table-column label="渠道" min-width="280">
+            <template #default="{ row }"><span>{{ policyChannelSummary(row) }}</span></template>
           </el-table-column>
           <el-table-column label="聚合" min-width="180">
             <template #default="{ row }">{{ (row.group_by || []).join(' / ') || '平台默认维度' }}</template>
@@ -362,7 +362,16 @@
             <el-button plain size="small" @click="policyForm.matchers.push(emptyMatcher())">添加匹配条件</el-button>
           </div>
         </el-form-item>
-        <el-form-item label="通知渠道"><el-select v-model="policyForm.channel_ids" multiple filterable><el-option v-for="item in channels" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item>
+        <el-form-item label="默认通知渠道">
+          <el-select v-model="policyForm.channel_ids" multiple filterable><el-option v-for="item in channels" :key="item.id" :label="`${item.name} · ${channelTypeText(item.channel_type)}`" :value="item.id" /></el-select>
+          <span class="form-help">未启用分级路由时，所有级别使用这里的渠道</span>
+        </el-form-item>
+        <el-form-item label="按级别分流"><el-switch v-model="policyForm.level_routing_enabled" /><span class="form-help">为信息、警告和严重告警分别选择发送渠道</span></el-form-item>
+        <div v-if="policyForm.level_routing_enabled" class="level-channel-grid">
+          <el-form-item label="信息渠道"><el-select v-model="policyForm.level_channel_ids.info" multiple filterable><el-option v-for="item in channels" :key="item.id" :label="`${item.name} · ${channelTypeText(item.channel_type)}`" :value="item.id" /></el-select></el-form-item>
+          <el-form-item label="警告渠道"><el-select v-model="policyForm.level_channel_ids.warning" multiple filterable><el-option v-for="item in channels" :key="item.id" :label="`${item.name} · ${channelTypeText(item.channel_type)}`" :value="item.id" /></el-select></el-form-item>
+          <el-form-item label="严重渠道"><el-select v-model="policyForm.level_channel_ids.critical" multiple filterable><el-option v-for="item in channels" :key="item.id" :label="`${item.name} · ${channelTypeText(item.channel_type)}`" :value="item.id" /></el-select></el-form-item>
+        </div>
         <el-form-item label="接收组"><el-select v-model="policyForm.recipient_group_ids" multiple filterable><el-option v-for="item in recipientGroups" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item>
         <el-form-item label="聚合维度"><el-select v-model="policyForm.group_by" multiple allow-create filterable><el-option v-for="item in groupByOptions" :key="item" :label="item" :value="item" /></el-select></el-form-item>
         <div class="form-grid triple">
@@ -372,7 +381,7 @@
           <el-form-item label="风暴阈值"><el-input-number v-model="policyForm.storm_threshold" :min="1" /><span class="suffix">同组告警达到该数量时合并摘要</span></el-form-item>
         </div>
         <el-form-item label="静默时段"><el-switch v-model="policyForm.mute_enabled" /><el-time-picker v-if="policyForm.mute_enabled" v-model="policyForm.mute_range" is-range format="HH:mm" value-format="HH:mm" start-placeholder="开始" end-placeholder="结束" /></el-form-item>
-        <el-form-item label="升级等待"><el-input-number v-model="policyForm.escalation_after_minutes" :min="0" /><span class="suffix">分钟，0 表示不升级</span></el-form-item>
+        <el-form-item label="未响应升级"><el-input-number v-model="policyForm.escalation_after_minutes" :min="0" /><span class="suffix">分钟；未认领且未确认的 Warning 将提升为 Critical，并使用严重渠道</span></el-form-item>
         <el-form-item label="通知动作"><el-checkbox v-model="policyForm.notify_on_fire">触发通知</el-checkbox><el-checkbox v-model="policyForm.notify_on_resolved">恢复通知</el-checkbox><el-checkbox v-model="policyForm.notify_on_analysis">研判完成通知</el-checkbox><el-checkbox v-model="policyForm.is_enabled">启用策略</el-checkbox></el-form-item>
       </el-form>
       <template #footer><el-button @click="policyDialog = false">取消</el-button><el-button type="primary" :loading="saving" @click="savePolicy">保存策略</el-button></template>
@@ -393,7 +402,7 @@
         <el-form-item label="标签 JSON"><el-input v-model="previewForm.labelsText" type="textarea" :rows="5" spellcheck="false" /></el-form-item>
         <el-form-item><el-button type="primary" :loading="previewing" @click="runPreview">开始匹配</el-button></el-form-item>
       </el-form>
-      <div v-if="previewResult" class="preview-result"><strong>命中 {{ previewResult.matched_count }} 条策略</strong><div v-for="item in previewResult.policies" :key="item.id"><b>{{ item.name }}</b><span>{{ (item.channels || []).map((channel) => channel.name).join('、') || '未配置渠道' }}</span></div></div>
+      <div v-if="previewResult" class="preview-result"><strong>命中 {{ previewResult.matched_count }} 条策略</strong><div v-for="item in previewResult.policies" :key="item.id"><b>{{ item.name }}</b><span>{{ previewPolicyChannels(item, previewForm.level) }}</span></div></div>
     </el-dialog>
 
     <el-dialog v-model="channelDialog" :title="channelForm.id ? '编辑通知渠道' : '新增通知渠道'" width="600px">
@@ -698,7 +707,26 @@ function qualityType(value) { return { error: 'danger', no_data: 'warning', flap
 function emptyMatcher() { return { key: '', operator: '=', value: '' } }
 function cloneMatchers(value) { return Array.isArray(value) ? value.map((item) => ({ ...item })) : [] }
 function emptyRuleForm() { return { id: null, metric_datasource: '', name: '', promql: '', operator: '>', threshold: 80, level: 'warning', duration_seconds: 300, interval_seconds: 60, auto_analyze: true, description: '', summary_template: '', message_template: '', description_template: '' } }
-function emptyPolicyForm() { return { id: null, name: '', scope_type: 'global', metric_datasource: '', external_alert_source: '', min_level: '', priority: 100, continue_matching: false, matchers: [], channel_ids: [], recipient_group_ids: [], group_by: ['cluster', 'namespace', 'service'], group_wait_seconds: 30, group_interval_seconds: 300, repeat_interval_minutes: 30, storm_threshold: 3, mute_enabled: false, mute_range: [], inhibition_matchers: [], escalation_after_minutes: 0, notify_on_fire: true, notify_on_resolved: true, notify_on_analysis: true, is_enabled: true, description: '' } }
+function emptyPolicyForm() { return { id: null, name: '', scope_type: 'global', metric_datasource: '', external_alert_source: '', min_level: '', priority: 100, continue_matching: false, matchers: [], channel_ids: [], level_routing_enabled: false, level_channel_ids: { info: [], warning: [], critical: [] }, recipient_group_ids: [], group_by: ['cluster', 'namespace', 'service'], group_wait_seconds: 30, group_interval_seconds: 300, repeat_interval_minutes: 30, storm_threshold: 3, mute_enabled: false, mute_range: [], inhibition_matchers: [], escalation_after_minutes: 0, notify_on_fire: true, notify_on_resolved: true, notify_on_analysis: true, is_enabled: true, description: '' } }
+
+function policyLevelChannelIds(row, level) {
+  const routes = row?.level_channel_ids || {}
+  return Array.isArray(routes[level]) ? routes[level] : null
+}
+function channelNamesByIds(row, ids) {
+  const selected = new Set((ids || []).map((item) => Number(item)))
+  return (row?.channels || []).filter((item) => selected.has(Number(item.id))).map((item) => item.name)
+}
+function previewPolicyChannels(row, level) {
+  const routedIds = policyLevelChannelIds(row, level)
+  const names = routedIds === null ? (row.channels || []).map((item) => item.name) : channelNamesByIds(row, routedIds)
+  return names.join('、') || '该级别不发送'
+}
+function policyChannelSummary(row) {
+  const routes = row?.level_channel_ids || {}
+  if (!Object.keys(routes).length) return (row.channels || []).map((item) => item.name).join('、') || '-'
+  return ['info', 'warning', 'critical'].map((level) => `${levelText(level)}：${previewPolicyChannels(row, level)}`).join('；')
+}
 function emptyChannelForm() { return { id: null, name: '', channel_type: 'email', destination: '', secret: '', send_resolved: true, is_enabled: true, config: {} } }
 function emptyRecipientForm() { return { id: null, name: '', user: null, preferred_channels: [], phone: '', email: '', is_enabled: true, description: '' } }
 function emptyRecipientGroupForm() { return { id: null, name: '', recipient_ids: [], user_ids: [], policy_refs: [], is_enabled: true, description: '' } }
@@ -811,6 +839,12 @@ function openPolicy(row = null) {
   if (row) Object.assign(base, row, {
     scope_type: row.external_alert_source ? 'external' : (row.metric_datasource ? 'metric' : 'global'),
     channel_ids: (row.channels || []).map((item) => item.id),
+    level_routing_enabled: Boolean(Object.keys(row.level_channel_ids || {}).length),
+    level_channel_ids: {
+      info: [...(row.level_channel_ids?.info || [])],
+      warning: [...(row.level_channel_ids?.warning || [])],
+      critical: [...(row.level_channel_ids?.critical || [])],
+    },
     recipient_group_ids: (row.recipient_groups || []).map((item) => item.id),
     matchers: cloneMatchers(row.matchers),
     mute_enabled: Boolean(row.mute_schedule?.enabled),
@@ -835,7 +869,13 @@ async function savePolicy() {
   if (!policyForm.name.trim()) return ElMessage.warning('请输入策略名称')
   if (policyForm.scope_type === 'metric' && !policyForm.metric_datasource) return ElMessage.warning('请选择指标数据源')
   if (policyForm.scope_type === 'external' && !policyForm.external_alert_source) return ElMessage.warning('请选择外部告警接入源')
-  const payload = { name: policyForm.name.trim(), metric_datasource: policyForm.scope_type === 'metric' ? policyForm.metric_datasource : null, external_alert_source: policyForm.scope_type === 'external' ? policyForm.external_alert_source : null, min_level: policyForm.min_level || '', priority: policyForm.priority, continue_matching: policyForm.continue_matching, matchers: policyForm.matchers.filter((item) => item.key && item.value !== ''), channel_ids: policyForm.channel_ids, recipient_group_ids: policyForm.recipient_group_ids, group_by: policyForm.group_by, group_wait_seconds: policyForm.group_wait_seconds, group_interval_seconds: policyForm.group_interval_seconds, repeat_interval_minutes: policyForm.repeat_interval_minutes, storm_threshold: policyForm.storm_threshold || 3, mute_schedule: policyForm.mute_enabled ? { enabled: true, start_time: policyForm.mute_range?.[0] || '00:00', end_time: policyForm.mute_range?.[1] || '00:00' } : {}, inhibition_matchers: policyForm.inhibition_matchers || [], escalation_steps: policyForm.escalation_after_minutes > 0 ? [{ name: '一级升级', after_minutes: policyForm.escalation_after_minutes, channel_ids: policyForm.channel_ids }] : [], notify_on_fire: policyForm.notify_on_fire, notify_on_resolved: policyForm.notify_on_resolved, notify_on_analysis: policyForm.notify_on_analysis, is_enabled: policyForm.is_enabled, description: policyForm.description || '' }
+  const levelChannelIds = policyForm.level_routing_enabled ? {
+    info: [...policyForm.level_channel_ids.info],
+    warning: [...policyForm.level_channel_ids.warning],
+    critical: [...policyForm.level_channel_ids.critical],
+  } : {}
+  const channelIds = [...new Set([...policyForm.channel_ids, ...Object.values(levelChannelIds).flat()])]
+  const payload = { name: policyForm.name.trim(), metric_datasource: policyForm.scope_type === 'metric' ? policyForm.metric_datasource : null, external_alert_source: policyForm.scope_type === 'external' ? policyForm.external_alert_source : null, min_level: policyForm.min_level || '', priority: policyForm.priority, continue_matching: policyForm.continue_matching, matchers: policyForm.matchers.filter((item) => item.key && item.value !== ''), channel_ids: channelIds, level_channel_ids: levelChannelIds, recipient_group_ids: policyForm.recipient_group_ids, group_by: policyForm.group_by, group_wait_seconds: policyForm.group_wait_seconds, group_interval_seconds: policyForm.group_interval_seconds, repeat_interval_minutes: policyForm.repeat_interval_minutes, storm_threshold: policyForm.storm_threshold || 3, mute_schedule: policyForm.mute_enabled ? { enabled: true, start_time: policyForm.mute_range?.[0] || '00:00', end_time: policyForm.mute_range?.[1] || '00:00' } : {}, inhibition_matchers: policyForm.inhibition_matchers || [], escalation_steps: policyForm.escalation_after_minutes > 0 ? [{ name: '一级升级', after_minutes: policyForm.escalation_after_minutes, channel_ids: [] }] : [], notify_on_fire: policyForm.notify_on_fire, notify_on_resolved: policyForm.notify_on_resolved, notify_on_analysis: policyForm.notify_on_analysis, is_enabled: policyForm.is_enabled, description: policyForm.description || '' }
   saving.value = true
   try { if (policyForm.id) await updateAlertNotificationPolicy(policyForm.id, payload); else await createAlertNotificationPolicy(payload); policyDialog.value = false; await loadPolicies(); ElMessage.success('通知策略已保存') } catch (error) { ElMessage.error(error.response?.data?.detail || '通知策略保存失败') } finally { saving.value = false }
 }
@@ -1161,7 +1201,8 @@ onMounted(async () => {
 .form-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0 12px; }.form-grid.triple { grid-template-columns: repeat(3,minmax(0,1fr)); }.suffix { margin-left: 7px; color: #71869c; font-size: 12px; }.form-help { margin-left: 9px; color: #73879d; font-size: 12px; }
 .template-help { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; }.template-help code { padding: 3px 6px; border: 1px solid #d8e2ec; color: #40566c; background: #f6f8fb; font-size: 12px; overflow-wrap: anywhere; }
 .matcher-list { display: grid; gap: 7px; width: 100%; }.matcher-row { display: grid; grid-template-columns: 1.3fr 90px 1.3fr 54px; gap: 7px; }.preview-result { display: grid; gap: 8px; padding: 12px; border: 1px solid #dce5ef; background: #f8fafc; }.preview-result > div { display: flex; justify-content: space-between; gap: 10px; }.result-json { max-height: 560px; overflow: auto; padding: 14px; color: #dbeafe; background: #172334; white-space: pre-wrap; }
+.level-channel-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 10px; padding: 10px 12px 0; border: 1px solid #dce5ef; background: #f8fafc; }
 :deep(.el-select), :deep(.el-input) { width: 100%; }:deep(.el-table) { --el-table-header-bg-color: #f5f8fb; --el-table-row-hover-bg-color: #f5f9ff; }
-@media (max-width: 1000px) { .summary-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }.form-grid,.form-grid.triple { grid-template-columns: 1fr; }.section-head { flex-direction: column; }.resource-actions { width: 100%; min-width: 0; }.rule-instance-table :deep(.el-table__header),.rule-instance-table :deep(.el-table__body),.rule-instance-table :deep(.el-scrollbar__view) { width: 100% !important; }.rule-instance-table :deep(col:nth-child(2)),.rule-instance-table :deep(col:nth-child(3)),.rule-instance-table :deep(col:nth-child(6)),.rule-instance-table :deep(th:nth-child(2)),.rule-instance-table :deep(th:nth-child(3)),.rule-instance-table :deep(th:nth-child(6)),.rule-instance-table :deep(td:nth-child(2)),.rule-instance-table :deep(td:nth-child(3)),.rule-instance-table :deep(td:nth-child(6)) { display: none; } }
+@media (max-width: 1000px) { .summary-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }.form-grid,.form-grid.triple,.level-channel-grid { grid-template-columns: 1fr; }.section-head { flex-direction: column; }.resource-actions { width: 100%; min-width: 0; }.rule-instance-table :deep(.el-table__header),.rule-instance-table :deep(.el-table__body),.rule-instance-table :deep(.el-scrollbar__view) { width: 100% !important; }.rule-instance-table :deep(col:nth-child(2)),.rule-instance-table :deep(col:nth-child(3)),.rule-instance-table :deep(col:nth-child(6)),.rule-instance-table :deep(th:nth-child(2)),.rule-instance-table :deep(th:nth-child(3)),.rule-instance-table :deep(th:nth-child(6)),.rule-instance-table :deep(td:nth-child(2)),.rule-instance-table :deep(td:nth-child(3)),.rule-instance-table :deep(td:nth-child(6)) { display: none; } }
 @media (max-width: 700px) { .alert-rule-page { padding: 12px; }.page-header { flex-direction: column; }.header-actions { justify-content: flex-start; }.summary-grid { grid-template-columns: 1fr; }.toolbar-field,.source-field,.search-field { width: 100%; }.matcher-row { grid-template-columns: 1fr; }.work-tabs,.resource-tabs { overflow-x: auto; }.work-tabs button,.resource-tabs button { min-width: 110px; }.resource-actions,.member-selector { align-items: stretch; flex-direction: column; }.resource-actions .el-input { min-width: 0; width: 100%; } }
 </style>
