@@ -1642,6 +1642,7 @@ class LogDataSource(models.Model):
         ('loki', 'Loki'),
         ('elk', 'ELK / Elasticsearch'),
         ('clickhouse', 'ClickHouse'),
+        ('openobserve', 'OpenObserve'),
     ]
 
     name = models.CharField('名称', max_length=128, unique=True)

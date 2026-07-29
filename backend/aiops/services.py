@@ -2026,7 +2026,7 @@ def _action_question_matches(action_code, question, analysis_scope=None):
         )
     if action_code == 'log.query_generate':
         return (
-            _question_contains_any(lowered, ['日志', 'log', 'logs', 'loki', 'elk', 'clickhouse'])
+            _question_contains_any(lowered, ['日志', 'log', 'logs', 'loki', 'elk', 'clickhouse', 'openobserve'])
             and _question_contains_any(lowered, [
                 '生成', '查询', '查下', '查看', '看下', '语句', '条件', '过滤', '分析', '检索',
                 '模式', '共同模式', '共性', '规律', '聚合', '统计', '归类', '有什么', '请求',
@@ -3668,6 +3668,12 @@ def _query_live_log_datasources(knowledge_environment, query='', service='', lev
             payload['index_pattern'] = config.get('index_pattern') or '*'
             payload['time_field'] = config.get('time_field') or '@timestamp'
             payload['message_fields'] = config.get('message_fields') or 'message,log,msg'
+        elif datasource.provider == 'openobserve':
+            payload['query'] = query
+            payload['service'] = service
+            payload['namespace'] = namespace
+            payload['levels'] = resolved_levels
+            payload['source'] = config.get('default_stream') or config.get('stream') or ''
         try:
             result = run_log_provider_query(datasource.provider, config, payload)
             datasource_summaries.append({'id': datasource.id, 'name': datasource.name, 'provider': datasource.provider, 'query': payload.get('query')})
@@ -6007,7 +6013,7 @@ def _is_direct_log_question(question):
         return True
     if 'trace_id' in lowered or 'traceid' in lowered:
         return True
-    if re.search(r'\b(?:log|logs|loki|elk|clickhouse)\b', lowered):
+    if re.search(r'\b(?:log|logs|loki|elk|clickhouse|openobserve)\b', lowered):
         return True
     return False
 

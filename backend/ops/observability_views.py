@@ -791,9 +791,9 @@ def _dashboard_log_panel(panel, request_data, start_ms, end_ms):
     datasource_id = request_data.get('log_datasource_id') or request_data.get('datasource_id')
     datasource = LogDataSource.objects.filter(pk=datasource_id, is_enabled=True).first() if datasource_id else None
     if not datasource:
-        datasource = LogDataSource.objects.filter(provider__in=['elk', 'clickhouse'], is_enabled=True).order_by('-is_default', 'name').first()
-    if not datasource or datasource.provider not in {'elk', 'clickhouse'}:
-        raise ProviderError('请选择 Elasticsearch 或 ClickHouse 日志数据源')
+        datasource = LogDataSource.objects.filter(provider__in=['elk', 'clickhouse', 'openobserve'], is_enabled=True).order_by('-is_default', 'name').first()
+    if not datasource or datasource.provider not in {'elk', 'clickhouse', 'openobserve'}:
+        raise ProviderError('请选择 Elasticsearch、ClickHouse 或 OpenObserve 日志数据源')
     target = _dashboard_panel_target(panel)
     options = _dashboard_panel_options(panel)
     query = target.get('query') or ''

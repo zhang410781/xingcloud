@@ -1,5 +1,6 @@
 import time
 from collections import Counter
+from urllib.parse import quote
 
 from django.utils import timezone
 
@@ -84,7 +85,13 @@ def check_log_datasource(datasource):
     if not datasource.is_enabled or not _log_endpoint(config):
         return _update_health(datasource, STATUS_NOT_CONFIGURED, 'log datasource is not connected', None)
     try:
-        from .log_views import _clickhouse_request, _elk_request, _merge_config
+        from .log_views import (
+            _clickhouse_request,
+            _elk_request,
+            _merge_config,
+            _openobserve_organization,
+            _openobserve_request,
+        )
 
         if datasource.provider == 'clickhouse':
             merged = _merge_config('clickhouse', config)
@@ -106,6 +113,16 @@ def check_log_datasource(datasource):
                 pattern = merged.get('index_pattern') or '*'
                 _elk_request('POST', merged['endpoint'], f'/{pattern}/_search', merged, body={'size': 0, 'track_total_hits': False})
                 message = f'Elasticsearch index read succeeded: {pattern}'
+        elif datasource.provider == 'openobserve':
+            merged = _merge_config('openobserve', config)
+            organization = _openobserve_organization(merged)
+            response = _openobserve_request('GET', merged, f'/api/{quote(organization, safe="")}/streams')
+            streams = response.get('list') if isinstance(response, dict) else []
+            log_streams = [
+                item for item in (streams or [])
+                if isinstance(item, dict) and item.get('stream_type') in (None, '', 'logs')
+            ]
+            message = f'OpenObserve organization {organization}: {len(log_streams)} log streams'
         else:
             return _update_health(datasource, STATUS_UNKNOWN, f'{datasource.provider} health check is not supported', None)
         latency_ms = int((time.perf_counter() - started) * 1000)

@@ -159,7 +159,7 @@ const emptyHint = computed(() => {
 })
 
 function listOf(response) { return Array.isArray(response) ? response : (response?.results || []) }
-function providerLabel(provider) { return { elk: 'Elasticsearch', clickhouse: 'ClickHouse' }[provider] || provider || '日志' }
+function providerLabel(provider) { return { elk: 'Elasticsearch', clickhouse: 'ClickHouse', openobserve: 'OpenObserve' }[provider] || provider || '日志' }
 function hasExplicitGrid(panel) {
   const grid = panel.grid || panel.options?.grid || {}
   return Number(grid.w) > 0
@@ -209,7 +209,7 @@ async function loadFilterOptions() {
 async function loadSources() {
   const [metrics, logs] = await Promise.allSettled([getMetricDataSources({ is_enabled: true }, { skipErrorMessage: true }), getLogDataSources({ is_enabled: true }, { skipErrorMessage: true })])
   metricDataSources.value = metrics.status === 'fulfilled' ? listOf(metrics.value) : []
-  logDataSources.value = logs.status === 'fulfilled' ? listOf(logs.value).filter((item) => ['elk', 'clickhouse'].includes(item.provider)) : []
+  logDataSources.value = logs.status === 'fulfilled' ? listOf(logs.value).filter((item) => ['elk', 'clickhouse', 'openobserve'].includes(item.provider)) : []
   selectedMetricId.value = currentContext.value?.metric_datasource || ''
   selectedLogId.value = currentContext.value?.log_datasource || ''
   await loadFilterOptions()

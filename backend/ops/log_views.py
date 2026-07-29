@@ -2,6 +2,7 @@ import hashlib
 import json
 import re
 from datetime import datetime, timezone as dt_timezone
+from urllib.parse import quote
 
 import requests as http_requests
 from django.conf import settings
@@ -138,6 +139,16 @@ def _provider_defaults():
             'timezone': 'Asia/Shanghai',
             'collections': [],
         },
+        'openobserve': {
+            'endpoint': '',
+            'organization': 'default',
+            'auth_type': 'basic',
+            'username': '',
+            'password': '',
+            'bearer_token': '',
+            'streams': [],
+            'default_stream': '',
+        },
     }
 
 
@@ -210,6 +221,13 @@ def _provider_info():
             'description': 'Query structured logs stored in ClickHouse.',
             'configured': bool(defaults.get('clickhouse', {}).get('endpoint')),
             'defaults': _public_config(defaults.get('clickhouse', {})),
+        },
+        {
+            'id': 'openobserve',
+            'name': 'OpenObserve',
+            'description': '查询 OpenObserve Organization 中的日志 Stream。',
+            'configured': bool(defaults.get('openobserve', {}).get('endpoint')),
+            'defaults': _public_config(defaults.get('openobserve', {})),
         },
     ]
 
@@ -995,6 +1013,149 @@ def _elk_request(method, endpoint, path, config, params=None, body=None):
     return _safe_json(response)
 
 
+def _openobserve_request(method, config, path, params=None, body=None):
+    endpoint = config.get('endpoint')
+    if not endpoint:
+        raise ProviderError('OpenObserve endpoint is required')
+    auth_type = str(config.get('auth_type') or 'basic').lower()
+    headers = {'Accept': 'application/json'}
+    auth = None
+    if auth_type == 'basic':
+        username = str(config.get('username') or '').strip()
+        password = str(config.get('password') or '')
+        if not username or not password:
+            raise ProviderError('OpenObserve Basic Auth 用户名和密码不能为空')
+        auth = (username, password)
+    elif auth_type == 'bearer':
+        token = str(config.get('bearer_token') or config.get('token') or '').strip()
+        if not token:
+            raise ProviderError('OpenObserve Bearer Token 不能为空')
+        headers['Authorization'] = f'Bearer {token}'
+    else:
+        raise ProviderError('OpenObserve 仅支持 Basic Auth 或 Bearer Token')
+    try:
+        response = http_requests.request(
+            method,
+            f'{_normalize_endpoint(endpoint)}{path}',
+            params=params,
+            json=body,
+            headers=headers,
+            auth=auth,
+            timeout=REQUEST_TIMEOUT,
+        )
+    except http_requests.Timeout as exc:
+        raise ProviderError('OpenObserve request timed out', status.HTTP_504_GATEWAY_TIMEOUT, {'detail': str(exc)}) from exc
+    except http_requests.ConnectionError as exc:
+        raise ProviderError('Unable to connect to OpenObserve', status.HTTP_502_BAD_GATEWAY, {'detail': str(exc)}) from exc
+    _raise_for_status(response, 'OpenObserve')
+    return _safe_json(response)
+
+
+def _openobserve_organization(config):
+    return str(config.get('organization') or 'default').strip() or 'default'
+
+
+def _openobserve_identifier(value):
+    return f'"{str(value or "").replace(chr(34), chr(34) * 2)}"'
+
+
+def _openobserve_literal(value):
+    return "'" + str(value or '').replace("'", "''") + "'"
+
+
+def _openobserve_streams(config):
+    streams = []
+    for item in config.get('streams') or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get('stream_name') or item.get('name') or item.get('key') or '').strip()
+        if not name:
+            continue
+        streams.append({
+            **item,
+            'key': str(item.get('key') or name),
+            'name': str(item.get('name') or name),
+            'stream_name': name,
+            'field_map': item.get('field_map') if isinstance(item.get('field_map'), dict) else {},
+        })
+    legacy_stream = str(config.get('stream') or '').strip()
+    if not streams and legacy_stream:
+        streams.append({
+            'key': legacy_stream,
+            'name': legacy_stream,
+            'stream_name': legacy_stream,
+            'field_map': config.get('field_map') if isinstance(config.get('field_map'), dict) else {},
+        })
+    return streams
+
+
+def _resolve_openobserve_stream(config, payload):
+    requested = str(payload.get('source') or payload.get('stream') or payload.get('collection') or '').strip()
+    streams = _openobserve_streams(config)
+    if requested:
+        for item in streams:
+            if requested in {item.get('key'), item.get('name'), item.get('stream_name')}:
+                return item
+        if streams:
+            raise ProviderError('所选 OpenObserve Stream 未在当前数据源中配置')
+        return {'key': requested, 'name': requested, 'stream_name': requested, 'field_map': {}}
+    default_stream = str(config.get('default_stream') or '').strip()
+    if default_stream:
+        for item in streams:
+            if default_stream in {item.get('key'), item.get('name'), item.get('stream_name')}:
+                return item
+    if streams:
+        return streams[0]
+    raise ProviderError('OpenObserve 日志 Stream 未配置')
+
+
+def _recommend_openobserve_field_map(fields):
+    fields = [str(item) for item in fields if item]
+    lowered = {item.lower(): item for item in fields}
+
+    def choose(*candidates):
+        for candidate in candidates:
+            if candidate.lower() in lowered:
+                return lowered[candidate.lower()]
+        for candidate in candidates:
+            suffix = candidate.lower().replace('.', '_')
+            for field in fields:
+                if field.lower().replace('.', '_').endswith(suffix):
+                    return field
+        return ''
+
+    return {
+        'timestamp': choose('_timestamp', '@timestamp', 'timestamp', 'time'),
+        'message': choose('message', 'log', 'msg', 'log_message'),
+        'level': choose('level', 'log_level', 'severity') or '__derived__',
+        'service': choose('service', 'service_name', 'app', 'application'),
+        'namespace': choose('namespace', 'namespace_name', 'kubernetes_namespace_name'),
+        'pod': choose('pod', 'pod_name', 'kubernetes_pod_name'),
+        'container': choose('container', 'container_name', 'kubernetes_container_name'),
+        'host': choose('host', 'host_name', 'hostname', 'node', 'node_name'),
+    }
+
+
+def _openobserve_field_value(document, field):
+    if not field or field == '__derived__':
+        return ''
+    if field in document:
+        return document.get(field)
+    return _get_nested(document, field)
+
+
+def _openobserve_timestamp(value):
+    if value in (None, ''):
+        return ''
+    try:
+        numeric = int(float(value))
+    except (TypeError, ValueError):
+        return _iso_from_ms(value)
+    if numeric > 100_000_000_000_000:
+        numeric //= 1000
+    return _iso_from_ms(numeric)
+
+
 def _clickhouse_identifier(value, label='identifier'):
     value = str(value or '').strip()
     if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', value):
@@ -1478,6 +1639,48 @@ def _catalog_loki(config, payload):
     return {'kind': 'labels', 'items': data.get('data', [])}
 
 
+def _catalog_openobserve(config, payload):
+    organization = quote(_openobserve_organization(config), safe='')
+    action_name = payload.get('action') or 'sources'
+    if action_name == 'recommend_fields':
+        stream_name = str(payload.get('stream') or payload.get('source') or '').strip()
+        if not stream_name:
+            raise ProviderError('请选择 OpenObserve Stream 后再识别字段')
+        data = _openobserve_request(
+            'GET',
+            config,
+            f'/api/{organization}/streams/{quote(stream_name, safe="")}/schema',
+            params={'type': 'logs'},
+        )
+        schema = data.get('schema') if isinstance(data, dict) else []
+        fields = [item.get('name') for item in (schema or []) if isinstance(item, dict) and item.get('name')]
+        return {
+            'kind': 'field_recommendation',
+            'items': fields,
+            'recommendation': _recommend_openobserve_field_map(fields),
+        }
+    if action_name not in {'sources', 'streams'}:
+        raise ProviderError('Unsupported OpenObserve catalog action')
+    data = _openobserve_request('GET', config, f'/api/{organization}/streams')
+    rows = data.get('list') if isinstance(data, dict) else []
+    items = []
+    for row in rows or []:
+        if not isinstance(row, dict) or row.get('stream_type') not in (None, '', 'logs'):
+            continue
+        stats = row.get('stats') if isinstance(row.get('stats'), dict) else {}
+        name = str(row.get('name') or '').strip()
+        if name:
+            items.append({
+                'name': name,
+                'stream_type': row.get('stream_type') or 'logs',
+                'docs_count': stats.get('doc_num') or stats.get('records') or 0,
+                'storage_size': stats.get('storage_size') or stats.get('compressed_size') or 0,
+                'doc_time_min': stats.get('doc_time_min') or 0,
+                'doc_time_max': stats.get('doc_time_max') or 0,
+            })
+    return {'kind': 'streams', 'items': items}
+
+
 def _catalog_elk(config, payload):
     if _is_demo_config(config):
         names = config.get('demo_indices') or ['logs-demo-app-2026.03.15', 'logs-demo-security-2026.03.15']
@@ -1658,6 +1861,111 @@ def _query_loki(config, payload):
     }
 
 
+def _query_openobserve(config, payload):
+    stream = _resolve_openobserve_stream(config, payload)
+    stream_name = stream['stream_name']
+    field_map = stream.get('field_map') or {}
+    query_text = str(payload.get('query') or '').strip()
+    start_ms, end_ms = _time_bounds(payload)
+    limit = _sanitize_limit(payload.get('limit'))
+    search_fields = _split_fields(stream.get('search_fields') or config.get('search_fields'), [])
+    if not search_fields:
+        search_fields = [
+            field_map.get('message'), field_map.get('service'), field_map.get('namespace'),
+            field_map.get('pod'), field_map.get('container'), field_map.get('host'),
+        ]
+    search_fields = list(dict.fromkeys(item for item in search_fields if item and item != '__derived__'))
+    if not search_fields:
+        search_fields = ['message']
+
+    conditions = []
+    for term in _extract_query_terms(query_text)[:8]:
+        pattern = _openobserve_literal(f'%{term}%')
+        matches = [f'CAST({_openobserve_identifier(field)} AS VARCHAR) ILIKE {pattern}' for field in search_fields]
+        if matches:
+            conditions.append(f"({' OR '.join(matches)})")
+
+    for key in ('service', 'namespace', 'pod', 'container', 'host'):
+        value = str(payload.get(key) or '').strip()
+        field = field_map.get(key)
+        if value and field and field != '__derived__':
+            conditions.append(
+                f'CAST({_openobserve_identifier(field)} AS VARCHAR) ILIKE '
+                f'{_openobserve_literal(f"%{value}%")}'
+            )
+
+    levels = payload.get('levels') or ([payload.get('level')] if payload.get('level') else [])
+    levels = [str(item).strip().lower() for item in levels if str(item).strip()]
+    level_field = field_map.get('level')
+    if levels and level_field and level_field != '__derived__':
+        level_matches = [
+            f'LOWER(CAST({_openobserve_identifier(level_field)} AS VARCHAR)) = {_openobserve_literal(item)}'
+            for item in levels
+        ]
+        conditions.append(f"({' OR '.join(level_matches)})")
+
+    sql = f'SELECT * FROM {_openobserve_identifier(stream_name)}'
+    if conditions:
+        sql += f" WHERE {' AND '.join(conditions)}"
+    timestamp_field = field_map.get('timestamp') or '_timestamp'
+    sql += f' ORDER BY {_openobserve_identifier(timestamp_field)} DESC'
+    organization = quote(_openobserve_organization(config), safe='')
+    response = _openobserve_request(
+        'POST', config, f'/api/{organization}/_search', params={'type': 'logs'},
+        body={'query': {
+            'sql': sql,
+            'start_time': start_ms * 1000,
+            'end_time': end_ms * 1000,
+            'from': 0,
+            'size': limit,
+        }},
+    )
+    hits = response.get('hits') if isinstance(response, dict) else []
+    hits = hits if isinstance(hits, list) else []
+    if hits and not field_map:
+        field_map = _recommend_openobserve_field_map(hits[0].keys())
+    message_fields = _split_fields(field_map.get('message'), ['message', 'log', 'msg'])
+    logs = []
+    for document in hits:
+        if not isinstance(document, dict):
+            continue
+        message = _pick_message(document, message_fields)
+        namespace = _openobserve_field_value(document, field_map.get('namespace'))
+        pod = _openobserve_field_value(document, field_map.get('pod'))
+        container = _openobserve_field_value(document, field_map.get('container'))
+        host = _openobserve_field_value(document, field_map.get('host'))
+        service = _openobserve_field_value(document, field_map.get('service'))
+        level = _detect_level(_openobserve_field_value(document, field_map.get('level')) or '', document)
+        if level == 'unknown':
+            level = _detect_level(message, document)
+        logs.append({
+            'timestamp': _openobserve_timestamp(
+                _openobserve_field_value(document, field_map.get('timestamp') or '_timestamp')
+            ),
+            'message': message,
+            'level': level,
+            'source': str(service or namespace or host or stream_name),
+            'service': str(service or ''),
+            'namespace': str(namespace or ''),
+            'pod': str(pod or ''),
+            'container': str(container or ''),
+            'host': str(host or ''),
+            'attributes': _with_trace_id(document, message),
+        })
+    if levels:
+        accepted_levels = set(levels)
+        logs = [item for item in logs if item.get('level') in accepted_levels]
+    return {
+        'provider': 'openobserve',
+        'query': query_text,
+        'source': stream_name,
+        'total': response.get('total', len(logs)) if isinstance(response, dict) else len(logs),
+        'took_ms': response.get('took') if isinstance(response, dict) else None,
+        'progress': 'partial' if isinstance(response, dict) and response.get('is_partial') else '',
+        'logs': logs,
+    }
+
+
 def _query_elk(config, payload):
     collection = _resolve_elk_collection(config, payload)
     field_map = collection['field_map']
@@ -1765,6 +2073,8 @@ def _get_catalog(provider, config, payload):
         return _catalog_elk(config, payload)
     if provider == 'clickhouse':
         return _catalog_clickhouse(config, payload)
+    if provider == 'openobserve':
+        return _catalog_openobserve(config, payload)
     raise ProviderError('Unsupported log provider')
 
 
@@ -1775,6 +2085,8 @@ def _run_query(provider, config, payload):
         return _query_elk(config, payload)
     if provider == 'clickhouse':
         return _query_clickhouse(config, payload)
+    if provider == 'openobserve':
+        return _query_openobserve(config, payload)
     raise ProviderError('Unsupported log provider')
 
 
@@ -1820,6 +2132,8 @@ class LogDataSourceViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, view
                 payload = {'action': 'labels'}
             elif datasource.provider == 'clickhouse':
                 payload = {'action': 'databases'}
+            elif datasource.provider == 'openobserve':
+                payload = {'action': 'streams'}
             else:
                 payload = {'action': 'sources'}
             preview = _get_catalog(datasource.provider, _merge_config(datasource.provider, datasource.config), payload)

@@ -182,6 +182,31 @@
                   <el-input v-model="currentTab.queryText" type="textarea" :rows="2" placeholder="例如：xinghai.example.com、/api、500、client ip；留空按时间范围查询" />
                 </el-form-item>
               </template>
+
+              <template v-else-if="isOpenObserve">
+                <div class="log-filter-grid log-filter-grid--secondary">
+                  <div class="log-inline-filter">
+                    <span class="log-inline-filter__label">日志 Stream</span>
+                    <el-select v-model="currentTab.sourceName" class="search-control" size="small" placeholder="选择日志 Stream" filterable clearable>
+                      <el-option
+                        v-for="item in currentTab.catalogItems"
+                        :key="item.key || item.name || item.stream_name"
+                        :label="item.name || item.stream_name"
+                        :value="item.key || item.stream_name || item.name"
+                      />
+                    </el-select>
+                  </div>
+                </div>
+                <el-form-item class="syntax-form-item">
+                  <template #label>
+                    <span class="field-label-with-help">
+                      <span>关键词检索</span>
+                      <el-button link type="primary" @click="openSyntaxHelp('openobserve')">查询说明</el-button>
+                    </span>
+                  </template>
+                  <el-input v-model="currentTab.queryText" type="textarea" :rows="2" placeholder="例如：error、timeout、订单号；留空按时间范围查询" />
+                </el-form-item>
+              </template>
             </el-form>
 
             <div class="search-summary-bar log-query-summary-bar">
@@ -402,6 +427,16 @@ const SYNTAX_HELP_DOCS = {
     ],
     link: 'https://clickhouse.com/docs/en/sql-reference/statements/select',
   },
+  openobserve: {
+    title: 'OpenObserve 日志查询说明',
+    description: '平台按所选 Stream、时间范围和关键词生成受控查询，不执行用户输入的任意 SQL。',
+    examples: ['error', 'timeout', 'request id'],
+    tips: [
+      '可以留空关键词，按时间范围返回最近日志。',
+      '关键词只在该 Stream 配置的检索字段中匹配。',
+      '服务、命名空间、Pod 等字段没有映射时保持为空，不会自动编造。',
+    ],
+  },
 }
 const quickRanges = [
   { key: '10m', label: '最近10分钟', minutes: 10 },
@@ -439,9 +474,14 @@ const activeProvider = computed(() => currentDataSource.value?.provider || '')
 const isLoki = computed(() => activeProvider.value === 'loki')
 const isElk = computed(() => activeProvider.value === 'elk')
 const isClickHouse = computed(() => activeProvider.value === 'clickhouse')
+const isOpenObserve = computed(() => activeProvider.value === 'openobserve')
 const selectedClickHouseCollection = computed(() => {
   const collections = currentDataSource.value?.config?.collections || []
   return collections.find((item) => (item.key || item.name) === currentTab.value?.sourceName) || collections[0] || null
+})
+const selectedOpenObserveStream = computed(() => {
+  const streams = currentDataSource.value?.config?.streams || []
+  return streams.find((item) => (item.key || item.stream_name || item.name) === currentTab.value?.sourceName) || streams[0] || null
 })
 const currentResults = computed(() => currentTab.value?.results || { total: 0, source: '', took_ms: null, progress: '', logs: [] })
 const errorCount = computed(() => currentResults.value.logs.filter((item) => normalizeLogLevel(item) === 'error').length)
@@ -466,6 +506,16 @@ const currentSummary = computed(() => {
       { label: '时间字段', value: selected?.time_field || 'timestamp' },
     ]
   }
+  if (activeProvider.value === 'openobserve') {
+    const streams = config.streams || []
+    const selected = selectedOpenObserveStream.value
+    return [
+      { label: 'Endpoint', value: config.endpoint || '--' },
+      { label: 'Organization', value: config.organization || 'default' },
+      { label: '日志 Stream', value: `${streams.length || 0} 个` },
+      { label: '当前 Stream', value: selected?.name || selected?.stream_name || '--' },
+    ]
+  }
   return []
 })
 const querySummaryPills = computed(() => {
@@ -478,7 +528,7 @@ const querySummaryPills = computed(() => {
   }
   if (currentTab.value?.sourceName) {
     items.push({
-      label: isElk.value ? '索引' : (isClickHouse.value ? '集合' : '来源'),
+      label: isElk.value ? '索引' : (isClickHouse.value ? '集合' : (isOpenObserve.value ? 'Stream' : '来源')),
       value: isClickHouse.value ? collectionLabel(selectedClickHouseCollection.value) : currentTab.value.sourceName,
     })
   }
@@ -629,6 +679,7 @@ function providerLabel(provider) {
     loki: 'Loki',
     elk: 'ELK / Elasticsearch',
     clickhouse: 'ClickHouse',
+    openobserve: 'OpenObserve',
   }[provider] || provider
 }
 
@@ -637,6 +688,7 @@ function providerTagType(provider) {
     loki: 'success',
     elk: 'warning',
     clickhouse: 'primary',
+    openobserve: 'danger',
   }[provider] || 'info'
 }
 
@@ -1275,6 +1327,22 @@ async function loadCatalog(tab = currentTab.value) {
           tab.sourceName = tab.catalogItems[0]?.key || tab.catalogItems[0]?.name || ''
         }
       }
+    } else if (datasource.provider === 'openobserve') {
+      const streams = datasource.config?.streams || []
+      if (streams.length) {
+        tab.catalogItems = streams
+      } else {
+        const response = await getLogProviderCatalog('openobserve', {
+          datasource_id: tab.datasourceId,
+          action: 'streams',
+        })
+        tab.catalogItems = response.items || []
+      }
+      if (!tab.sourceName) {
+        const configuredDefault = datasource.config?.default_stream
+        const selected = tab.catalogItems.find((item) => configuredDefault && [item.key, item.stream_name, item.name].includes(configuredDefault)) || tab.catalogItems[0]
+        tab.sourceName = selected?.key || selected?.stream_name || selected?.name || ''
+      }
     }
   } catch (error) {
     ElMessage.error(error.response?.data?.error || '加载目录失败')
@@ -1411,6 +1479,12 @@ function buildPayload(tab) {
       payload.timezone = datasource.config.timezone || 'Asia/Shanghai'
       payload.search_fields = datasource.config.search_fields || ''
     }
+  } else if (datasource?.provider === 'openobserve') {
+    const streams = datasource.config?.streams || []
+    const stream = streams.find((item) => [item.key, item.stream_name, item.name].includes(tab.sourceName)) || streams[0]
+    payload.query = tab.queryText.trim()
+    payload.source = tab.sourceName || stream?.key || stream?.stream_name || datasource.config?.default_stream
+    payload.stream = stream?.stream_name || payload.source
   }
   return payload
 }
@@ -1418,7 +1492,7 @@ function buildPayload(tab) {
 async function runQuery(tab) {
   if (!tab?.datasourceId) return ElMessage.warning('请先选择日志数据源')
   const payload = buildPayload(tab)
-  if (payload.provider !== 'clickhouse' && !String(payload.query || '').trim()) return ElMessage.warning('请先【设置标签过滤】或【填写查询语句】')
+  if (!['clickhouse', 'openobserve'].includes(payload.provider) && !String(payload.query || '').trim()) return ElMessage.warning('请先【设置标签过滤】或【填写查询语句】')
   tab.queryLoading = true
   tab.errorMessage = ''
   tab.expandedRows = []

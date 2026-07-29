@@ -202,6 +202,17 @@ class LogDataSourceSerializer(serializers.ModelSerializer):
         data['config'] = mask_sensitive_config(data.get('config') or {}, LOG_SENSITIVE_KEYS)
         return data
 
+    def update(self, instance, validated_data):
+        incoming = validated_data.get('config')
+        if isinstance(incoming, dict):
+            existing = instance.config if isinstance(instance.config, dict) else {}
+            merged = dict(incoming)
+            for key in LOG_SENSITIVE_KEYS:
+                if merged.get(key) in (None, '', 'configured') and existing.get(key):
+                    merged[key] = existing[key]
+            validated_data['config'] = merged
+        return super().update(instance, validated_data)
+
     def get_business_contexts(self, instance):
         """Expose the owning business contexts without duplicating an environment field."""
         return [

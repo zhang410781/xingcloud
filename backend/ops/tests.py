@@ -77,6 +77,14 @@ TEST_LOG_PROVIDER_CONFIGS = {
             }
         ],
     },
+    'openobserve': {
+        'endpoint': 'https://openobserve.example.com',
+        'organization': 'default',
+        'auth_type': 'basic',
+        'username': 'reader@example.com',
+        'password': 'test-secret',
+        'streams': [],
+    },
 }
 
 TEST_OBSERVABILITY_CONFIG = {
@@ -269,15 +277,143 @@ class LogViewsTests(TestCase):
         self.user = get_user_model().objects.create_superuser('ops-admin', 'ops@example.com', 'Admin@123456')
         self.client.force_authenticate(user=self.user)
 
-    def test_log_providers_returns_loki_elk_and_clickhouse(self):
+    def test_log_providers_returns_supported_providers(self):
         response = self.client.get('/api/log/providers/')
 
         self.assertEqual(response.status_code, 200)
         providers = response.json()['providers']
-        self.assertEqual([item['id'] for item in providers], ['loki', 'elk', 'clickhouse'])
+        self.assertEqual([item['id'] for item in providers], ['loki', 'elk', 'clickhouse', 'openobserve'])
         self.assertEqual(providers[0]['defaults']['endpoint'], 'http://loki.example:3100')
         self.assertEqual(providers[2]['defaults']['endpoint'], 'http://clickhouse.example:8123')
         self.assertNotIn('table', providers[2]['defaults'])
+        self.assertEqual(providers[3]['defaults']['endpoint'], 'https://openobserve.example.com')
+        self.assertEqual(providers[3]['defaults']['password'], 'configured')
+
+    def test_openobserve_datasource_masks_and_preserves_password(self):
+        response = self.client.post(
+            '/api/log/datasources/',
+            {
+                'name': 'Production OpenObserve',
+                'provider': 'openobserve',
+                'config': {
+                    'endpoint': 'https://openobserve.internal',
+                    'organization': 'default',
+                    'auth_type': 'basic',
+                    'username': 'reader@example.com',
+                    'password': 'stored-secret',
+                    'streams': [{'key': 'app', 'name': 'App', 'stream_name': 'app_logs'}],
+                    'default_stream': 'app',
+                },
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()['config']['password'], 'configured')
+        datasource_id = response.json()['id']
+        update = self.client.patch(
+            f'/api/log/datasources/{datasource_id}/',
+            {'config': {**response.json()['config'], 'password': ''}},
+            format='json',
+        )
+        self.assertEqual(update.status_code, 200)
+        datasource = LogDataSource.objects.get(pk=datasource_id)
+        self.assertEqual(datasource.config['password'], 'stored-secret')
+
+    @patch('ops.log_views.http_requests.request')
+    def test_openobserve_catalog_lists_log_streams_and_recommends_fields(self, mock_request):
+        mock_request.side_effect = [
+            MockHttpResponse({'list': [
+                {'name': 'app_logs', 'stream_type': 'logs', 'stats': {'doc_num': 12}},
+                {'name': 'metrics', 'stream_type': 'metrics'},
+            ]}),
+            MockHttpResponse({'schema': [
+                {'name': '_timestamp'}, {'name': 'message'}, {'name': 'host_name'}, {'name': 'agent_name'},
+            ]}),
+        ]
+        config = {
+            'endpoint': 'https://openobserve.example.com', 'organization': 'default',
+            'auth_type': 'basic', 'username': 'reader@example.com', 'password': 'secret',
+        }
+
+        streams = self.client.post(
+            '/api/log/providers/openobserve/catalog/',
+            {'config': config, 'action': 'streams'},
+            format='json',
+        )
+        fields = self.client.post(
+            '/api/log/providers/openobserve/catalog/',
+            {'config': config, 'action': 'recommend_fields', 'stream': 'app_logs'},
+            format='json',
+        )
+
+        self.assertEqual(streams.status_code, 200)
+        self.assertEqual([item['name'] for item in streams.json()['items']], ['app_logs'])
+        self.assertEqual(fields.status_code, 200)
+        self.assertEqual(fields.json()['recommendation']['timestamp'], '_timestamp')
+        self.assertEqual(fields.json()['recommendation']['message'], 'message')
+        self.assertEqual(fields.json()['recommendation']['host'], 'host_name')
+        self.assertEqual(fields.json()['recommendation']['service'], '')
+
+    @patch('ops.log_views.http_requests.request')
+    def test_openobserve_query_builds_controlled_sql_and_normalizes_logs(self, mock_request):
+        datasource = LogDataSource.objects.create(
+            name='OpenObserve Query',
+            provider='openobserve',
+            config={
+                'endpoint': 'https://openobserve.example.com', 'organization': 'default',
+                'auth_type': 'basic', 'username': 'reader@example.com', 'password': 'secret',
+                'streams': [{
+                    'key': 'app', 'name': 'Application', 'stream_name': 'app_logs',
+                    'search_fields': 'message,host_name',
+                    'field_map': {
+                        'timestamp': '_timestamp', 'message': 'message', 'level': '__derived__',
+                        'service': '', 'namespace': '', 'pod': '', 'container': '', 'host': 'host_name',
+                    },
+                }],
+                'default_stream': 'app',
+            },
+        )
+        mock_request.return_value = MockHttpResponse({
+            'hits': [{
+                '_timestamp': 1782804215393000,
+                'message': 'ERROR image pull timeout',
+                'agent_name': 'filebeat',
+                'host_name': 'worker-01',
+            }],
+            'total': 1,
+            'took': 9,
+            'is_partial': False,
+        })
+
+        response = self.client.post(
+            '/api/log/query/',
+            {
+                'datasource_id': datasource.id,
+                'source': 'app',
+                'query': "timeout' OR 1=1 --",
+                'start_ms': 1782800615393,
+                'end_ms': 1782804215393,
+                'limit': 20,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        payload = response.json()
+        self.assertEqual(payload['provider'], 'openobserve')
+        self.assertEqual(payload['source'], 'app_logs')
+        self.assertEqual(payload['logs'][0]['level'], 'error')
+        self.assertEqual(payload['logs'][0]['service'], '')
+        self.assertEqual(payload['logs'][0]['namespace'], '')
+        self.assertEqual(payload['logs'][0]['host'], 'worker-01')
+        self.assertTrue(payload['logs'][0]['timestamp'].endswith('Z'))
+        request_body = mock_request.call_args.kwargs['json']
+        sql = request_body['query']['sql']
+        self.assertIn('FROM "app_logs"', sql)
+        self.assertNotIn('FROM secrets', sql)
+        self.assertEqual(request_body['query']['start_time'], 1782800615393000)
+        self.assertEqual(request_body['query']['end_time'], 1782804215393000)
 
     def test_can_create_log_datasource(self):
         response = self.client.post(
@@ -940,6 +1076,31 @@ class ObservabilityViewsTests(TestCase):
             {'endpoint': 'https://es.example.com:9200', 'auth_type': 'none', 'index_pattern': 'k8s-*',
              'time_field': '@timestamp', 'message_fields': 'message,log,msg'},
         )
+
+    @patch('ops.log_views._openobserve_request')
+    def test_openobserve_datasource_health_check_lists_streams(self, mock_request):
+        datasource = LogDataSource.objects.create(
+            name='Healthy OpenObserve',
+            provider='openobserve',
+            config={
+                'endpoint': 'https://openobserve.example.com',
+                'organization': 'default',
+                'auth_type': 'bearer',
+                'bearer_token': 'secret',
+            },
+        )
+        mock_request.return_value = {
+            'list': [
+                {'name': 'app_logs', 'stream_type': 'logs'},
+                {'name': 'system_metrics', 'stream_type': 'metrics'},
+            ],
+        }
+
+        checked = check_log_datasource(datasource)
+
+        self.assertEqual(checked.last_check_status, 'ok')
+        self.assertIn('1 log streams', checked.last_check_message)
+        mock_request.assert_called_once()
 
     def test_sla_summary_api_uses_disaster_alert_duration(self):
         now = timezone.now()

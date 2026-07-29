@@ -5,7 +5,7 @@
         <div class="release-hero-title-row release-hero-title-inline">
           <span class="log-header-icon"><el-icon><DataBoard /></el-icon></span>
           <h2>日志数据源</h2>
-          <p class="page-inline-desc inline-subtitle">统一管理 Loki、ELK 和 ClickHouse 的连接配置，查询页可以直接复用已保存的数据源。</p>
+          <p class="page-inline-desc inline-subtitle">统一管理 Loki、ELK、ClickHouse 和 OpenObserve 的连接配置，查询页可以直接复用已保存的数据源。</p>
         </div>
       </div>
       <div class="hero-actions">
@@ -246,6 +246,73 @@
             </div>
           </el-form-item>
         </template>
+
+        <template v-else-if="form.provider === 'openobserve'">
+          <el-form-item label="服务地址">
+            <el-input v-model="form.config.endpoint" placeholder="https://openobserve.example.com" />
+          </el-form-item>
+          <el-form-item label="Organization">
+            <el-input v-model="form.config.organization" placeholder="default" />
+          </el-form-item>
+          <el-form-item label="认证方式">
+            <el-select v-model="form.config.auth_type" style="width: 100%">
+              <el-option label="Basic Auth" value="basic" />
+              <el-option label="Bearer Token" value="bearer" />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="form.config.auth_type === 'basic'" label="用户名">
+            <el-input v-model="form.config.username" placeholder="root@example.com" />
+          </el-form-item>
+          <el-form-item v-if="form.config.auth_type === 'basic'" label="密码">
+            <el-input v-model="form.config.password" show-password :placeholder="secretPlaceholder('password')" />
+          </el-form-item>
+          <el-form-item v-if="form.config.auth_type === 'bearer'" label="Bearer Token">
+            <el-input v-model="form.config.bearer_token" show-password :placeholder="secretPlaceholder('bearer_token')" />
+          </el-form-item>
+          <el-form-item label="日志 Streams">
+            <div class="collection-editor">
+              <div class="collection-toolbar">
+                <span>{{ form.config.streams?.length || 0 }} 个已配置 Stream</span>
+                <div>
+                  <el-button size="small" @click="loadOpenObserveStreams" :loading="catalogLoading">连通并加载 Streams</el-button>
+                  <el-button size="small" type="primary" @click="addOpenObserveStream"><el-icon><Plus /></el-icon>新增 Stream</el-button>
+                </div>
+              </div>
+              <div v-for="(stream, index) in form.config.streams" :key="stream.key || index" class="collection-item">
+                <div class="collection-item__head">
+                  <el-input v-model="stream.name" size="small" placeholder="显示名称" />
+                  <div>
+                    <el-button size="small" @click="recommendOpenObserveFields(index)" :loading="recommendLoadingIndex === index">自动识别字段</el-button>
+                    <el-button size="small" type="danger" plain @click="removeOpenObserveStream(index)">删除</el-button>
+                  </div>
+                </div>
+                <div class="collection-grid">
+                  <el-input v-model="stream.key" size="small" placeholder="唯一标识" />
+                  <el-select v-model="stream.stream_name" size="small" filterable allow-create placeholder="OpenObserve Stream">
+                    <el-option v-for="item in openObserveStreams" :key="item.name" :label="item.name" :value="item.name" />
+                  </el-select>
+                  <el-input v-model="stream.field_map.timestamp" size="small" placeholder="时间字段，例如 _timestamp" />
+                  <el-input v-model="stream.field_map.message" size="small" placeholder="消息字段，例如 message" />
+                  <el-input v-model="stream.field_map.level" size="small" placeholder="级别字段；没有则填 __derived__" />
+                  <el-input v-model="stream.field_map.service" size="small" placeholder="服务字段；没有可留空" />
+                  <el-input v-model="stream.field_map.namespace" size="small" placeholder="命名空间字段；没有可留空" />
+                  <el-input v-model="stream.field_map.pod" size="small" placeholder="Pod 字段；没有可留空" />
+                  <el-input v-model="stream.field_map.container" size="small" placeholder="容器字段；没有可留空" />
+                  <el-input v-model="stream.field_map.host" size="small" placeholder="主机字段，例如 host_name" />
+                  <el-input v-model="stream.search_fields" size="small" placeholder="关键词检索字段，逗号分隔" />
+                </div>
+              </div>
+              <div v-if="!form.config.streams?.length" class="collection-empty">
+                先加载并添加 Stream，再按实际 Schema 自动识别字段。缺失的 Kubernetes 或服务字段可以留空。
+              </div>
+            </div>
+          </el-form-item>
+          <el-form-item label="默认 Stream">
+            <el-select v-model="form.config.default_stream" style="width: 100%" filterable clearable placeholder="选择默认 Stream">
+              <el-option v-for="stream in form.config.streams || []" :key="stream.key || stream.stream_name" :label="stream.name || stream.stream_name" :value="stream.key || stream.stream_name" />
+            </el-select>
+          </el-form-item>
+        </template>
       </el-form>
 
       <template #footer>
@@ -294,6 +361,7 @@ const recommendLoadingIndex = ref(null)
 const clickhouseDatabases = ref([])
 const clickhouseTables = ref({})
 const elkIndices = ref([])
+const openObserveStreams = ref([])
 const form = ref(createEmptyForm())
 
 function createEmptyForm(provider = 'loki') {
@@ -326,6 +394,12 @@ function getProviderDefaults(provider) {
     config.timezone = config.timezone || 'Asia/Shanghai'
     config.collections = Array.isArray(config.collections) ? config.collections : []
   }
+  if (provider === 'openobserve') {
+    config.organization = config.organization || 'default'
+    config.auth_type = config.auth_type || 'basic'
+    config.streams = Array.isArray(config.streams) ? config.streams.map((item) => createOpenObserveStream(item)) : []
+    config.default_stream = config.default_stream || ''
+  }
   return config
 }
 
@@ -345,6 +419,7 @@ function providerLabel(provider) {
     loki: 'Loki',
     elk: 'ELK / Elasticsearch',
     clickhouse: 'ClickHouse',
+    openobserve: 'OpenObserve',
   }[provider] || provider
 }
 
@@ -353,6 +428,7 @@ function providerTagType(provider) {
     loki: 'success',
     elk: 'warning',
     clickhouse: 'primary',
+    openobserve: 'danger',
   }[provider] || 'info'
 }
 
@@ -368,6 +444,14 @@ function formatSummary(row) {
       config.endpoint,
       collections.length ? `${collections.length} 个日志集合` : '未配置日志集合',
     ].filter(Boolean).join(' / ') || '未配置 ClickHouse 连接'
+  }
+  if (row.provider === 'openobserve') {
+    const streams = Array.isArray(config.streams) ? config.streams : []
+    return [
+      config.endpoint,
+      config.organization && `组织 ${config.organization}`,
+      streams.length ? `${streams.length} 个日志 Stream` : '未配置 Stream',
+    ].filter(Boolean).join(' / ') || '未配置 OpenObserve 连接'
   }
   return config.endpoint || '未配置连接'
 }
@@ -402,18 +486,8 @@ async function fetchDataSources() {
 }
 
 function onProviderChange(provider) {
-  form.value.config = {
-    ...getProviderDefaults(provider),
-    ...form.value.config,
-  }
-  if (provider !== 'elk' && provider !== 'clickhouse') {
-    delete form.value.config.username
-    delete form.value.config.password
-  }
-  if (provider !== 'elk') {
-    delete form.value.config.api_key
-    delete form.value.config.bearer_token
-  }
+  form.value.config = getProviderDefaults(provider)
+  secretFlags.value = {}
   if (provider === 'clickhouse') {
     delete form.value.config.database
     delete form.value.config.table
@@ -424,6 +498,114 @@ function onProviderChange(provider) {
   }
   if (provider === 'elk') {
     form.value.config.collections = Array.isArray(form.value.config.collections) ? form.value.config.collections : []
+  }
+  if (provider === 'openobserve') {
+    form.value.config.organization = form.value.config.organization || 'default'
+    form.value.config.auth_type = form.value.config.auth_type || 'basic'
+    form.value.config.streams = Array.isArray(form.value.config.streams) ? form.value.config.streams : []
+  }
+}
+
+function createOpenObserveStream(seed = {}) {
+  const fieldMap = seed.field_map || {}
+  const streamName = seed.stream_name || seed.name || ''
+  return {
+    key: seed.key || streamName,
+    name: seed.name || streamName,
+    stream_name: streamName,
+    search_fields: seed.search_fields || '',
+    field_map: {
+      timestamp: fieldMap.timestamp || '_timestamp',
+      message: fieldMap.message || 'message',
+      level: fieldMap.level || '__derived__',
+      service: fieldMap.service || '',
+      namespace: fieldMap.namespace || '',
+      pod: fieldMap.pod || '',
+      container: fieldMap.container || '',
+      host: fieldMap.host || '',
+    },
+  }
+}
+
+function openObserveConnectionConfig() {
+  const config = form.value.config || {}
+  return {
+    endpoint: config.endpoint || '',
+    organization: config.organization || 'default',
+    auth_type: config.auth_type || 'basic',
+    username: config.username || '',
+    password: config.password || '',
+    bearer_token: config.bearer_token || '',
+  }
+}
+
+function ensureOpenObserveStreams() {
+  if (!Array.isArray(form.value.config.streams)) form.value.config.streams = []
+}
+
+function addOpenObserveStream() {
+  ensureOpenObserveStreams()
+  form.value.config.streams.push(createOpenObserveStream())
+}
+
+function removeOpenObserveStream(index) {
+  ensureOpenObserveStreams()
+  form.value.config.streams.splice(index, 1)
+}
+
+async function loadOpenObserveStreams() {
+  if (form.value.provider !== 'openobserve') return
+  catalogLoading.value = true
+  try {
+    const response = await getLogProviderCatalog('openobserve', {
+      datasource_id: editingId.value || undefined,
+      config: openObserveConnectionConfig(),
+      action: 'streams',
+    })
+    openObserveStreams.value = response.items || []
+    ElMessage.success(`已发现 ${openObserveStreams.value.length} 个日志 Stream`)
+  } finally {
+    catalogLoading.value = false
+  }
+}
+
+async function recommendOpenObserveFields(index) {
+  const stream = form.value.config.streams?.[index]
+  if (!stream?.stream_name) return ElMessage.warning('请先选择 OpenObserve Stream')
+  recommendLoadingIndex.value = index
+  try {
+    const response = await getLogProviderCatalog('openobserve', {
+      datasource_id: editingId.value || undefined,
+      config: openObserveConnectionConfig(),
+      action: 'recommend_fields',
+      stream: stream.stream_name,
+    })
+    stream.field_map = { ...stream.field_map, ...(response.recommendation || {}) }
+    if (!stream.key) stream.key = stream.stream_name
+    if (!stream.name) stream.name = stream.stream_name
+    if (!stream.search_fields) {
+      stream.search_fields = [...new Set(Object.values(stream.field_map).filter((value) => value && value !== '__derived__'))].join(',')
+    }
+    ElMessage.success('已根据 Stream Schema 填充字段映射')
+  } finally {
+    recommendLoadingIndex.value = null
+  }
+}
+
+function normalizeOpenObserveConfigForSave(config) {
+  const streams = (config.streams || [])
+    .map((item) => createOpenObserveStream(item))
+    .filter((item) => item.stream_name)
+  const defaultStream = streams.find((item) => item.key === config.default_stream || item.stream_name === config.default_stream) || streams[0]
+  return {
+    endpoint: config.endpoint || '',
+    organization: config.organization || 'default',
+    auth_type: config.auth_type || 'basic',
+    username: config.username || '',
+    password: config.password || '',
+    bearer_token: config.bearer_token || '',
+    streams,
+    default_stream: defaultStream?.key || '',
   }
 }
 
@@ -666,6 +848,14 @@ function openDialog(row) {
       }] : []
       form.value.config.collections = (config.collections?.length ? config.collections : legacyCollection).map((item) => createElkCollection(item))
     }
+    if (row.provider === 'openobserve') {
+      form.value.config = {
+        ...config,
+        organization: config.organization || 'default',
+        auth_type: config.auth_type || 'basic',
+        streams: (config.streams || []).map((item) => createOpenObserveStream(item)),
+      }
+    }
   } else {
     editingId.value = null
     secretFlags.value = {}
@@ -674,6 +864,7 @@ function openDialog(row) {
   clickhouseDatabases.value = []
   clickhouseTables.value = {}
   elkIndices.value = []
+  openObserveStreams.value = []
   dialogVisible.value = true
 }
 
@@ -689,7 +880,11 @@ async function handleSave() {
       is_default: form.value.is_default,
       config: form.value.provider === 'clickhouse'
         ? normalizeClickHouseConfigForSave(form.value.config)
-        : form.value.provider === 'elk' ? normalizeElkConfigForSave(form.value.config) : form.value.config,
+        : form.value.provider === 'elk'
+          ? normalizeElkConfigForSave(form.value.config)
+          : form.value.provider === 'openobserve'
+            ? normalizeOpenObserveConfigForSave(form.value.config)
+            : form.value.config,
     }
     if (editingId.value) {
       await updateLogDataSource(editingId.value, payload)
