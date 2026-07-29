@@ -57,6 +57,28 @@ class ExternalAlertIngestApiTests(TestCase):
         payload.update(overrides)
         return payload
 
+    def waiting_payload(self, reason, *, status='firing', fingerprint=None, uid='uid-waiting-1'):
+        alert = {
+            'status': status,
+            'labels': {
+                'alertname': 'K8S容器组Waiting',
+                'severity': 'critical',
+                'namespace': 'xing-cloud',
+                'pod': 'alert-test-nginx',
+                'container': 'nginx',
+                'uid': uid,
+                'reason': reason,
+                'instance': '10.244.113.140:8443',
+                'prometheus': 'monitoring/k8s',
+            },
+            'annotations': {'summary': 'K8S容器组Waiting', 'message': reason},
+            'startsAt': '2026-07-29T01:00:00Z',
+            'fingerprint': fingerprint or f'upstream-{reason}',
+        }
+        if status == 'resolved':
+            alert['endsAt'] = '2026-07-29T01:05:00Z'
+        return {'status': status, 'receiver': 'xing-cloud', 'alerts': [alert]}
+
     def test_rejects_missing_or_invalid_token(self):
         client = APIClient()
         response = client.post(self.url, self.zabbix_payload(), format='json')
@@ -172,6 +194,60 @@ class ExternalAlertIngestApiTests(TestCase):
         self.assertEqual(response.data['count'], 2)
         self.assertEqual(Alert.objects.filter(source_type=Alert.SOURCE_ALERTMANAGER).count(), 2)
         self.assertEqual(AlertAnalysis.objects.count(), 2)
+
+    def test_waiting_reason_changes_reuse_one_alert_and_ignore_stale_resolution(self):
+        first = self.client.post(
+            self.url,
+            self.waiting_payload('ImagePullBackOff', fingerprint='image-pull-backoff'),
+            format='json',
+        )
+        changed = self.client.post(
+            self.url,
+            self.waiting_payload('ErrImagePull', fingerprint='err-image-pull'),
+            format='json',
+        )
+        stale_resolved = self.client.post(
+            self.url,
+            self.waiting_payload('ImagePullBackOff', status='resolved', fingerprint='image-pull-backoff'),
+            format='json',
+        )
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(changed.status_code, 200)
+        self.assertEqual(first.data['id'], changed.data['id'])
+        self.assertEqual(Alert.objects.count(), 1)
+        alert = Alert.objects.get()
+        self.assertEqual(alert.resource, 'alert-test-nginx')
+        self.assertEqual(alert.status, Alert.STATUS_ACTIVE)
+        self.assertEqual(alert.labels['reason'], 'ErrImagePull')
+        self.assertTrue(alert.actions.filter(note__contains='Waiting 原因从 ImagePullBackOff 变为 ErrImagePull').exists())
+        self.assertTrue(stale_resolved.data['ignored_stale_resolution'])
+        self.assertTrue(alert.actions.filter(note__contains='忽略旧 Waiting 原因恢复').exists())
+
+        resolved = self.client.post(
+            self.url,
+            self.waiting_payload('ErrImagePull', status='resolved', fingerprint='err-image-pull'),
+            format='json',
+        )
+        alert.refresh_from_db()
+        self.assertEqual(resolved.status_code, 200)
+        self.assertEqual(alert.status, Alert.STATUS_RESOLVED)
+
+    def test_waiting_batch_prefers_firing_reason_over_resolved_reason(self):
+        self.client.post(self.url, self.waiting_payload('ImagePullBackOff'), format='json')
+        payload = self.waiting_payload('ErrImagePull', fingerprint='err-image-pull')
+        resolved_alert = self.waiting_payload(
+            'ImagePullBackOff', status='resolved', fingerprint='image-pull-backoff',
+        )['alerts'][0]
+        payload['alerts'].insert(0, resolved_alert)
+
+        response = self.client.post(self.url, payload, format='json')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['count'], 1)
+        alert = Alert.objects.get()
+        self.assertEqual(alert.status, Alert.STATUS_ACTIVE)
+        self.assertEqual(alert.labels['reason'], 'ErrImagePull')
 
     def test_unknown_payload_returns_diagnostic_400(self):
         response = self.client.post(self.url, {'message': 'unknown'}, format='json')
@@ -431,6 +507,34 @@ class ExternalAlertNormalizationTests(TestCase):
         self.assertEqual(normalized['resource'], 'node-1')
         self.assertEqual(normalized['fingerprint'], 'alertmanager:node-down')
         self.assertIsNotNone(normalized['ends_at'])
+
+    def test_waiting_fingerprint_excludes_reason_and_upstream_fingerprint_but_keeps_uid(self):
+        def normalize(reason, fingerprint, uid):
+            return normalize_alertmanager({
+                'status': 'firing',
+                'alerts': [{
+                    'status': 'firing',
+                    'labels': {
+                        'alertname': 'K8S容器组Waiting',
+                        'namespace': 'xing-cloud',
+                        'pod': 'alert-test-nginx',
+                        'container': 'nginx',
+                        'uid': uid,
+                        'reason': reason,
+                        'instance': '10.244.113.140:8443',
+                        'prometheus': 'monitoring/k8s',
+                    },
+                    'fingerprint': fingerprint,
+                }],
+            })
+
+        image_pull = normalize('ImagePullBackOff', 'upstream-a', 'uid-1')
+        err_image_pull = normalize('ErrImagePull', 'upstream-b', 'uid-1')
+        replaced_pod = normalize('ErrImagePull', 'upstream-c', 'uid-2')
+
+        self.assertEqual(image_pull['fingerprint'], err_image_pull['fingerprint'])
+        self.assertNotEqual(image_pull['fingerprint'], replaced_pod['fingerprint'])
+        self.assertEqual(image_pull['resource'], 'alert-test-nginx')
 
 
 class LightweightAlertAnalysisTests(TestCase):

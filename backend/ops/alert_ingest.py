@@ -167,6 +167,62 @@ def _alertmanager_status(group_status, alert_payload):
     return Alert.STATUS_RESOLVED if value in {'resolved', 'resolve', 'recovered', 'closed'} else Alert.STATUS_ACTIVE
 
 
+def _is_alertmanager_waiting_alert(labels):
+    labels = _dict(labels)
+    return bool(labels.get('pod')) and 'waiting' in _text(labels.get('alertname')).lower()
+
+
+def _alertmanager_fingerprint(labels, external_id, title):
+    labels = _dict(labels)
+    if _is_alertmanager_waiting_alert(labels):
+        return _stable_fingerprint(
+            'alertmanager',
+            'pod-waiting',
+            labels.get('cluster') or labels.get('prometheus') or labels.get('environment'),
+            labels.get('namespace'),
+            labels.get('pod'),
+            labels.get('container'),
+            labels.get('uid') or labels.get('pod_uid'),
+        )
+    return (
+        _stable_fingerprint('alertmanager', external_id)
+        if external_id
+        else _stable_fingerprint('alertmanager', labels.get('alertname') or title, sorted(labels.items()))
+    )
+
+
+def _waiting_reason_priority(normalized):
+    reason = _text(_dict(normalized.get('labels')).get('reason'))
+    return {'ImagePullBackOff': 30, 'ErrImagePull': 20}.get(reason, 10 if reason else 0)
+
+
+def _coalesce_normalized_alerts(normalized_alerts):
+    ordered_fingerprints = []
+    coalesced = {}
+    for normalized in normalized_alerts:
+        fingerprint = normalized.get('fingerprint')
+        if fingerprint not in coalesced:
+            ordered_fingerprints.append(fingerprint)
+            coalesced[fingerprint] = normalized
+            continue
+
+        current = coalesced[fingerprint]
+        current_active = current.get('status') == Alert.STATUS_ACTIVE
+        incoming_active = normalized.get('status') == Alert.STATUS_ACTIVE
+        selected = current
+        if incoming_active and not current_active:
+            selected = normalized
+        elif incoming_active == current_active and _waiting_reason_priority(normalized) > _waiting_reason_priority(current):
+            selected = normalized
+
+        starts_at = [item for item in (current.get('starts_at'), normalized.get('starts_at')) if item]
+        if starts_at:
+            selected = dict(selected)
+            selected['starts_at'] = min(starts_at)
+        coalesced[fingerprint] = selected
+    return [coalesced[fingerprint] for fingerprint in ordered_fingerprints]
+
+
 def normalize_alertmanager_alert(payload, alert_payload):
     if not isinstance(alert_payload, dict):
         raise AlertIngestError('Alertmanager alerts must contain JSON objects.')
@@ -175,7 +231,7 @@ def normalize_alertmanager_alert(payload, alert_payload):
     status_value = _alertmanager_status(payload.get('status'), alert_payload)
     title = _first(annotations.get('summary'), labels.get('alertname'), 'Alertmanager 告警')
     message = _first(annotations.get('description'), annotations.get('message'), title)
-    resource = _first(labels.get('instance'), labels.get('pod'), labels.get('host'), labels.get('node'))
+    resource = _first(labels.get('pod'), labels.get('node'), labels.get('host'), labels.get('instance'))
     resource_type = _first(labels.get('resource_type'), 'pod' if labels.get('pod') else 'host' if resource else '')
     external_id = _text(alert_payload.get('fingerprint'), 128)
     starts_at = _timestamp(alert_payload.get('startsAt'))
@@ -197,11 +253,7 @@ def normalize_alertmanager_alert(payload, alert_payload):
         'source': 'alertmanager',
         'source_type': Alert.SOURCE_ALERTMANAGER,
         'external_id': external_id,
-        'fingerprint': (
-            _stable_fingerprint('alertmanager', external_id)
-            if external_id
-            else _stable_fingerprint('alertmanager', labels.get('alertname') or title, sorted(labels.items()))
-        ),
+        'fingerprint': _alertmanager_fingerprint(labels, external_id, title),
         'resource': _text(resource, 256),
         'resource_type': _text(resource_type, 64),
         'environment': _text(labels.get('environment') or labels.get('env'), 64),
@@ -306,6 +358,7 @@ def ingest_external_alert_payload(payload, ingress_source=None):
         source, normalized_alerts = normalize_payload(payload)
     else:
         source, normalized_alerts = prepare_external_alerts(payload, ingress_source)
+    normalized_alerts = _coalesce_normalized_alerts(normalized_alerts)
     results = []
     fire_alerts = []
     resolved_alerts = []
@@ -317,6 +370,41 @@ def ingest_external_alert_payload(payload, ingress_source=None):
             fingerprint=normalized['fingerprint'],
         ).exclude(status=Alert.STATUS_CLOSED).order_by('-created_at').first()
         previous_status = existing.status if existing else None
+        previous_reason = _text(_dict(existing.labels).get('reason')) if existing else ''
+        incoming_labels = _dict(normalized.get('labels'))
+        incoming_reason = _text(incoming_labels.get('reason'))
+        stale_waiting_resolution = bool(
+            existing
+            and _is_alertmanager_waiting_alert(incoming_labels)
+            and existing.status == Alert.STATUS_ACTIVE
+            and normalized.get('status') == Alert.STATUS_RESOLVED
+            and previous_reason
+            and incoming_reason
+            and previous_reason != incoming_reason
+        )
+        if stale_waiting_resolution:
+            AlertAction.objects.create(
+                alert=existing,
+                action=AlertAction.ACTION_RULE_EVALUATION,
+                actor=f'webhook:{source}',
+                note=f'忽略旧 Waiting 原因恢复：{incoming_reason}；当前原因：{previous_reason}',
+                metadata={
+                    'previous_reason': previous_reason,
+                    'resolved_reason': incoming_reason,
+                    'ignored_stale_resolution': True,
+                },
+            )
+            results.append({
+                'id': existing.id,
+                'created': False,
+                'reactivated': False,
+                'fingerprint': existing.fingerprint,
+                'status': existing.status,
+                'occurrence_count': existing.occurrence_count,
+                'analysis_id': None,
+                'ignored_stale_resolution': True,
+            })
+            continue
         if existing:
             incoming_payload = _dict(normalized.get('raw_payload')).copy()
             existing_payload = _dict(existing.raw_payload)
@@ -330,6 +418,24 @@ def ingest_external_alert_payload(payload, ingress_source=None):
             action=AlertAction.ACTION_RULE_EVALUATION,
             action_note=f'{source} Webhook 告警接入',
         )
+        if (
+            existing
+            and _is_alertmanager_waiting_alert(incoming_labels)
+            and alert.status == Alert.STATUS_ACTIVE
+            and previous_reason
+            and incoming_reason
+            and previous_reason != incoming_reason
+        ):
+            AlertAction.objects.create(
+                alert=alert,
+                action=AlertAction.ACTION_RULE_EVALUATION,
+                actor=f'webhook:{source}',
+                note=f'Waiting 原因从 {previous_reason} 变为 {incoming_reason}',
+                metadata={
+                    'previous_reason': previous_reason,
+                    'current_reason': incoming_reason,
+                },
+            )
         reactivated = previous_status == Alert.STATUS_RESOLVED and alert.status == Alert.STATUS_ACTIVE
         newly_resolved = previous_status == Alert.STATUS_ACTIVE and alert.status == Alert.STATUS_RESOLVED
         if alert.status == Alert.STATUS_ACTIVE and (created or reactivated):
