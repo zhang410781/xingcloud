@@ -272,9 +272,18 @@
           <el-form-item label="日志 Streams">
             <div class="collection-editor">
               <div class="collection-toolbar">
-                <span>{{ form.config.streams?.length || 0 }} 个已配置 Stream</span>
+                <span>
+                  {{ form.config.streams?.length || 0 }} 个已配置 Stream
+                  <template v-if="openObserveStreams.length"> · 已发现 {{ openObserveStreams.length }} 个</template>
+                </span>
                 <div>
-                  <el-button size="small" @click="loadOpenObserveStreams" :loading="catalogLoading">连通并加载 Streams</el-button>
+                  <el-button size="small" @click="loadOpenObserveStreams" :loading="catalogLoading">发现并载入 Streams</el-button>
+                  <el-button
+                    size="small"
+                    :disabled="!form.config.streams?.length"
+                    :loading="recommendAllLoading"
+                    @click="recommendAllOpenObserveFields"
+                  >批量识别字段</el-button>
                   <el-button size="small" type="primary" @click="addOpenObserveStream"><el-icon><Plus /></el-icon>新增 Stream</el-button>
                 </div>
               </div>
@@ -282,7 +291,7 @@
                 <div class="collection-item__head">
                   <el-input v-model="stream.name" size="small" placeholder="显示名称" />
                   <div>
-                    <el-button size="small" @click="recommendOpenObserveFields(index)" :loading="recommendLoadingIndex === index">自动识别字段</el-button>
+                    <el-button size="small" :disabled="recommendAllLoading" @click="recommendOpenObserveFields(index)" :loading="recommendLoadingIndex === index">自动识别字段</el-button>
                     <el-button size="small" type="danger" plain @click="removeOpenObserveStream(index)">删除</el-button>
                   </div>
                 </div>
@@ -303,7 +312,7 @@
                 </div>
               </div>
               <div v-if="!form.config.streams?.length" class="collection-empty">
-                先加载并添加 Stream，再按实际 Schema 自动识别字段。缺失的 Kubernetes 或服务字段可以留空。
+                点击“发现并载入 Streams”自动生成配置项，再按实际 Schema 识别字段。缺失的 Kubernetes 或服务字段可以留空。
               </div>
             </div>
           </el-form-item>
@@ -358,6 +367,7 @@ const providerDefaults = ref({})
 const secretFlags = ref({})
 const catalogLoading = ref(false)
 const recommendLoadingIndex = ref(null)
+const recommendAllLoading = ref(false)
 const clickhouseDatabases = ref([])
 const clickhouseTables = ref({})
 const elkIndices = ref([])
@@ -562,33 +572,85 @@ async function loadOpenObserveStreams() {
       config: openObserveConnectionConfig(),
       action: 'streams',
     })
-    openObserveStreams.value = response.items || []
-    ElMessage.success(`已发现 ${openObserveStreams.value.length} 个日志 Stream`)
+    openObserveStreams.value = Array.isArray(response.items) ? response.items : []
+    ensureOpenObserveStreams()
+    const configuredNames = new Set(
+      form.value.config.streams
+        .map((item) => String(item.stream_name || '').trim())
+        .filter(Boolean),
+    )
+    let addedCount = 0
+    openObserveStreams.value.forEach((item) => {
+      const streamName = String(item?.name || '').trim()
+      if (!streamName || configuredNames.has(streamName)) return
+      form.value.config.streams.push(createOpenObserveStream({
+        key: streamName,
+        name: streamName,
+        stream_name: streamName,
+      }))
+      configuredNames.add(streamName)
+      addedCount += 1
+    })
+    if (!form.value.config.default_stream && form.value.config.streams.length) {
+      const firstStream = form.value.config.streams[0]
+      form.value.config.default_stream = firstStream.key || firstStream.stream_name
+    }
+    ElMessage.success(`已发现 ${openObserveStreams.value.length} 个日志 Stream，新增 ${addedCount} 个配置项`)
   } finally {
     catalogLoading.value = false
   }
 }
 
-async function recommendOpenObserveFields(index) {
+function applyOpenObserveRecommendation(stream, recommendation) {
+  stream.field_map = { ...stream.field_map, ...(recommendation || {}) }
+  if (!stream.key) stream.key = stream.stream_name
+  if (!stream.name) stream.name = stream.stream_name
+  if (!stream.search_fields) {
+    stream.search_fields = [...new Set(Object.values(stream.field_map).filter((value) => value && value !== '__derived__'))].join(',')
+  }
+}
+
+async function fetchOpenObserveFieldRecommendation(stream) {
+  return getLogProviderCatalog('openobserve', {
+    datasource_id: editingId.value || undefined,
+    config: openObserveConnectionConfig(),
+    action: 'recommend_fields',
+    stream: stream.stream_name,
+  })
+}
+
+async function recommendOpenObserveFields(index, { silent = false } = {}) {
   const stream = form.value.config.streams?.[index]
   if (!stream?.stream_name) return ElMessage.warning('请先选择 OpenObserve Stream')
   recommendLoadingIndex.value = index
   try {
-    const response = await getLogProviderCatalog('openobserve', {
-      datasource_id: editingId.value || undefined,
-      config: openObserveConnectionConfig(),
-      action: 'recommend_fields',
-      stream: stream.stream_name,
-    })
-    stream.field_map = { ...stream.field_map, ...(response.recommendation || {}) }
-    if (!stream.key) stream.key = stream.stream_name
-    if (!stream.name) stream.name = stream.stream_name
-    if (!stream.search_fields) {
-      stream.search_fields = [...new Set(Object.values(stream.field_map).filter((value) => value && value !== '__derived__'))].join(',')
-    }
-    ElMessage.success('已根据 Stream Schema 填充字段映射')
+    const response = await fetchOpenObserveFieldRecommendation(stream)
+    applyOpenObserveRecommendation(stream, response.recommendation)
+    if (!silent) ElMessage.success('已根据 Stream Schema 填充字段映射')
+    return true
   } finally {
     recommendLoadingIndex.value = null
+  }
+}
+
+async function recommendAllOpenObserveFields() {
+  const streams = (form.value.config.streams || []).filter((item) => item.stream_name)
+  if (!streams.length) return ElMessage.warning('请先发现或添加 OpenObserve Stream')
+  recommendAllLoading.value = true
+  try {
+    const results = await Promise.allSettled(streams.map(async (stream) => {
+      const response = await fetchOpenObserveFieldRecommendation(stream)
+      applyOpenObserveRecommendation(stream, response.recommendation)
+    }))
+    const successCount = results.filter((item) => item.status === 'fulfilled').length
+    const failedCount = results.length - successCount
+    if (failedCount) {
+      ElMessage.warning(`字段识别完成：成功 ${successCount} 个，失败 ${failedCount} 个；失败项可单独重试`)
+    } else {
+      ElMessage.success(`已完成 ${successCount} 个 Stream 的字段识别`)
+    }
+  } finally {
+    recommendAllLoading.value = false
   }
 }
 
@@ -1070,7 +1132,15 @@ onMounted(async () => {
 
 .collection-toolbar {
   color: #64748b;
+  flex-wrap: wrap;
   font-size: 12px;
+}
+
+.collection-toolbar > div,
+.collection-item__head > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .collection-item {
@@ -1104,6 +1174,8 @@ onMounted(async () => {
 @media (max-width: 960px) {
   .page-title-row { align-items: flex-start; }
   .switch-row { flex-direction: column; gap: 12px; padding-left: 0; }
+  .collection-toolbar,
+  .collection-item__head { align-items: flex-start; flex-direction: column; }
   .collection-grid { grid-template-columns: 1fr; }
 }
 
