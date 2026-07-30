@@ -6,6 +6,8 @@ from urllib.parse import urlparse
 
 import requests as http_requests
 from django.conf import settings
+from django.db import transaction
+from django.db.models.deletion import ProtectedError
 from django.db.models import Count
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -21,7 +23,7 @@ from rbac.services import user_has_permissions
 from .alert_rule_presets import ensure_datasource_rule_instances, install_rules_from_templates
 from .dashboard_presets import ensure_builtin_dashboards
 from .datasource_health import datasource_health_payload
-from .models import Alert, AlertRule, Deployment, LogDataSource, LogEntry, MetricDataSource, ObservabilityDashboard
+from .models import Alert, AlertRule, AlertSource, Deployment, LogDataSource, LogEntry, MetricDataSource, ObservabilityDashboard
 from .observability_integrations import get_integration, list_integrations
 from .sla import build_sla_summary
 from .serializers import (
@@ -1125,6 +1127,45 @@ class MetricDataSourceViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, v
         datasource = serializer.save()
         if datasource.provider == MetricDataSource.PROVIDER_PROMETHEUS and datasource.is_enabled:
             ensure_datasource_rule_instances(datasource)
+
+    def destroy(self, request, *args, **kwargs):
+        datasource = self.get_object()
+        alert_source = AlertSource.objects.filter(metric_datasource=datasource).first()
+        dependencies = {}
+        if alert_source:
+            dependencies = {
+                'alerts': alert_source.alerts.count(),
+                'ingress_logs': alert_source.ingress_logs.count(),
+                'rules': alert_source.rules.count(),
+                'notification_policies': alert_source.notification_policies.count(),
+            }
+            if any(dependencies.values()):
+                return Response(
+                    {
+                        'code': 'metric_datasource_in_use',
+                        'detail': '该指标数据源已被告警配置或历史数据使用，请先清理关联内容或停用数据源。',
+                        'alert_source': {'id': alert_source.id, 'name': alert_source.name},
+                        'dependencies': dependencies,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+        try:
+            with transaction.atomic():
+                if alert_source:
+                    alert_source.delete()
+                datasource.delete()
+        except ProtectedError as exc:
+            return Response(
+                {
+                    'code': 'metric_datasource_in_use',
+                    'detail': '该指标数据源仍被其他配置引用，暂时无法删除。',
+                    'dependencies': dependencies,
+                    'protected_objects': [str(item) for item in exc.protected_objects],
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=['post'])
     def test_connection(self, request, pk=None):

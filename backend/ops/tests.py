@@ -1480,6 +1480,62 @@ class ObservabilityViewsTests(TestCase):
         self.assertEqual(config['headers']['X-Team'], 'ops')
         self.assertEqual(config['prometheus.basic']['prometheus.password'], 'configured')
 
+    def test_metric_datasource_delete_without_alert_source(self):
+        datasource = MetricDataSource.objects.create(
+            name='Unused Prometheus',
+            provider='prometheus',
+            config={'query_url': 'http://prometheus.example.com'},
+            is_enabled=False,
+        )
+
+        response = self.client.delete(f'/api/observability/metric/datasources/{datasource.id}/')
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(MetricDataSource.objects.filter(pk=datasource.id).exists())
+
+    def test_metric_datasource_delete_removes_empty_linked_alert_source(self):
+        datasource = MetricDataSource.objects.create(
+            name='Mistyped Prometheus',
+            provider='prometheus',
+            config={'query_url': 'http://invalid.example.com'},
+        )
+        source = AlertSource.objects.create(
+            name=datasource.name,
+            code='prometheus-mistyped',
+            provider='prometheus',
+            metric_datasource=datasource,
+            is_enabled=False,
+        )
+
+        response = self.client.delete(f'/api/observability/metric/datasources/{datasource.id}/')
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(AlertSource.objects.filter(pk=source.id).exists())
+        self.assertFalse(MetricDataSource.objects.filter(pk=datasource.id).exists())
+
+    def test_metric_datasource_delete_returns_conflict_for_used_alert_source(self):
+        datasource = MetricDataSource.objects.create(
+            name='Production Prometheus',
+            provider='prometheus',
+            config={'query_url': 'http://prometheus.example.com'},
+        )
+        source = AlertSource.objects.create(
+            name=datasource.name,
+            code='prometheus-production',
+            provider='prometheus',
+            metric_datasource=datasource,
+            is_enabled=False,
+        )
+        AlertNotificationPolicy.objects.create(name='Production policy', alert_source=source)
+
+        response = self.client.delete(f'/api/observability/metric/datasources/{datasource.id}/')
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['code'], 'metric_datasource_in_use')
+        self.assertEqual(response.json()['dependencies']['notification_policies'], 1)
+        self.assertTrue(AlertSource.objects.filter(pk=source.id).exists())
+        self.assertTrue(MetricDataSource.objects.filter(pk=datasource.id).exists())
+
     @patch('ops.observability_views.execute_promql_query')
     def test_dashboard_definition_crud_export_and_query(self, mock_promql):
         from ops.models import ObservabilityDashboard

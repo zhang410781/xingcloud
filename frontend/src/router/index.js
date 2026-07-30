@@ -237,6 +237,11 @@ const routes = [
         meta: { title: '告警规则', icon: 'Operation', permission: 'ops.alert.config.view' },
       },
       {
+        path: 'observability/alert-rules',
+        redirect: '/observability/rules',
+        meta: { hidden: true },
+      },
+      {
         path: 'observability/metrics',
         name: 'MetricsQuery',
         component: () => import('@/views/MetricsQuery.vue'),

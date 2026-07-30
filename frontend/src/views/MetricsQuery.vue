@@ -1702,9 +1702,13 @@ async function testSource(row) {
 
 async function removeSource(row) {
   await ElMessageBox.confirm(`确认删除指标数据源「${row.name}」？`, '删除确认', { type: 'warning' })
-  await deleteMetricDataSource(row.id)
-  ElMessage.success('指标数据源已删除')
-  await loadDataSources()
+  try {
+    await deleteMetricDataSource(row.id)
+    ElMessage.success('指标数据源已删除')
+    await loadDataSources()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.detail || error.message || '指标数据源删除失败')
+  }
 }
 
 watch(

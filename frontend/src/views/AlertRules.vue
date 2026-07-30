@@ -8,7 +8,8 @@
       </div>
       <div class="header-actions">
         <el-button :icon="Refresh" :loading="loading" @click="loadAll">刷新</el-button>
-        <el-button type="primary" :icon="Plus" @click="openSource()">新增告警源</el-button>
+        <el-button :icon="Plus" @click="openSource(null, 'prometheus')">新增 Prometheus 源</el-button>
+        <el-button type="primary" :icon="Connection" @click="openSource(null, 'alertmanager')">接入 Alertmanager / Zabbix</el-button>
       </div>
     </header>
 
@@ -161,7 +162,14 @@
               </el-tab-pane>
             </el-tabs>
           </main>
-          <main v-else class="source-detail panel empty-detail"><el-empty description="选择或新增一个告警源" /></main>
+          <main v-else class="source-detail panel empty-detail">
+            <el-empty description="尚未配置告警源">
+              <div class="empty-actions">
+                <el-button :icon="Plus" @click="openSource(null, 'prometheus')">新增 Prometheus 源</el-button>
+                <el-button type="primary" :icon="Connection" @click="openSource(null, 'alertmanager')">接入 Alertmanager / Zabbix</el-button>
+              </div>
+            </el-empty>
+          </main>
         </div>
       </el-tab-pane>
 
@@ -179,17 +187,37 @@
       </el-tab-pane>
 
       <el-tab-pane label="通知资源" name="resources">
+        <el-alert class="resource-tip" type="info" :closable="false" title="先创建接收人作为告警源负责人，再创建飞书、企微、语音等通知渠道，最后在告警源内按级别配置通知策略。" />
         <section class="resource-grid">
-          <div class="panel resource-panel"><div class="section-head"><h2>通知渠道</h2></div><el-table :data="channels" stripe><el-table-column prop="name" label="名称" /><el-table-column label="类型"><template #default="{ row }">{{ channelTypeText(row.channel_type) }}</template></el-table-column><el-table-column label="状态"><template #default="{ row }">{{ row.is_enabled ? '启用' : '停用' }}</template></el-table-column></el-table></div>
-          <div class="panel resource-panel"><div class="section-head"><h2>接收人</h2></div><el-table :data="recipients" stripe><el-table-column prop="name" label="姓名" /><el-table-column prop="phone" label="电话" /><el-table-column label="渠道"><template #default="{ row }">{{ (row.contact_channels || []).map(channelTypeText).join('、') || '-' }}</template></el-table-column></el-table></div>
+          <div class="panel resource-panel">
+            <div class="section-head"><h2>通知渠道</h2><el-button type="primary" :icon="Plus" @click="openChannel()">新增渠道</el-button></div>
+            <el-table :data="channels" stripe empty-text="暂无通知渠道">
+              <el-table-column prop="name" label="名称" />
+              <el-table-column label="类型"><template #default="{ row }">{{ channelTypeText(row.channel_type) }}</template></el-table-column>
+              <el-table-column label="状态"><template #default="{ row }">{{ row.is_enabled ? '启用' : '停用' }}</template></el-table-column>
+              <el-table-column label="操作" width="80"><template #default="{ row }"><el-button link type="primary" @click="openChannel(row)">编辑</el-button></template></el-table-column>
+            </el-table>
+          </div>
+          <div class="panel resource-panel">
+            <div class="section-head"><h2>接收人</h2><el-button type="primary" :icon="Plus" @click="openRecipient()">新增接收人</el-button></div>
+            <el-table :data="recipients" stripe empty-text="暂无接收人">
+              <el-table-column prop="name" label="姓名" />
+              <el-table-column prop="phone" label="电话" />
+              <el-table-column label="渠道"><template #default="{ row }">{{ (row.contact_channels || []).map(channelTypeText).join('、') || '-' }}</template></el-table-column>
+              <el-table-column label="操作" width="80"><template #default="{ row }"><el-button link type="primary" @click="openRecipient(row)">编辑</el-button></template></el-table-column>
+            </el-table>
+          </div>
         </section>
       </el-tab-pane>
     </el-tabs>
 
-    <el-dialog v-model="sourceDialog.visible" :title="sourceDialog.form.id ? '编辑告警源' : '新增告警源'" width="680px" destroy-on-close>
+    <el-dialog v-model="sourceDialog.visible" :title="sourceDialog.form.id ? '编辑告警源' : (sourceDialog.form.provider === 'prometheus' ? '新增 Prometheus 告警源' : '接入外部告警源')" width="680px" destroy-on-close>
       <el-form label-position="top">
         <div class="form-grid"><el-form-item label="名称"><el-input v-model="sourceDialog.form.name" /></el-form-item><el-form-item label="类型"><el-select v-model="sourceDialog.form.provider" :disabled="Boolean(sourceDialog.form.id)"><el-option label="Prometheus" value="prometheus" /><el-option label="Alertmanager" value="alertmanager" /><el-option label="Zabbix" value="zabbix" /></el-select></el-form-item></div>
         <el-form-item v-if="sourceDialog.form.provider === 'prometheus'" label="Prometheus 指标数据源"><el-select v-model="sourceDialog.form.metric_datasource" filterable><el-option v-for="item in metricSources" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item>
+        <el-alert v-if="!recipients.length" class="dialog-alert" type="warning" :closable="false" title="尚未创建接收人，告警源必须指定一名主负责人。">
+          <template #default><el-button link type="primary" @click="goCreateRecipient">先创建接收人</el-button></template>
+        </el-alert>
         <div class="form-grid"><el-form-item label="主负责人"><el-select v-model="sourceDialog.form.primary_owner" filterable><el-option v-for="item in recipients" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item><el-form-item label="协同负责人"><el-select v-model="sourceDialog.form.collaborators" multiple filterable><el-option v-for="item in recipients" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item></div>
         <el-form-item label="负责人级别"><el-checkbox-group v-model="sourceDialog.form.owner_levels"><el-checkbox value="info">信息</el-checkbox><el-checkbox value="warning">警告</el-checkbox><el-checkbox value="critical">严重</el-checkbox></el-checkbox-group></el-form-item>
         <div class="switch-row"><el-switch v-model="sourceDialog.form.is_enabled" active-text="启用告警源" /><el-switch v-model="sourceDialog.form.notify_enabled" active-text="发送通知" /><el-switch v-model="sourceDialog.form.analyze_enabled" active-text="智能研判" /></div>
@@ -199,6 +227,31 @@
     </el-dialog>
 
     <el-dialog v-model="tokenDialog.visible" title="Webhook Token" width="620px"><el-alert type="warning" :closable="false" title="Token 仅显示一次" /><div class="token-box"><code>{{ tokenDialog.token }}</code><el-button :icon="CopyDocument" @click="copyText(tokenDialog.token)" /></div><template #footer><el-button type="primary" @click="tokenDialog.visible=false">已保存</el-button></template></el-dialog>
+
+    <el-dialog v-model="channelDialog.visible" :title="channelDialog.form.id ? '编辑通知渠道' : '新增通知渠道'" width="620px" destroy-on-close>
+      <el-form label-position="top">
+        <div class="form-grid">
+          <el-form-item label="渠道名称"><el-input v-model="channelDialog.form.name" /></el-form-item>
+          <el-form-item label="渠道类型"><el-select v-model="channelDialog.form.channel_type" :disabled="Boolean(channelDialog.form.id)"><el-option label="飞书" value="feishu" /><el-option label="企微" value="wecom" /><el-option label="钉钉" value="dingtalk" /><el-option label="邮件" value="email" /><el-option label="短信" value="sms" /><el-option label="语音" value="voice" /></el-select></el-form-item>
+        </div>
+        <el-form-item v-if="channelDialog.form.channel_type === 'email'" label="固定收件邮箱"><el-input v-model="channelDialog.form.destination" placeholder="多个邮箱使用逗号分隔；也可由接收人提供邮箱" /></el-form-item>
+        <el-form-item v-else label="Webhook URL"><el-input v-model="channelDialog.form.destination" type="textarea" :rows="3" placeholder="请输入完整的 HTTPS Webhook 地址" /></el-form-item>
+        <el-form-item v-if="channelDialog.form.channel_type === 'feishu'" label="飞书签名密钥"><el-input v-model="channelDialog.form.secret" type="password" show-password placeholder="飞书机器人安全设置中的签名密钥" /></el-form-item>
+        <div class="switch-row"><el-switch v-model="channelDialog.form.send_resolved" active-text="发送恢复通知" /><el-switch v-model="channelDialog.form.is_enabled" active-text="启用渠道" /></div>
+      </el-form>
+      <template #footer><el-button @click="channelDialog.visible=false">取消</el-button><el-button type="primary" :loading="channelDialog.saving" @click="saveChannel">保存</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="recipientDialog.visible" :title="recipientDialog.form.id ? '编辑接收人' : '新增接收人'" width="620px" destroy-on-close>
+      <el-form label-position="top">
+        <el-form-item label="姓名"><el-input v-model="recipientDialog.form.name" /></el-form-item>
+        <div class="form-grid"><el-form-item label="手机号"><el-input v-model="recipientDialog.form.phone" /></el-form-item><el-form-item label="邮箱"><el-input v-model="recipientDialog.form.email" /></el-form-item></div>
+        <el-form-item label="个人接收偏好"><el-checkbox-group v-model="recipientDialog.form.preferred_channels"><el-checkbox value="feishu">飞书</el-checkbox><el-checkbox value="wecom">企微</el-checkbox><el-checkbox value="dingtalk">钉钉</el-checkbox><el-checkbox value="email">邮件</el-checkbox><el-checkbox value="sms">短信</el-checkbox><el-checkbox value="voice">语音</el-checkbox></el-checkbox-group></el-form-item>
+        <el-form-item label="说明"><el-input v-model="recipientDialog.form.description" type="textarea" :rows="2" /></el-form-item>
+        <el-switch v-model="recipientDialog.form.is_enabled" active-text="启用接收人" />
+      </el-form>
+      <template #footer><el-button @click="recipientDialog.visible=false">取消</el-button><el-button type="primary" :loading="recipientDialog.saving" @click="saveRecipient">保存</el-button></template>
+    </el-dialog>
 
     <el-dialog v-model="instantiateDialog.visible" title="从全局模板创建规则" width="560px"><el-form label-position="top"><el-form-item label="告警源"><el-input :model-value="selectedSource?.name" disabled /></el-form-item><el-form-item label="已发布模板"><el-select v-model="instantiateDialog.templateId" filterable><el-option v-for="item in publishedTemplates" :key="item.id" :label="`${item.name} · ${item.category_display}`" :value="item.id" /></el-select></el-form-item></el-form><template #footer><el-button @click="instantiateDialog.visible=false">取消</el-button><el-button type="primary" :loading="instantiateDialog.saving" @click="instantiateRule">创建</el-button></template></el-dialog>
 
@@ -223,16 +276,17 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { CopyDocument, Delete, Edit, Plus, Refresh, RefreshRight, Search } from '@element-plus/icons-vue'
+import { Connection, CopyDocument, Delete, Edit, Plus, Refresh, RefreshRight, Search } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import {
-  archiveAlertRuleTemplate, createAlertNotificationPolicy, createAlertRuleTemplate,
-  createAlertSource, deleteAlertNotificationPolicy, deleteAlertSource, evaluateAlertRule,
+  archiveAlertRuleTemplate, createAlertNotificationChannel, createAlertNotificationPolicy,
+  createAlertRecipient, createAlertRuleTemplate, createAlertSource, deleteAlertNotificationPolicy,
+  deleteAlertSource, evaluateAlertRule,
   getAlertNotificationChannels, getAlertNotificationPolicies, getAlertRecipientGroups,
   getAlertRecipients, getAlertRules, getAlertRuleTemplates, getAlertSourceLogs, getAlertSources,
   getMetricDataSources, instantiateAlertRule, patchAlertRule, previewAlertSourcePayload,
-  publishAlertRuleTemplate, rotateAlertSourceToken, submitAlertRuleTemplate, updateAlertNotificationPolicy,
-  updateAlertRuleTemplate, updateAlertSource,
+  publishAlertRuleTemplate, rotateAlertSourceToken, submitAlertRuleTemplate, updateAlertNotificationChannel,
+  updateAlertNotificationPolicy, updateAlertRecipient, updateAlertRuleTemplate, updateAlertSource,
 } from '@/api/modules/ops'
 
 const listOf = (value) => value?.results || value?.data?.results || value?.data || value || []
@@ -274,6 +328,10 @@ const fingerprintOptions = ['alertname', 'cluster', 'namespace', 'pod', 'contain
 const emptySourceForm = () => ({ id: null, name: '', provider: 'prometheus', metric_datasource: null, primary_owner: null, collaborators: [], owner_levels: ['warning', 'critical'], is_enabled: true, notify_enabled: true, analyze_enabled: true, description: '' })
 const sourceDialog = reactive({ visible: false, saving: false, form: emptySourceForm() })
 const tokenDialog = reactive({ visible: false, token: '' })
+const emptyChannelForm = () => ({ id: null, name: '', channel_type: 'feishu', destination: '', secret: '', send_resolved: true, is_enabled: true })
+const channelDialog = reactive({ visible: false, saving: false, form: emptyChannelForm() })
+const emptyRecipientForm = () => ({ id: null, name: '', phone: '', email: '', preferred_channels: [], is_enabled: true, description: '' })
+const recipientDialog = reactive({ visible: false, saving: false, form: emptyRecipientForm() })
 const instantiateDialog = reactive({ visible: false, saving: false, templateId: null })
 const emptyPolicyForm = () => ({ id: null, name: '', priority: 100, routes: [], notify_on_fire: true, notify_on_resolved: true, notify_on_analysis: true, is_enabled: true })
 const policyDialog = reactive({ visible: false, saving: false, form: emptyPolicyForm() })
@@ -326,8 +384,9 @@ watch(sourceTab, async (value) => {
   if (value === 'ingress-logs') await loadIngressLogs()
 })
 
-function openSource(row = null) {
+function openSource(row = null, provider = 'prometheus') {
   const form = emptySourceForm()
+  form.provider = provider
   if (row) {
     Object.assign(form, row, {
       primary_owner: row.owner_bindings?.find((item) => item.role === 'primary')?.recipient || null,
@@ -337,6 +396,59 @@ function openSource(row = null) {
   }
   sourceDialog.form = form
   sourceDialog.visible = true
+}
+
+function goCreateRecipient() {
+  sourceDialog.visible = false
+  workspaceTab.value = 'resources'
+  openRecipient()
+}
+
+function openChannel(row = null) {
+  const form = emptyChannelForm()
+  if (row) Object.assign(form, row, { destination: row.channel_type === 'email' ? (row.config?.to || []).join(', ') : (row.config?.webhook_url || row.config?.url || ''), secret: row.config?.secret || row.config?.sign_secret || '' })
+  channelDialog.form = form
+  channelDialog.visible = true
+}
+
+async function saveChannel() {
+  const form = channelDialog.form
+  if (!form.name.trim()) return ElMessage.warning('请输入渠道名称')
+  if (form.channel_type !== 'email' && !form.destination.trim()) return ElMessage.warning('请输入 Webhook URL')
+  if (form.channel_type === 'feishu' && !form.secret.trim()) return ElMessage.warning('请输入飞书签名密钥')
+  const config = form.channel_type === 'email'
+    ? { to: form.destination.split(',').map((item) => item.trim()).filter(Boolean) }
+    : { webhook_url: form.destination.trim(), ...(form.channel_type === 'feishu' ? { secret: form.secret } : {}) }
+  const payload = { name: form.name.trim(), channel_type: form.channel_type, config, send_resolved: form.send_resolved, is_enabled: form.is_enabled }
+  channelDialog.saving = true
+  try {
+    form.id ? await updateAlertNotificationChannel(form.id, payload) : await createAlertNotificationChannel(payload)
+    channelDialog.visible = false
+    await loadAll()
+    ElMessage.success('通知渠道已保存')
+  } catch (error) { ElMessage.error(firstError(error.response?.data) || error.message || '渠道保存失败') }
+  finally { channelDialog.saving = false }
+}
+
+function openRecipient(row = null) {
+  const form = emptyRecipientForm()
+  if (row) Object.assign(form, row, { preferred_channels: [...(row.preferred_channels || [])] })
+  recipientDialog.form = form
+  recipientDialog.visible = true
+}
+
+async function saveRecipient() {
+  const form = recipientDialog.form
+  if (!form.name.trim()) return ElMessage.warning('请输入接收人姓名')
+  const payload = { name: form.name.trim(), phone: form.phone.trim(), email: form.email.trim(), preferred_channels: form.preferred_channels, is_enabled: form.is_enabled, description: form.description || '' }
+  recipientDialog.saving = true
+  try {
+    form.id ? await updateAlertRecipient(form.id, payload) : await createAlertRecipient(payload)
+    recipientDialog.visible = false
+    await loadAll()
+    ElMessage.success('接收人已保存')
+  } catch (error) { ElMessage.error(firstError(error.response?.data) || error.message || '接收人保存失败') }
+  finally { recipientDialog.saving = false }
 }
 
 async function saveSource() {
@@ -437,11 +549,12 @@ h2, h3, p { margin: 0; letter-spacing: 0; }
 .source-main { min-width: 0; display: flex; flex-direction: column; gap: 3px; }.source-main strong, .source-main small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.source-main small { color: #64748b; }
 .source-state { width: 8px; height: 8px; border-radius: 50%; background: #94a3b8; }.source-state.healthy { background: #16a34a; }.source-state.error { background: #dc2626; }.source-state.pending { background: #d97706; }
 .source-detail { min-width: 0; padding: 16px; }.empty-detail { display: grid; place-items: center; }
+.empty-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
 .detail-head, .section-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }.detail-head { padding-bottom: 14px; border-bottom: 1px solid #e5e7eb; }.title-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }.title-line h2 { font-size: 20px; }
 .detail-tabs { margin-top: 8px; }.metric-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid #e2e8f0; margin: 12px 0 18px; }.metric-strip > div { min-height: 84px; padding: 14px; border-right: 1px solid #e2e8f0; display: flex; flex-direction: column; gap: 8px; }.metric-strip > div:last-child { border-right: 0; }.metric-strip span { color: #64748b; font-size: 13px; }.metric-strip strong { font-size: 24px; }.metric-strip .time-value { font-size: 14px; }
 .overview-grid { max-width: 980px; }.copy-line, .token-box { display: flex; align-items: center; gap: 8px; min-width: 0; }.copy-line code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .section-head { margin: 10px 0 12px; }.section-head h2 { font-size: 18px; }.section-head h3 { font-size: 15px; }.section-note { margin-top: 4px; color: #64748b; font-size: 13px; }.primary-cell { display: flex; flex-direction: column; gap: 3px; }.primary-cell small { color: #64748b; }.level-tag { margin-right: 5px; }
 .mapping-form { max-width: 820px; }.test-pane { display: flex; flex-direction: column; gap: 12px; max-width: 900px; }.test-pane pre { max-height: 360px; overflow: auto; padding: 12px; border: 1px solid #e2e8f0; background: #f8fafc; }
-.standalone-panel, .resource-panel { padding: 16px; }.resource-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }.switch-row { margin: 4px 0 18px; }.token-box { margin-top: 14px; padding: 12px; background: #f8fafc; border: 1px solid #dbe3ec; }.token-box code { flex: 1; overflow-wrap: anywhere; }
+.standalone-panel, .resource-panel { padding: 16px; }.resource-tip { margin-bottom: 14px; }.resource-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }.switch-row { margin: 4px 0 18px; }.dialog-alert { margin-bottom: 14px; }.token-box { margin-top: 14px; padding: 12px; background: #f8fafc; border: 1px solid #dbe3ec; }.token-box code { flex: 1; overflow-wrap: anywhere; }
 @media (max-width: 900px) { .page-header, .detail-head { flex-direction: column; }.source-workbench { grid-template-columns: 1fr; }.source-list { max-height: 300px; overflow: auto; }.metric-strip, .resource-grid, .form-grid { grid-template-columns: 1fr; }.metric-strip > div { border-right: 0; border-bottom: 1px solid #e2e8f0; }.metric-strip > div:last-child { border-bottom: 0; }.source-detail { overflow-x: auto; } }
 </style>
