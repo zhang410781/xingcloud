@@ -8,7 +8,7 @@ from django.utils import timezone
 from aiops.business_context import assign_alert_context, validate_context_bindings
 from aiops.models import AIOpsKnowledgeEnvironment
 from ops.anomaly_detection import detect_anomaly
-from ops.models import Alert, AlertNotificationPolicy, AlertRule, ExternalAlertSource, K8sCluster, LogDataSource, MetricDataSource, TaskResource, TaskResourceGroup
+from ops.models import Alert, AlertNotificationPolicy, AlertRule, AlertSource, K8sCluster, LogDataSource, MetricDataSource, TaskResource, TaskResourceGroup
 from ops.observability_evidence import _k8s_evidence, _log_evidence, _series_values, collect_observability_evidence, inspection_result
 
 
@@ -31,6 +31,10 @@ class BusinessContextTests(TestCase):
             log_datasource=self.logs,
             k8s_cluster=self.cluster,
             task_resource_environment=self.assets,
+        )
+        self.alert_source = AlertSource.objects.create(
+            name='Context Prometheus', code='context-prometheus-main', provider='prometheus',
+            metric_datasource=self.metric,
         )
 
     def test_registered_datasources_can_be_reused(self):
@@ -57,12 +61,12 @@ class BusinessContextTests(TestCase):
         self.assertEqual(result['context']['k8s_cluster_id'], self.cluster.id)
 
     def test_external_alert_does_not_affect_binding_health(self):
-        source = ExternalAlertSource.objects.create(
+        source = AlertSource.objects.create(
             name='Legacy Alertmanager', code='legacy-alertmanager', provider='alertmanager',
         )
         Alert.objects.create(
             title='legacy external alert', source=source.code, source_type='alertmanager',
-            ingress_source=source, message='test', environment='', knowledge_environment=self.context,
+            alert_source=source, message='test', environment='', knowledge_environment=self.context,
             binding_status='bound',
         )
 
@@ -128,15 +132,16 @@ class BusinessContextTests(TestCase):
     def test_alert_list_filters_platform_and_external_scopes(self):
         platform_alert = Alert.objects.create(
             title='platform alert', source='platform', source_type='platform', message='test',
+            alert_source=self.alert_source,
             environment='xing-prod', cluster='ctx-k8s-code', knowledge_environment=self.context,
             labels={'cluster_display_name': '生产 K8S 集群'},
         )
-        source = ExternalAlertSource.objects.create(
+        source = AlertSource.objects.create(
             name='External Zabbix', code='external-zabbix', provider='zabbix',
         )
         external_alert = Alert.objects.create(
             title='external alert', source=source.code, source_type='zabbix', message='test',
-            ingress_source=source, binding_status='not_applicable',
+            alert_source=source, binding_status='not_applicable',
         )
         user = get_user_model().objects.create_superuser(username='scope-admin', password='test-password')
         self.client.force_login(user)
@@ -147,39 +152,40 @@ class BusinessContextTests(TestCase):
         self.assertEqual([item['id'] for item in platform_response.json()['results']], [platform_alert.id])
         self.assertEqual([item['id'] for item in external_response.json()['results']], [external_alert.id])
         platform_payload = platform_response.json()['results'][0]
-        self.assertEqual(platform_payload['environment_display'], self.context.name)
-        self.assertEqual(platform_payload['scope_display'], self.context.name)
+        self.assertEqual(platform_payload['environment_display'], self.alert_source.name)
+        self.assertEqual(platform_payload['scope_display'], 'Prometheus')
         self.assertEqual(platform_payload['cluster_display'], '生产 K8S 集群')
         external_payload = external_response.json()['results'][0]
         self.assertEqual(external_payload['environment_display'], source.name)
-        self.assertEqual(external_payload['scope_display'], '外部接入')
+        self.assertEqual(external_payload['scope_display'], 'Zabbix')
         self.assertEqual(external_payload['source_display'], source.name)
 
-    def test_alert_rules_and_policies_filter_by_business_context(self):
+    def test_alert_rules_and_policies_filter_by_alert_source(self):
         other_metric = MetricDataSource.objects.create(name='other-prom', environment='other', config={})
-        other_context = AIOpsKnowledgeEnvironment.objects.create(
-            name='Other Context', code='other', business_line='Other', metric_datasource=other_metric,
+        expected_source = self.alert_source
+        other_source = AlertSource.objects.create(
+            name='Other Prometheus', code='other-prometheus', provider='prometheus',
+            metric_datasource=other_metric,
         )
         expected_rule = AlertRule.objects.create(
             name='Context rule', code='context-rule', source_type='prometheus', category='k8s',
-            metric_datasource=self.metric, is_template=False,
+            alert_source=expected_source, is_template=False,
         )
         AlertRule.objects.create(
             name='Other rule', code='other-rule', source_type='prometheus', category='k8s',
-            metric_datasource=other_metric, is_template=False,
+            alert_source=other_source, is_template=False,
         )
-        global_policy = AlertNotificationPolicy.objects.create(name='Global policy')
-        expected_policy = AlertNotificationPolicy.objects.create(name='Context policy', metric_datasource=self.metric)
-        AlertNotificationPolicy.objects.create(name='Other policy', metric_datasource=other_metric)
+        expected_policy = AlertNotificationPolicy.objects.create(name='Context policy', alert_source=expected_source)
+        AlertNotificationPolicy.objects.create(name='Other policy', alert_source=other_source)
         user = get_user_model().objects.create_superuser(username='rules-context-admin', password='test-password')
         self.client.force_login(user)
 
         rule_response = self.client.get('/api/alert-rules/', {
-            'knowledge_environment_id': self.context.id,
+            'alert_source_id': expected_source.id,
             'is_template': 'false',
         })
         policy_response = self.client.get('/api/alert-notification-policies/', {
-            'knowledge_environment_id': self.context.id,
+            'alert_source': expected_source.id,
         })
 
         self.assertEqual(rule_response.status_code, 200)
@@ -187,8 +193,7 @@ class BusinessContextTests(TestCase):
         rule_ids = [item['id'] for item in rule_response.json()['results']]
         policy_ids = [item['id'] for item in policy_response.json()['results']]
         self.assertEqual(rule_ids, [expected_rule.id])
-        self.assertCountEqual(policy_ids, [global_policy.id, expected_policy.id])
-        self.assertNotEqual(other_context.id, self.context.id)
+        self.assertEqual(policy_ids, [expected_policy.id])
 
     @patch('ops.observability_evidence._query_metric')
     @patch('ops.observability_evidence._k8s_evidence')

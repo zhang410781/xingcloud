@@ -14,8 +14,6 @@
       </div>
     </header>
 
-    <ObservabilityRouteTabs group="observability" />
-
     <section class="toolbar panel feature-scope-bar">
       <div class="toolbar-field">
         <span>业务上下文</span>
@@ -107,7 +105,6 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { Connection, DataAnalysis, DataBoard, Monitor, RefreshRight, Search, SetUp } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
 import NativeDashboardChart from '@/components/observability/NativeDashboardChart.vue'
 import { getDashboardDefinitions, getLogDataSources, getMetricDataSources, queryDashboardDefinition, queryMetrics } from '@/api/modules/ops'
 import { useFeatureBusinessContext } from '@/composables/useFeatureBusinessContext'

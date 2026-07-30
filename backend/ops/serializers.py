@@ -4,6 +4,7 @@ import uuid
 from django.contrib.auth import get_user_model
 from django.utils.text import slugify
 from django.core.exceptions import ObjectDoesNotExist
+from django.db import transaction
 from rest_framework import serializers
 
 from cmdb.models import CIRelation, ConfigItem, ResourceNode
@@ -17,12 +18,14 @@ from .models import (
     AlertNotificationChannel,
     AlertNotificationLog,
     AlertNotificationPolicy,
+    AlertNotificationRoute,
     AlertRecipient,
     AlertRecipientGroup,
     AlertRule,
     AlertSilence,
+    AlertSource,
+    AlertSourceOwner,
     ExternalAlertIngressLog,
-    ExternalAlertSource,
     Deployment,
     DeploymentApprovalFlow,
     DeploymentApprovalNode,
@@ -1546,7 +1549,7 @@ class AlertRuleSerializer(serializers.ModelSerializer):
     category_display = serializers.CharField(source='get_category_display', read_only=True)
     source_type_display = serializers.CharField(source='get_source_type_display', read_only=True)
     level_display = serializers.CharField(source='get_level_display', read_only=True)
-    metric_datasource_detail = serializers.SerializerMethodField()
+    alert_source_detail = serializers.SerializerMethodField()
     template_detail = serializers.SerializerMethodField()
     needs_binding = serializers.SerializerMethodField()
     runtime_quality = serializers.SerializerMethodField()
@@ -1555,16 +1558,20 @@ class AlertRuleSerializer(serializers.ModelSerializer):
         model = AlertRule
         fields = '__all__'
 
-    def get_metric_datasource_detail(self, obj):
-        datasource = obj.metric_datasource
-        if not datasource:
+    def get_alert_source_detail(self, obj):
+        source = obj.alert_source
+        datasource = source.metric_datasource if source else None
+        if not source:
             return None
         return {
-            'id': datasource.id,
-            'name': datasource.name,
-            'environment': datasource.environment,
-            'cluster_name': datasource.cluster_name,
-            'is_enabled': datasource.is_enabled,
+            'id': source.id,
+            'name': source.name,
+            'code': source.code,
+            'provider': source.provider,
+            'provider_display': source.get_provider_display(),
+            'metric_datasource_id': source.metric_datasource_id,
+            'cluster_name': datasource.cluster_name if datasource else '',
+            'is_enabled': source.is_enabled,
         }
 
     def get_template_detail(self, obj):
@@ -1582,7 +1589,7 @@ class AlertRuleSerializer(serializers.ModelSerializer):
         }
 
     def get_needs_binding(self, obj):
-        return obj.source_type == 'prometheus' and not obj.is_template and not obj.metric_datasource_id
+        return not obj.is_template and not obj.alert_source_id
 
     def get_runtime_quality(self, obj):
         if obj.is_template:
@@ -1611,17 +1618,19 @@ class AlertRuleSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         source_type = attrs.get('source_type', getattr(self.instance, 'source_type', ''))
         is_template = attrs.get('is_template', getattr(self.instance, 'is_template', False))
-        datasource = attrs.get('metric_datasource', getattr(self.instance, 'metric_datasource', None))
+        alert_source = attrs.get('alert_source', getattr(self.instance, 'alert_source', None))
         template = attrs.get('template', getattr(self.instance, 'template', None))
         if template and not template.is_template:
             raise serializers.ValidationError({'template': '来源规则不是模板'})
-        if source_type == 'prometheus' and not is_template and not datasource:
-            raise serializers.ValidationError({'metric_datasource': 'Prometheus 规则必须绑定指标数据源'})
-        if datasource and not datasource.is_enabled:
-            raise serializers.ValidationError({'metric_datasource': '指标数据源已停用'})
+        if source_type == 'prometheus' and not is_template and not alert_source:
+            raise serializers.ValidationError({'alert_source': 'Prometheus 规则必须绑定告警源'})
+        if alert_source and alert_source.provider != AlertSource.PROVIDER_PROMETHEUS:
+            raise serializers.ValidationError({'alert_source': '规则只能绑定 Prometheus 告警源'})
+        if alert_source and (not alert_source.is_enabled or not alert_source.metric_datasource_id):
+            raise serializers.ValidationError({'alert_source': 'Prometheus 告警源已停用或未绑定指标数据源'})
         query_config = dict(attrs.get('query_config', getattr(self.instance, 'query_config', {}) or {}))
-        if datasource:
-            query_config['metric_datasource_id'] = datasource.id
+        if alert_source:
+            query_config['metric_datasource_id'] = alert_source.metric_datasource_id
             attrs['query_config'] = query_config
         return attrs
 
@@ -1770,13 +1779,13 @@ class AlertRecipientGroupSerializer(serializers.ModelSerializer):
         return 'ready'
 
     def get_policy_refs(self, obj):
+        policies = {
+            route.policy_id: route.policy
+            for route in obj.notification_routes.select_related('policy').all()
+        }
         return [
-            {
-                'id': policy.id,
-                'name': policy.name,
-                'metric_datasource_id': policy.metric_datasource_id,
-            }
-            for policy in obj.notification_policies.all()
+            {'id': policy.id, 'name': policy.name, 'alert_source_id': policy.alert_source_id}
+            for policy in policies.values()
         ]
 
     def get_policy_count(self, obj):
@@ -1888,45 +1897,66 @@ class AlertNotificationChannelSerializer(serializers.ModelSerializer):
         return super().update(instance, validated_data)
 
 
+class AlertNotificationRouteSerializer(serializers.ModelSerializer):
+    channel_detail = serializers.SerializerMethodField()
+    recipient_group_detail = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AlertNotificationRoute
+        fields = [
+            'id', 'level', 'trigger', 'after_minutes', 'escalate_to_level',
+            'channel', 'channel_detail', 'target_type', 'recipient_group',
+            'recipient_group_detail', 'sort_order', 'is_enabled',
+        ]
+        read_only_fields = ['id']
+
+    def get_channel_detail(self, obj):
+        return {
+            'id': obj.channel_id,
+            'name': obj.channel.name,
+            'channel_type': obj.channel.channel_type,
+            'channel_type_display': obj.channel.get_channel_type_display(),
+        }
+
+    def get_recipient_group_detail(self, obj):
+        if not obj.recipient_group_id:
+            return None
+        return {'id': obj.recipient_group_id, 'name': obj.recipient_group.name}
+
+    def validate(self, attrs):
+        target_type = attrs.get('target_type', AlertNotificationRoute.TARGET_FIXED)
+        recipient_group = attrs.get('recipient_group')
+        trigger = attrs.get('trigger', AlertNotificationRoute.TRIGGER_IMMEDIATE)
+        after_minutes = int(attrs.get('after_minutes') or 0)
+        if target_type == AlertNotificationRoute.TARGET_RECIPIENT_GROUP and not recipient_group:
+            raise serializers.ValidationError({'recipient_group': '指定接收组路由必须选择接收组'})
+        if target_type != AlertNotificationRoute.TARGET_RECIPIENT_GROUP and recipient_group:
+            raise serializers.ValidationError({'recipient_group': '只有指定接收组路由可以设置接收组'})
+        if trigger == AlertNotificationRoute.TRIGGER_UNACKNOWLEDGED and after_minutes <= 0:
+            raise serializers.ValidationError({'after_minutes': '未认领升级路由的等待时间必须大于 0'})
+        if trigger == AlertNotificationRoute.TRIGGER_IMMEDIATE:
+            attrs['after_minutes'] = 0
+            attrs['escalate_to_level'] = ''
+        return attrs
+
+
 class AlertNotificationPolicySerializer(serializers.ModelSerializer):
-    channel_ids = serializers.PrimaryKeyRelatedField(queryset=AlertNotificationChannel.objects.all(), many=True, write_only=True, required=False)
-    recipient_group_ids = serializers.PrimaryKeyRelatedField(queryset=AlertRecipientGroup.objects.all(), many=True, write_only=True, required=False)
-    channels = serializers.SerializerMethodField()
-    recipient_groups = serializers.SerializerMethodField()
-    metric_datasource_detail = serializers.SerializerMethodField()
-    external_alert_source_detail = serializers.SerializerMethodField()
+    routes = AlertNotificationRouteSerializer(many=True, required=False)
+    alert_source_detail = serializers.SerializerMethodField()
 
     class Meta:
         model = AlertNotificationPolicy
         fields = [
-            'id', 'name', 'metric_datasource', 'metric_datasource_detail',
-            'external_alert_source', 'external_alert_source_detail', 'matchers', 'min_level',
-            'priority', 'continue_matching', 'channel_ids', 'channels', 'recipient_group_ids',
-            'recipient_groups', 'level_channel_ids', 'group_by', 'group_wait_seconds', 'group_interval_seconds',
-            'repeat_interval_minutes', 'storm_threshold', 'mute_schedule', 'inhibition_matchers', 'escalation_steps',
-            'notify_on_fire', 'notify_on_resolved', 'notify_on_analysis', 'use_resource_contacts',
-            'is_enabled', 'description', 'created_at', 'updated_at',
+            'id', 'name', 'alert_source', 'alert_source_detail', 'matchers', 'min_level',
+            'priority', 'continue_matching', 'routes', 'group_by', 'group_wait_seconds',
+            'group_interval_seconds', 'repeat_interval_minutes', 'storm_threshold',
+            'mute_schedule', 'inhibition_matchers', 'notify_on_fire', 'notify_on_resolved',
+            'notify_on_analysis', 'is_enabled', 'description',
+            'created_at', 'updated_at',
         ]
 
-    def get_channels(self, obj):
-        return [
-            {'id': item.id, 'name': item.name, 'channel_type': item.channel_type, 'channel_type_display': item.get_channel_type_display()}
-            for item in obj.channels.all()
-        ]
-
-    def get_recipient_groups(self, obj):
-        return [{'id': item.id, 'name': item.name} for item in obj.recipient_groups.all()]
-
-    def get_metric_datasource_detail(self, obj):
-        datasource = obj.metric_datasource
-        if not datasource:
-            return None
-        return {'id': datasource.id, 'name': datasource.name, 'environment': datasource.environment, 'cluster_name': datasource.cluster_name}
-
-    def get_external_alert_source_detail(self, obj):
-        source = obj.external_alert_source
-        if not source:
-            return None
+    def get_alert_source_detail(self, obj):
+        source = obj.alert_source
         return {
             'id': source.id,
             'name': source.name,
@@ -1935,48 +1965,6 @@ class AlertNotificationPolicySerializer(serializers.ModelSerializer):
             'provider_display': source.get_provider_display(),
             'notify_enabled': source.notify_enabled,
         }
-
-    def validate(self, attrs):
-        metric_datasource = attrs.get('metric_datasource', getattr(self.instance, 'metric_datasource', None))
-        external_source = attrs.get('external_alert_source', getattr(self.instance, 'external_alert_source', None))
-        if metric_datasource and external_source:
-            raise serializers.ValidationError('指标数据源与外部告警接入源不能同时选择')
-        selected_channels = attrs.get('channel_ids')
-        if selected_channels is None and self.instance:
-            selected_channels = list(self.instance.channels.all())
-        selected_ids = {item.id for item in (selected_channels or [])}
-        routed_ids = {
-            channel_id
-            for channel_ids in (attrs.get('level_channel_ids', getattr(self.instance, 'level_channel_ids', {})) or {}).values()
-            for channel_id in channel_ids
-        }
-        if not routed_ids.issubset(selected_ids):
-            raise serializers.ValidationError({'level_channel_ids': '分级渠道必须包含在策略通知渠道中'})
-        return attrs
-
-    def validate_level_channel_ids(self, value):
-        if value in (None, ''):
-            return {}
-        if not isinstance(value, dict):
-            raise serializers.ValidationError('分级通知渠道必须是对象')
-        allowed_levels = {'info', 'warning', 'critical'}
-        normalized = {}
-        for level, channel_ids in value.items():
-            if level not in allowed_levels:
-                raise serializers.ValidationError(f'不支持的告警级别：{level}')
-            if not isinstance(channel_ids, list):
-                raise serializers.ValidationError(f'{level} 的渠道必须是列表')
-            try:
-                normalized[level] = list(dict.fromkeys(int(item) for item in channel_ids))
-            except (TypeError, ValueError):
-                raise serializers.ValidationError(f'{level} 包含无效渠道 ID')
-        existing_ids = set(AlertNotificationChannel.objects.filter(
-            id__in={item for items in normalized.values() for item in items},
-        ).values_list('id', flat=True))
-        requested_ids = {item for items in normalized.values() for item in items}
-        if existing_ids != requested_ids:
-            raise serializers.ValidationError('分级通知渠道包含不存在的渠道')
-        return normalized
 
     def validate_matchers(self, value):
         if not isinstance(value, list):
@@ -1994,22 +1982,47 @@ class AlertNotificationPolicySerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('最低级别无效')
         return value
 
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        routes = attrs.get('routes')
+        if routes is None:
+            return attrs
+
+        seen = set()
+        for index, route in enumerate(routes):
+            recipient_group = route.get('recipient_group')
+            key = (
+                route.get('level'),
+                route.get('trigger', AlertNotificationRoute.TRIGGER_IMMEDIATE),
+                getattr(route.get('channel'), 'id', None),
+                route.get('target_type', AlertNotificationRoute.TARGET_FIXED),
+                getattr(recipient_group, 'id', None),
+            )
+            if key in seen:
+                raise serializers.ValidationError({
+                    'routes': f'第 {index + 1} 条通知路由与前面的路由重复',
+                })
+            seen.add(key)
+        return attrs
+
+    def _replace_routes(self, instance, routes):
+        instance.routes.all().delete()
+        for route in routes:
+            AlertNotificationRoute.objects.create(policy=instance, **route)
+
+    @transaction.atomic
     def create(self, validated_data):
-        channels = validated_data.pop('channel_ids', [])
-        groups = validated_data.pop('recipient_group_ids', [])
+        routes = validated_data.pop('routes', [])
         instance = super().create(validated_data)
-        instance.channels.set(channels)
-        instance.recipient_groups.set(groups)
+        self._replace_routes(instance, routes)
         return instance
 
+    @transaction.atomic
     def update(self, instance, validated_data):
-        channels = validated_data.pop('channel_ids', None)
-        groups = validated_data.pop('recipient_group_ids', None)
+        routes = validated_data.pop('routes', None)
         instance = super().update(instance, validated_data)
-        if channels is not None:
-            instance.channels.set(channels)
-        if groups is not None:
-            instance.recipient_groups.set(groups)
+        if routes is not None:
+            self._replace_routes(instance, routes)
         return instance
 
 
@@ -2178,22 +2191,53 @@ class AlertClaimSerializer(serializers.ModelSerializer):
         fields = ['id', 'claimant', 'claimed_at']
 
 
-class ExternalAlertSourceSerializer(serializers.ModelSerializer):
+class AlertSourceOwnerSerializer(serializers.ModelSerializer):
+    recipient_detail = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AlertSourceOwner
+        fields = ['id', 'recipient', 'recipient_detail', 'role', 'levels', 'is_enabled']
+        read_only_fields = ['id']
+
+    def get_recipient_detail(self, obj):
+        recipient = obj.recipient
+        return {
+            'id': recipient.id,
+            'name': recipient.name,
+            'preferred_channels': recipient.preferred_channels,
+            'is_enabled': recipient.is_enabled,
+        }
+
+    def validate_levels(self, value):
+        allowed = {'info', 'warning', 'critical'}
+        normalized = list(dict.fromkeys(value or []))
+        if not normalized or not set(normalized).issubset(allowed):
+            raise serializers.ValidationError('负责级别必须至少包含信息、警告或严重中的一个')
+        return normalized
+
+
+class AlertSourceSerializer(serializers.ModelSerializer):
     provider_display = serializers.CharField(source='get_provider_display', read_only=True)
     endpoint = serializers.SerializerMethodField()
     token_configured = serializers.SerializerMethodField()
     health_status = serializers.SerializerMethodField()
     active_alert_count = serializers.IntegerField(read_only=True, default=0)
+    rule_count = serializers.IntegerField(read_only=True, default=0)
+    policy_count = serializers.IntegerField(read_only=True, default=0)
+    owner_bindings = AlertSourceOwnerSerializer(many=True, required=False)
+    metric_datasource_detail = serializers.SerializerMethodField()
 
     class Meta:
-        model = ExternalAlertSource
+        model = AlertSource
         fields = [
             'id', 'name', 'code', 'public_id', 'provider', 'provider_display',
-            'endpoint', 'token_configured', 'token_hint', 'health_status',
+            'metric_datasource', 'metric_datasource_detail', 'field_mapping', 'fingerprint_fields',
+            'endpoint', 'token_configured', 'token_hint', 'health_status', 'owner_bindings',
             'is_enabled', 'notify_enabled', 'analyze_enabled', 'rate_limit_per_minute',
             'last_received_at', 'last_success_at', 'last_error_at', 'last_error',
             'total_requests', 'accepted_requests', 'rejected_requests', 'received_alerts',
-            'active_alert_count', 'description', 'created_at', 'updated_at',
+            'active_alert_count', 'rule_count', 'policy_count',
+            'description', 'created_at', 'updated_at',
         ]
         read_only_fields = [
             'public_id', 'token_hint', 'last_received_at', 'last_success_at', 'last_error_at',
@@ -2203,6 +2247,8 @@ class ExternalAlertSourceSerializer(serializers.ModelSerializer):
         extra_kwargs = {'code': {'required': False}}
 
     def get_endpoint(self, obj):
+        if obj.provider == AlertSource.PROVIDER_PROMETHEUS:
+            return ''
         path = f'/api/ops/alert-ingress/{obj.public_id}/'
         request = self.context.get('request')
         return request.build_absolute_uri(path) if request else path
@@ -2215,9 +2261,23 @@ class ExternalAlertSourceSerializer(serializers.ModelSerializer):
             return 'disabled'
         if obj.last_error_at and (not obj.last_success_at or obj.last_error_at > obj.last_success_at):
             return 'error'
+        if obj.provider == AlertSource.PROVIDER_PROMETHEUS:
+            return 'healthy' if obj.metric_datasource_id and obj.metric_datasource.is_enabled else 'error'
         if obj.last_success_at:
             return 'healthy'
         return 'pending'
+
+    def get_metric_datasource_detail(self, obj):
+        datasource = obj.metric_datasource
+        if not datasource:
+            return None
+        return {
+            'id': datasource.id,
+            'name': datasource.name,
+            'environment': datasource.environment,
+            'cluster_name': datasource.cluster_name,
+            'is_enabled': datasource.is_enabled,
+        }
 
     def validate_code(self, value):
         normalized = slugify(value or '').strip('-')
@@ -2232,18 +2292,71 @@ class ExternalAlertSourceSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('接入源类型创建后不可修改')
         return value
 
+    def validate(self, attrs):
+        provider = attrs.get('provider', getattr(self.instance, 'provider', None))
+        datasource = attrs.get('metric_datasource', getattr(self.instance, 'metric_datasource', None))
+        is_enabled = attrs.get('is_enabled', getattr(self.instance, 'is_enabled', True))
+        if provider == AlertSource.PROVIDER_PROMETHEUS and not datasource:
+            raise serializers.ValidationError({'metric_datasource': 'Prometheus 告警源必须绑定指标数据源'})
+        if provider != AlertSource.PROVIDER_PROMETHEUS and datasource:
+            raise serializers.ValidationError({'metric_datasource': '外部告警源不能绑定指标数据源'})
+        owners = attrs.get('owner_bindings')
+        if owners is None and self.instance is not None:
+            primary_count = self.instance.owner_bindings.filter(
+                role=AlertSourceOwner.ROLE_PRIMARY,
+                is_enabled=True,
+            ).count()
+        else:
+            recipients = [item.get('recipient').id for item in (owners or [])]
+            if len(recipients) != len(set(recipients)):
+                raise serializers.ValidationError({'owner_bindings': '同一接收人不能重复配置'})
+            primary_count = sum(
+                1 for item in (owners or [])
+                if item.get('role') == AlertSourceOwner.ROLE_PRIMARY and item.get('is_enabled', True)
+            )
+        if primary_count > 1:
+            raise serializers.ValidationError({'owner_bindings': '一个告警源只能有一名启用的主负责人'})
+        if is_enabled and primary_count != 1:
+            raise serializers.ValidationError({'owner_bindings': '启用告警源必须配置一名主负责人'})
+        return attrs
+
     def validate_rate_limit_per_minute(self, value):
         if not 1 <= value <= 10000:
             raise serializers.ValidationError('每分钟请求上限必须在 1 到 10000 之间')
         return value
 
+    def _replace_owners(self, source, owners):
+        source.owner_bindings.all().delete()
+        for owner in owners:
+            AlertSourceOwner.objects.create(alert_source=source, **owner)
+
+    @transaction.atomic
     def create(self, validated_data):
+        owners = validated_data.pop('owner_bindings', [])
+        provider = validated_data.get('provider')
+        if not validated_data.get('fingerprint_fields'):
+            if provider == AlertSource.PROVIDER_ALERTMANAGER:
+                validated_data['fingerprint_fields'] = [
+                    'alertname', 'cluster', 'namespace', 'pod', 'container', 'uid', 'instance',
+                ]
+            elif provider == AlertSource.PROVIDER_ZABBIX:
+                validated_data['fingerprint_fields'] = ['trigger_id', 'zabbix_host']
         if not validated_data.get('code'):
-            base = slugify(validated_data.get('name') or '') or validated_data.get('provider') or 'external-alert'
+            base = slugify(validated_data.get('name') or '') or validated_data.get('provider') or 'alert-source'
             candidate = base[:54]
             suffix = uuid.uuid4().hex[:8]
             validated_data['code'] = f'{candidate}-{suffix}'
-        return super().create(validated_data)
+        source = super().create(validated_data)
+        self._replace_owners(source, owners)
+        return source
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        owners = validated_data.pop('owner_bindings', None)
+        source = super().update(instance, validated_data)
+        if owners is not None:
+            self._replace_owners(source, owners)
+        return source
 
 
 class ExternalAlertIngressLogSerializer(serializers.ModelSerializer):
@@ -2266,7 +2379,7 @@ class AlertSerializer(serializers.ModelSerializer):
     current_user_claimed = serializers.SerializerMethodField()
     actions = AlertActionSerializer(many=True, read_only=True)
     recent_notifications = serializers.SerializerMethodField()
-    ingress_source_detail = serializers.SerializerMethodField()
+    alert_source_detail = serializers.SerializerMethodField()
     environment_display = serializers.SerializerMethodField()
     scope_display = serializers.SerializerMethodField()
     source_display = serializers.SerializerMethodField()
@@ -2324,30 +2437,28 @@ class AlertSerializer(serializers.ModelSerializer):
         logs = obj.notification_logs.all()[:5]
         return AlertNotificationLogSerializer(logs, many=True).data
 
-    def get_ingress_source_detail(self, obj):
-        source = obj.ingress_source
+    def get_alert_source_detail(self, obj):
+        source = obj.alert_source
         if not source:
             return None
         return {'id': source.id, 'name': source.name, 'code': source.code, 'provider': source.provider}
 
     def get_environment_display(self, obj):
-        if obj.ingress_source_id and obj.source_type in {Alert.SOURCE_ALERTMANAGER, Alert.SOURCE_ZABBIX}:
-            return obj.ingress_source.name
+        if obj.alert_source_id:
+            return obj.alert_source.name
         if obj.knowledge_environment_id:
             return obj.knowledge_environment.name
         labels = obj.labels or {}
         return labels.get('environment_display_name') or obj.environment or ''
 
     def get_scope_display(self, obj):
-        if obj.ingress_source_id and obj.source_type in {Alert.SOURCE_ALERTMANAGER, Alert.SOURCE_ZABBIX}:
-            return '外部接入'
-        if obj.knowledge_environment_id:
-            return obj.knowledge_environment.name
-        return '未绑定业务上下文'
+        if obj.alert_source_id:
+            return obj.alert_source.get_provider_display()
+        return '未知告警源'
 
     def get_source_display(self, obj):
-        if obj.ingress_source_id:
-            return obj.ingress_source.name
+        if obj.alert_source_id:
+            return obj.alert_source.name
         return obj.source or obj.get_source_type_display()
 
     def get_cluster_display(self, obj):

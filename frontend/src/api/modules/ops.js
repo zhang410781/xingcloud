@@ -82,13 +82,21 @@ export const startProcessTransactionTicket = (id) => request.post(`/transaction-
 export const completeTransactionTicket = (id) => request.post(`/transaction-tickets/${id}/complete/`)
 
 export const getAlerts = (params) => request.get('/alerts/', { params })
-export const getExternalAlertSources = (params) => request.get('/external-alert-sources/', { params })
-export const createExternalAlertSource = (data) => request.post('/external-alert-sources/', data)
-export const updateExternalAlertSource = (id, data) => request.patch(`/external-alert-sources/${id}/`, data)
-export const deleteExternalAlertSource = (id) => request.delete(`/external-alert-sources/${id}/`)
-export const rotateExternalAlertSourceToken = (id) => request.post(`/external-alert-sources/${id}/rotate-token/`)
-export const getExternalAlertSourceLogs = (id, params) => request.get(`/external-alert-sources/${id}/ingress-logs/`, { params })
-export const previewExternalAlertSourcePayload = (id, payload) => request.post(`/external-alert-sources/${id}/preview-payload/`, { payload })
+export const getAlertSources = (params) => request.get('/alert-sources/', { params })
+export const createAlertSource = (data) => request.post('/alert-sources/', data)
+export const updateAlertSource = (id, data) => request.patch(`/alert-sources/${id}/`, data)
+export const deleteAlertSource = (id) => request.delete(`/alert-sources/${id}/`)
+export const rotateAlertSourceToken = (id) => request.post(`/alert-sources/${id}/rotate-token/`)
+export const getAlertSourceLogs = (id, params) => request.get(`/alert-sources/${id}/ingress-logs/`, { params })
+export const previewAlertSourcePayload = (id, payload) => request.post(`/alert-sources/${id}/preview-payload/`, { payload })
+// Legacy component aliases; all requests use the unified alert-source API.
+export const getExternalAlertSources = getAlertSources
+export const createExternalAlertSource = createAlertSource
+export const updateExternalAlertSource = updateAlertSource
+export const deleteExternalAlertSource = deleteAlertSource
+export const rotateExternalAlertSourceToken = rotateAlertSourceToken
+export const getExternalAlertSourceLogs = getAlertSourceLogs
+export const previewExternalAlertSourcePayload = previewAlertSourcePayload
 export const getAlert = (id) => request.get(`/alerts/${id}/`)
 export const getAlertSummary = (params) => request.get('/alerts/summary/', { params })
 export const getAlertGroups = (params) => request.get('/alerts/groups/', { params })
@@ -113,6 +121,11 @@ export const updateAlertRule = (id, data) => request.put(`/alert-rules/${id}/`, 
 export const patchAlertRule = (id, data) => request.patch(`/alert-rules/${id}/`, data)
 export const deleteAlertRule = (id) => request.delete(`/alert-rules/${id}/`)
 export const getAlertRuleTemplates = (params) => request.get('/alert-rule-templates/', { params })
+export const createAlertRuleTemplate = (data) => request.post('/alert-rule-templates/', data)
+export const updateAlertRuleTemplate = (id, data) => request.patch(`/alert-rule-templates/${id}/`, data)
+export const submitAlertRuleTemplate = (id) => request.post(`/alert-rule-templates/${id}/submit-review/`)
+export const publishAlertRuleTemplate = (id) => request.post(`/alert-rule-templates/${id}/publish/`)
+export const archiveAlertRuleTemplate = (id) => request.post(`/alert-rule-templates/${id}/archive/`)
 export const instantiateAlertRule = (data) => request.post('/alert-rules/instantiate/', data)
 export const triggerAlertRule = (id, data = {}) => request.post(`/alert-rules/${id}/trigger/`, data)
 export const evaluateAlertRule = (id, data = {}) => request.post(`/alert-rules/${id}/evaluate/`, data)

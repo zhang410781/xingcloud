@@ -14,8 +14,6 @@
       </div>
     </section>
 
-    <ObservabilityRouteTabs group="observability" />
-
     <section class="panel integration-toolbar">
       <el-segmented v-model="category" :options="categoryOptions" size="small" />
       <el-input v-model="keyword" clearable size="small" placeholder="搜索 MySQL / Redis / Kafka" :prefix-icon="Search" />
@@ -42,7 +40,6 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Connection, Histogram, RefreshRight, Search } from '@element-plus/icons-vue'
-import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
 import IntegrationCard from '@/components/observability/IntegrationCard.vue'
 import {
   getObservabilityIntegrations,

@@ -51,7 +51,8 @@ def build_rule_fingerprint(rule, labels=None):
 
 def build_platform_alert_payload(rule, payload=None, status=None):
     payload = _dict(payload)
-    canonical_environment = ''
+    alert_source = rule.alert_source
+    datasource = alert_source.metric_datasource if alert_source else None
     labels = {
         **_dict(rule.labels),
         **_dict(payload.get('labels')),
@@ -61,23 +62,17 @@ def build_platform_alert_payload(rule, payload=None, status=None):
         'alert_rule_code': rule.code,
         'alert_rule_source_type': rule.source_type,
     })
-    if rule.metric_datasource_id:
-        labels['metric_datasource_id'] = str(rule.metric_datasource_id)
-        if rule.metric_datasource:
-            labels['metric_datasource_name'] = rule.metric_datasource.name
-            contexts = list(
-                rule.metric_datasource.aiops_knowledge_environments
-                .filter(is_enabled=True)
-                .order_by('id')[:2]
-            )
-            if len(contexts) == 1:
-                canonical_environment = contexts[0].code
-                labels['environment'] = canonical_environment
-                labels['environment_display_name'] = contexts[0].name
-            elif rule.metric_datasource.environment:
-                labels.setdefault('environment', rule.metric_datasource.environment)
-            if rule.metric_datasource.cluster_name:
-                labels.setdefault('cluster', rule.metric_datasource.cluster_name)
+    if alert_source:
+        labels['alert_source_id'] = str(alert_source.id)
+        labels['alert_source_code'] = alert_source.code
+        labels['alert_source_name'] = alert_source.name
+    if datasource:
+        labels['metric_datasource_id'] = str(datasource.id)
+        labels['metric_datasource_name'] = datasource.name
+        if datasource.environment:
+            labels.setdefault('environment', datasource.environment)
+        if datasource.cluster_name:
+            labels.setdefault('cluster', datasource.cluster_name)
     annotations = {
         **_dict(rule.annotations),
         **_dict(payload.get('annotations')),
@@ -93,19 +88,20 @@ def build_platform_alert_payload(rule, payload=None, status=None):
         labels.get('service'),
         labels.get('instance'),
     )
-    source_type = Alert.SOURCE_PLATFORM
+    source_type = Alert.SOURCE_PROMETHEUS if alert_source else Alert.SOURCE_PLATFORM
     return {
         'title': title,
         'level': _first(payload.get('level'), rule.level, 'warning'),
         'status': status or payload.get('status') or Alert.STATUS_ACTIVE,
-        'source': 'Xing-Cloud 告警规则',
+        'source': alert_source.code if alert_source else 'Xing-Cloud 告警规则',
         'source_type': source_type,
+        'alert_source': alert_source,
         'external_id': f'alert-rule:{rule.id}',
         'fingerprint': build_rule_fingerprint(rule, labels),
         'group_key': _first(payload.get('group_key')),
         'message': _first(payload.get('message'), annotations.get('message'), annotations.get('description'), rule.description, title),
         'service': _first(payload.get('service'), labels.get('service'), labels.get('app'), labels.get('job_name')),
-        'environment': _first(canonical_environment, payload.get('environment'), labels.get('environment'), labels.get('env')),
+        'environment': _first(payload.get('environment'), labels.get('environment'), labels.get('env')),
         'cluster': _first(payload.get('cluster'), labels.get('cluster')),
         'namespace': _first(payload.get('namespace'), labels.get('namespace')),
         'region': _first(payload.get('region'), labels.get('region')),
@@ -129,7 +125,8 @@ def build_platform_alert_payload(rule, payload=None, status=None):
                 'name': rule.name,
                 'category': rule.category,
                 'source_type': rule.source_type,
-                'metric_datasource_id': rule.metric_datasource_id,
+                'alert_source_id': rule.alert_source_id,
+                'metric_datasource_id': datasource.id if datasource else None,
                 'query_config': rule.query_config,
                 'condition': rule.condition,
             },

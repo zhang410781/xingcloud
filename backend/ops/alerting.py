@@ -24,6 +24,7 @@ from .models import (
     AlertNotificationChannel,
     AlertNotificationLog,
     AlertNotificationPolicy,
+    AlertNotificationRoute,
     AlertRecipient,
     AlertRecipientGroup,
     AlertRule,
@@ -142,10 +143,10 @@ def alert_dimension_value(alert, key):
         return ''
     if hasattr(alert, key):
         return _text(getattr(alert, key))
-    if key == 'ingress_source_id':
-        return _text(alert.ingress_source_id)
-    if key == 'ingress_source_code':
-        return _text(alert.ingress_source.code if alert.ingress_source_id else '')
+    if key in {'alert_source_id', 'ingress_source_id'}:
+        return _text(alert.alert_source_id)
+    if key in {'alert_source_code', 'ingress_source_code'}:
+        return _text(alert.alert_source.code if alert.alert_source_id else '')
     labels = alert.labels or {}
     annotations = alert.annotations or {}
     if key.startswith('label.'):
@@ -206,7 +207,7 @@ def upsert_alert(normalized, actor='system', action=None, action_note=None):
         'starts_at': normalized.get('starts_at'),
         'ends_at': normalized.get('ends_at') if status_value == Alert.STATUS_RESOLVED else None,
         'last_received_at': now,
-        'ingress_source': normalized.get('ingress_source'),
+        'alert_source': normalized.get('alert_source'),
         'binding_status': normalized.get('binding_status') or 'not_applicable',
     }
     defaults['host'] = _host_for(defaults['resource'], defaults['labels'])
@@ -284,9 +285,9 @@ def _alert_value_map(alert):
         'metric_name': alert.metric_name,
         'claimed_by': alert.claimed_by,
     }
-    if alert.ingress_source_id:
-        values['ingress_source_id'] = alert.ingress_source_id
-        values['ingress_source_code'] = alert.ingress_source.code
+    if alert.alert_source_id:
+        values['alert_source_id'] = alert.alert_source_id
+        values['alert_source_code'] = alert.alert_source.code
     values.update({f'label.{key}': value for key, value in (alert.labels or {}).items()})
     values.update({f'annotation.{key}': value for key, value in (alert.annotations or {}).items()})
     for key, value in (alert.labels or {}).items():
@@ -413,9 +414,9 @@ def _interaction_url(alert, action, provider='', request=None):
 
 def _alert_context(alert, action='fire'):
     labels = alert.labels if isinstance(alert.labels, dict) else {}
-    if alert.ingress_source_id and alert.source_type in {Alert.SOURCE_ALERTMANAGER, Alert.SOURCE_ZABBIX}:
-        environment_display = alert.ingress_source.name
-        source_display = alert.ingress_source.name
+    if alert.alert_source_id:
+        environment_display = alert.alert_source.name
+        source_display = alert.alert_source.name
     elif alert.knowledge_environment_id:
         environment_display = alert.knowledge_environment.name
         source_display = alert.source
@@ -823,7 +824,7 @@ def _default_body(alert, action='fire'):
     status_text = '🟢 已恢复' if action == 'resolved' else '🔥 告警中'
     description = _text(_dict(alert.annotations).get('description')) or '无描述'
     display_context = _alert_context(alert, action)
-    scope_label = '接入源' if alert.ingress_source_id else '业务上下文'
+    scope_label = '告警源'
     lines = [
         f'📛 **告警名称：** {alert.title}',
         f'⚡ **严重程度：** {level_icon} {str(alert.level or "warning").upper()}',
@@ -887,11 +888,11 @@ def build_recipient_contacts(*, groups=None, recipients=None):
             result['sms_phones'].add(recipient.phone)
         if recipient.phone and (legacy_mode or 'voice' in preferred):
             result['voice_phones'].add(recipient.phone)
-        if recipient.dingtalk_user_id:
+        if recipient.dingtalk_user_id and (legacy_mode or 'dingtalk' in preferred):
             result['dingtalk_user_ids'].add(recipient.dingtalk_user_id)
-        if recipient.feishu_user_id:
+        if recipient.feishu_user_id and (legacy_mode or 'feishu' in preferred):
             result['feishu_user_ids'].add(recipient.feishu_user_id)
-        if recipient.wecom_user_id:
+        if recipient.wecom_user_id and (legacy_mode or 'wecom' in preferred):
             result['wecom_user_ids'].add(recipient.wecom_user_id)
         if recipient.user and recipient.user.email and (legacy_mode or 'email' in preferred):
             result['emails'].add(recipient.user.email)
@@ -899,21 +900,35 @@ def build_recipient_contacts(*, groups=None, recipients=None):
     return {key: sorted(value) for key, value in result.items()}
 
 
-def _recipient_contacts(rule=None, policy=None, alert=None):
+def _recipient_contacts(rule=None, policy=None, route=None, alert=None, level=None):
     config = (rule.notify_config or {}) if rule else {}
-    if policy is not None:
-        groups = policy.recipient_groups.filter(is_enabled=True).prefetch_related('recipients', 'users')
-    else:
+    groups = []
+    recipients = []
+    recipient_level = level or (alert.level if alert else '')
+    if route is not None:
+        if route.target_type == AlertNotificationRoute.TARGET_RECIPIENT_GROUP and route.recipient_group_id:
+            groups = AlertRecipientGroup.objects.filter(
+                pk=route.recipient_group_id, is_enabled=True,
+            ).prefetch_related('recipients', 'users')
+        elif route.target_type == AlertNotificationRoute.TARGET_SOURCE_OWNERS and alert and alert.alert_source_id:
+            bindings = alert.alert_source.owner_bindings.select_related('recipient').filter(is_enabled=True)
+            recipients = [
+                binding.recipient for binding in bindings
+                if binding.recipient.is_enabled and recipient_level in (binding.levels or [])
+            ]
+    elif rule is not None:
         group_ids = _list(config.get('recipient_group_ids'))
         groups = AlertRecipientGroup.objects.filter(id__in=group_ids, is_enabled=True).prefetch_related('recipients', 'users')
     resource_recipients = []
-    if alert is not None and policy is not None and policy.use_resource_contacts and alert.matched_resource_id:
+    use_resource_contacts = bool(
+        route is not None and route.target_type == AlertNotificationRoute.TARGET_RESOURCE_CONTACTS
+    )
+    if alert is not None and use_resource_contacts and alert.matched_resource_id:
         from resource_center.alert_matching import resource_contact_recipients
-        from .models import AlertRecipient
 
-        recipient_ids = resource_contact_recipients(alert.matched_resource, level=alert.level)
+        recipient_ids = resource_contact_recipients(alert.matched_resource, level=recipient_level)
         resource_recipients = AlertRecipient.objects.filter(id__in=recipient_ids, is_enabled=True)
-    return build_recipient_contacts(groups=groups, recipients=resource_recipients)
+    return build_recipient_contacts(groups=groups, recipients=[*recipients, *resource_recipients])
 
 
 def _post_json(url, payload, timeout=8, headers=None):
@@ -1228,7 +1243,9 @@ def _alert_rule(alert):
     if not rule_id:
         return None
     try:
-        return AlertRule.objects.select_related('metric_datasource').get(pk=rule_id, is_enabled=True, is_template=False, notify_enabled=True)
+        return AlertRule.objects.select_related('alert_source', 'alert_source__metric_datasource').get(
+            pk=rule_id, is_enabled=True, is_template=False, notify_enabled=True,
+        )
     except (AlertRule.DoesNotExist, TypeError, ValueError):
         return None
 
@@ -1269,6 +1286,70 @@ def _successful_fire_channel_ids(alert, policy=None):
     if policy is not None:
         logs = logs.filter(policy_id=policy.id)
     return set(logs.values_list('channel_id', flat=True))
+
+
+def _successful_fire_logs(alert, policy=None):
+    """Return successful deliveries from the current alert activity cycle."""
+    logs = AlertNotificationLog.objects.filter(
+        alert=alert,
+        action='fire',
+        status=AlertNotificationLog.STATUS_SUCCESS,
+        created_at__gte=_activity_cycle_start(alert),
+    ).order_by('created_at', 'id')
+    if policy is not None:
+        logs = logs.filter(policy_id=policy.id)
+    return list(logs)
+
+
+def _analysis_policies(alert):
+    """Policies that actually delivered this cycle's alert notification.
+
+    The alert level may have changed after the first delivery.  Looking up
+    policies from delivery logs keeps the analysis attached to that delivery
+    instead of re-matching against the alert's new level.
+    """
+    policy_ids = {
+        log.policy_id for log in _successful_fire_logs(alert) if log.policy_id
+    }
+    if not policy_ids or not alert.alert_source_id:
+        return []
+    return list(AlertNotificationPolicy.objects.filter(
+        id__in=policy_ids,
+        alert_source_id=alert.alert_source_id,
+        is_enabled=True,
+    ).select_related('alert_source').prefetch_related(
+        'routes__channel', 'routes__recipient_group',
+    ).order_by('priority', 'id'))
+
+
+def _analysis_routes_from_delivery(alert, policy):
+    """Resolve analysis routes from routes that sent the current cycle's alert."""
+    delivery_logs = _successful_fire_logs(alert, policy=policy)
+    if not delivery_logs:
+        return []
+
+    route_ids = set()
+    channel_ids = set()
+    for log in delivery_logs:
+        channel_ids.add(log.channel_id)
+        payload = log.request_payload if isinstance(log.request_payload, dict) else {}
+        try:
+            route_id = int(payload.get('route_id'))
+        except (TypeError, ValueError):
+            route_id = None
+        if route_id:
+            route_ids.add(route_id)
+
+    routes = policy.routes.filter(
+        is_enabled=True,
+        trigger=AlertNotificationRoute.TRIGGER_IMMEDIATE,
+        channel__is_enabled=True,
+    ).select_related('channel', 'recipient_group').order_by('sort_order', 'id')
+    if route_ids:
+        routes = routes.filter(id__in=route_ids)
+    else:
+        routes = routes.filter(channel_id__in=channel_ids)
+    return list(routes)
 
 
 def analysis_notification_gate(alert, policy=None):
@@ -1321,21 +1402,15 @@ def _policy_is_muted(policy, now=None):
 
 
 def resolve_notification_policies(alert, rule=None, metric_datasource_id=None):
-    labels = alert.labels if isinstance(alert.labels, dict) else {}
-    datasource_id = metric_datasource_id or getattr(rule, 'metric_datasource_id', None) or labels.get('metric_datasource_id')
-    queryset = AlertNotificationPolicy.objects.filter(is_enabled=True).select_related(
-        'metric_datasource', 'external_alert_source',
-    ).prefetch_related('channels', 'recipient_groups')
-    if alert.ingress_source_id:
-        queryset = queryset.filter(metric_datasource__isnull=True).filter(
-            Q(external_alert_source__isnull=True) | Q(external_alert_source_id=alert.ingress_source_id),
-        )
-    else:
-        queryset = queryset.filter(external_alert_source__isnull=True)
-        if datasource_id not in (None, ''):
-            queryset = queryset.filter(Q(metric_datasource__isnull=True) | Q(metric_datasource_id=datasource_id))
-        else:
-            queryset = queryset.filter(metric_datasource__isnull=True)
+    del rule, metric_datasource_id
+    if not alert.alert_source_id or not alert.alert_source.notify_enabled:
+        return []
+    queryset = AlertNotificationPolicy.objects.filter(
+        is_enabled=True,
+        alert_source_id=alert.alert_source_id,
+    ).select_related('alert_source').prefetch_related(
+        'routes__channel', 'routes__recipient_group',
+    )
     matched = []
     for policy in queryset.order_by('priority', 'id'):
         if policy.min_level and LEVEL_RANK.get(alert.level, 0) < LEVEL_RANK.get(policy.min_level, 0):
@@ -1348,17 +1423,13 @@ def resolve_notification_policies(alert, rule=None, metric_datasource_id=None):
     return matched
 
 
-def _policy_channels_for_alert(policy, alert, explicit_channel_ids=None, level=None):
-    queryset = policy.channels.filter(is_enabled=True)
-    channel_ids = [int(item) for item in _list(explicit_channel_ids) if str(item).isdigit()]
-    if channel_ids:
-        return list(queryset.filter(id__in=channel_ids))
-    level_routes = policy.level_channel_ids if isinstance(policy.level_channel_ids, dict) else {}
-    route_level = level or alert.level
-    if route_level in level_routes:
-        routed_ids = [int(item) for item in _list(level_routes.get(route_level)) if str(item).isdigit()]
-        return list(queryset.filter(id__in=routed_ids)) if routed_ids else []
-    return list(queryset)
+def _policy_routes_for_alert(policy, alert, *, trigger=AlertNotificationRoute.TRIGGER_IMMEDIATE, level=None):
+    return list(policy.routes.filter(
+        is_enabled=True,
+        trigger=trigger,
+        level=level or alert.level,
+        channel__is_enabled=True,
+    ).select_related('channel', 'recipient_group').order_by('sort_order', 'id'))
 
 
 def dispatch_alert_notifications(alert, action='fire', request=None, force=False):
@@ -1375,7 +1446,7 @@ def dispatch_alert_notifications(alert, action='fire', request=None, force=False
     if not rule and alert.source_type == Alert.SOURCE_PLATFORM:
         return []
 
-    policies = resolve_notification_policies(alert, rule=rule)
+    policies = _analysis_policies(alert) if action == 'analysis' else resolve_notification_policies(alert, rule=rule)
     if policies:
         logs = []
         now = timezone.now()
@@ -1389,16 +1460,15 @@ def dispatch_alert_notifications(alert, action='fire', request=None, force=False
                 allowed, _reason = analysis_notification_gate(alert, policy=policy)
                 if not allowed:
                     continue
-                analysis_channel_ids = _successful_fire_channel_ids(alert, policy=policy)
-            channels = _policy_channels_for_alert(policy, alert)
-            if analysis_channel_ids is not None:
-                channels = [channel for channel in channels if channel.id in analysis_channel_ids]
+                routes = _analysis_routes_from_delivery(alert, policy)
+            else:
+                routes = _policy_routes_for_alert(policy, alert)
             if action == 'resolved':
-                channels = [channel for channel in channels if channel.send_resolved]
-            if not channels:
+                routes = [route for route in routes if route.channel.send_resolved]
+            if not routes:
                 continue
             group_by = list(policy.group_by or DEFAULT_GROUP_BY)
-            source_dimension = 'ingress_source_code' if alert.ingress_source_id else 'label.metric_datasource_id'
+            source_dimension = 'alert_source_code'
             if source_dimension not in group_by:
                 group_by.insert(0, source_dimension)
             alert.group_key = compute_group_key(alert, group_by)
@@ -1422,44 +1492,22 @@ def dispatch_alert_notifications(alert, action='fire', request=None, force=False
                 created_at__gte=now - timedelta(minutes=policy.repeat_interval_minutes),
             ).exists():
                 continue
-            recipients = _recipient_contacts(policy=policy, alert=alert)
             logs.extend([
-                send_alert_notification(channel, alert, recipients, action=action, rule=rule, policy=policy, request=request)
-                for channel in channels
+                send_alert_notification(
+                    route.channel,
+                    alert,
+                    _recipient_contacts(policy=policy, route=route, alert=alert),
+                    action=action,
+                    rule=rule,
+                    policy=policy,
+                    request=request,
+                    notification_metadata={'route_id': route.id},
+                )
+                for route in routes
             ])
         return logs
 
-    if action == 'analysis':
-        return []
-
-    if not rule:
-        return []
-
-    config = rule.notify_config or {}
-    channel_ids = _list(config.get('channel_ids'))
-    channels = list(AlertNotificationChannel.objects.filter(id__in=channel_ids, is_enabled=True))
-    if action == 'resolved':
-        channels = [channel for channel in channels if channel.send_resolved]
-    if not channels:
-        return []
-
-    alert.group_key = compute_group_key(alert, DEFAULT_GROUP_BY)
-    alert.save(update_fields=['group_key', 'updated_at'])
-    since = timezone.now() - timedelta(minutes=rule.repeat_interval)
-    if not force and AlertNotificationLog.objects.filter(
-        alert=alert,
-        rule_id=rule.id,
-        action=action,
-        created_at__gte=since,
-        status=AlertNotificationLog.STATUS_SUCCESS,
-    ).exists():
-        return []
-
-    recipients = _recipient_contacts(rule)
-    return [
-        send_alert_notification(channel, alert, recipients, action=action, rule=rule, request=request)
-        for channel in channels
-    ]
+    return []
 
 
 def _storm_group_key(alert):
@@ -1560,83 +1608,75 @@ def apply_escalation_policy(alert, request=None):
     for policy in resolve_notification_policies(alert, rule=rule):
         if _policy_is_muted(policy, timezone.localtime(now)) or _policy_inhibits_alert(policy, alert):
             continue
-        steps = [item for item in (policy.escalation_steps or []) if isinstance(item, dict)]
-        steps.sort(key=lambda item: int(item.get('after_minutes') or 0))
-        next_index = int(alert.escalation_level or 0)
-        if next_index >= len(steps):
-            continue
-        step = steps[next_index]
-        after_minutes = max(int(step.get('after_minutes') or 0), 0)
-        if duration_minutes < after_minutes:
-            continue
-        step_number = next_index + 1
-        channels = _policy_channels_for_alert(
+        routes = _policy_routes_for_alert(
             policy,
             alert,
-            explicit_channel_ids=step.get('channel_ids'),
-            level='critical',
+            trigger=AlertNotificationRoute.TRIGGER_UNACKNOWLEDGED,
         )
-        if not channels:
-            continue
-        previous_success_ids = set()
-        recent_attempt_ids = set()
-        for log in AlertNotificationLog.objects.filter(
-            alert=alert,
-            policy_id=policy.id,
-            action='escalation',
-        ).only('channel_id', 'status', 'request_payload', 'created_at'):
-            payload = log.request_payload if isinstance(log.request_payload, dict) else {}
-            if int(payload.get('escalation_step') or 0) != step_number:
+        escalated = False
+        for route in routes:
+            if duration_minutes < route.after_minutes:
                 continue
-            if log.status == AlertNotificationLog.STATUS_SUCCESS:
-                previous_success_ids.add(log.channel_id)
-            elif log.created_at >= now - timedelta(seconds=60):
-                recent_attempt_ids.add(log.channel_id)
-        pending_channels = [
-            channel for channel in channels
-            if channel.id not in previous_success_ids and channel.id not in recent_attempt_ids
-        ]
-        recipients = _recipient_contacts(policy=policy, alert=alert)
-        logs = [
-            send_alert_notification(
-                channel,
+            attempts = AlertNotificationLog.objects.filter(
+                alert=alert,
+                policy_id=policy.id,
+                channel_id=route.channel_id,
+                action='escalation',
+            ).order_by('-created_at')
+            already_sent = False
+            attempted_recently = False
+            for log in attempts[:20]:
+                payload = log.request_payload if isinstance(log.request_payload, dict) else {}
+                if int(payload.get('route_id') or 0) != route.id:
+                    continue
+                already_sent = log.status == AlertNotificationLog.STATUS_SUCCESS
+                attempted_recently = log.created_at >= now - timedelta(seconds=60)
+                break
+            if already_sent or attempted_recently:
+                continue
+            previous_level = alert.level
+            notification_level = route.escalate_to_level or alert.level
+            log = send_alert_notification(
+                route.channel,
                 alert,
-                recipients,
+                _recipient_contacts(
+                    policy=policy,
+                    route=route,
+                    alert=alert,
+                    level=notification_level,
+                ),
                 action='escalation',
                 rule=rule,
                 policy=policy,
                 request=request,
-                notification_metadata={'escalation_step': step_number},
-                notification_level='critical',
+                notification_metadata={'route_id': route.id, 'after_minutes': route.after_minutes},
+                notification_level=notification_level,
             )
-            for channel in pending_channels
-        ]
-        successful_ids = previous_success_ids | {
-            log.channel_id for log in logs if log.status == AlertNotificationLog.STATUS_SUCCESS
-        }
-        if any(channel.id not in successful_ids for channel in channels):
-            return False
-        previous_level = alert.level
-        if LEVEL_RANK.get(alert.level, 0) < LEVEL_RANK['critical']:
-            alert.level = 'critical'
-        alert.escalation_level = step_number
-        alert.escalated_at = now
-        alert.save(update_fields=['level', 'escalation_level', 'escalated_at', 'updated_at'])
-        _save_action(
-            alert,
-            AlertAction.ACTION_ESCALATE,
-            actor='system',
-            note=f'通知策略 {policy.name} 执行第 {step_number} 级升级',
-            metadata={
-                'rule_id': getattr(rule, 'id', None),
-                'policy_id': policy.id,
-                'duration_minutes': duration_minutes,
-                'previous_level': previous_level,
-                'target_level': alert.level,
-                'channel_ids': [channel.id for channel in channels],
-            },
-        )
-        return True
+            if log.status != AlertNotificationLog.STATUS_SUCCESS:
+                continue
+            if LEVEL_RANK.get(notification_level, 0) > LEVEL_RANK.get(alert.level, 0):
+                alert.level = notification_level
+            alert.escalation_level = max(int(alert.escalation_level or 0), 1)
+            alert.escalated_at = now
+            alert.save(update_fields=['level', 'escalation_level', 'escalated_at', 'updated_at'])
+            _save_action(
+                alert,
+                AlertAction.ACTION_ESCALATE,
+                actor='system',
+                note=f'通知策略 {policy.name} 执行未认领升级',
+                metadata={
+                    'rule_id': getattr(rule, 'id', None),
+                    'policy_id': policy.id,
+                    'route_id': route.id,
+                    'duration_minutes': duration_minutes,
+                    'previous_level': previous_level,
+                    'target_level': alert.level,
+                    'channel_id': route.channel_id,
+                },
+            )
+            escalated = True
+        if escalated:
+            return True
 
     if not rule:
         return False

@@ -14,6 +14,10 @@ def generate_alert_token():
     return uuid.uuid4().hex
 
 
+def default_alert_owner_levels():
+    return ['warning', 'critical']
+
+
 class Host(models.Model):
     ENV_CHOICES = [
         ('prod', '\u751f\u4ea7'),
@@ -837,31 +841,30 @@ class DeploymentApprovalStep(models.Model):
         return f'{self.get_approver_type_display()}: {self.approver_value or "-"}'
 
 
-class ExternalAlertSource(models.Model):
+class AlertSource(models.Model):
+    PROVIDER_PROMETHEUS = 'prometheus'
     PROVIDER_ALERTMANAGER = 'alertmanager'
     PROVIDER_ZABBIX = 'zabbix'
     PROVIDER_CHOICES = [
+        (PROVIDER_PROMETHEUS, 'Prometheus'),
         (PROVIDER_ALERTMANAGER, 'Alertmanager'),
         (PROVIDER_ZABBIX, 'Zabbix'),
     ]
 
-    name = models.CharField('接入源名称', max_length=128)
-    code = models.SlugField('接入源编码', max_length=64, unique=True)
-    public_id = models.UUIDField('接入标识', default=uuid.uuid4, unique=True, editable=False)
-    provider = models.CharField('来源类型', max_length=32, choices=PROVIDER_CHOICES)
-    default_knowledge_environment = models.ForeignKey(
-        'aiops.AIOpsKnowledgeEnvironment',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='external_alert_sources',
-        verbose_name='默认业务上下文',
+    name = models.CharField('告警源名称', max_length=128)
+    code = models.SlugField('告警源编码', max_length=64, unique=True)
+    public_id = models.UUIDField('Webhook 接入标识', default=uuid.uuid4, unique=True, editable=False)
+    provider = models.CharField('告警源类型', max_length=32, choices=PROVIDER_CHOICES)
+    metric_datasource = models.OneToOneField(
+        'MetricDataSource', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='alert_source', verbose_name='Prometheus 指标数据源',
     )
-    mapping_rules = models.JSONField('业务上下文映射规则', default=list, blank=True)
+    field_mapping = models.JSONField('字段映射', default=dict, blank=True)
+    fingerprint_fields = models.JSONField('指纹字段', default=list, blank=True)
     token_digest = models.CharField('Token 摘要', max_length=64, blank=True, default='')
     token_hint = models.CharField('Token 尾号', max_length=8, blank=True, default='')
-    is_enabled = models.BooleanField('允许接入', default=True)
-    notify_enabled = models.BooleanField('发送通知', default=False)
+    is_enabled = models.BooleanField('启用告警源', default=True)
+    notify_enabled = models.BooleanField('发送通知', default=True)
     analyze_enabled = models.BooleanField('执行智能研判', default=True)
     rate_limit_per_minute = models.PositiveIntegerField('每分钟请求上限', default=120)
     last_received_at = models.DateTimeField('最近请求时间', null=True, blank=True)
@@ -873,13 +876,26 @@ class ExternalAlertSource(models.Model):
     rejected_requests = models.PositiveBigIntegerField('拒绝请求数', default=0)
     received_alerts = models.PositiveBigIntegerField('接收告警数', default=0)
     description = models.TextField('说明', blank=True, default='')
+    owners = models.ManyToManyField(
+        'AlertRecipient', through='AlertSourceOwner', blank=True,
+        related_name='owned_alert_sources', verbose_name='负责人',
+    )
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
 
     class Meta:
-        verbose_name = '外部告警接入源'
-        verbose_name_plural = '外部告警接入源'
+        verbose_name = '告警源'
+        verbose_name_plural = '告警源'
         ordering = ['name', 'id']
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(provider='prometheus', metric_datasource__isnull=False)
+                    | ~models.Q(provider='prometheus')
+                ),
+                name='ops_alert_source_prometheus_ds',
+            ),
+        ]
 
     def issue_token(self):
         token = secrets.token_urlsafe(32)
@@ -906,7 +922,7 @@ class ExternalAlertIngressLog(models.Model):
         (STATUS_ERROR, '处理失败'),
     ]
 
-    source = models.ForeignKey(ExternalAlertSource, on_delete=models.CASCADE, related_name='ingress_logs', verbose_name='接入源')
+    source = models.ForeignKey(AlertSource, on_delete=models.CASCADE, related_name='ingress_logs', verbose_name='告警源')
     request_id = models.UUIDField('请求 ID', default=uuid.uuid4, unique=True, editable=False)
     status = models.CharField('状态', max_length=16, choices=STATUS_CHOICES)
     http_status = models.PositiveSmallIntegerField('HTTP 状态码', default=200)
@@ -926,10 +942,12 @@ class ExternalAlertIngressLog(models.Model):
 
 class Alert(models.Model):
     SOURCE_PLATFORM = 'platform'
+    SOURCE_PROMETHEUS = 'prometheus'
     SOURCE_ZABBIX = 'zabbix'
     SOURCE_ALERTMANAGER = 'alertmanager'
     SOURCE_TYPE_CHOICES = [
         (SOURCE_PLATFORM, '平台告警规则'),
+        (SOURCE_PROMETHEUS, 'Prometheus'),
         (SOURCE_ZABBIX, 'Zabbix'),
         (SOURCE_ALERTMANAGER, 'Alertmanager'),
     ]
@@ -976,13 +994,13 @@ class Alert(models.Model):
         default='unmatched', db_index=True,
     )
     resource_match_reason = models.CharField('资源匹配依据', max_length=255, blank=True, default='')
-    ingress_source = models.ForeignKey(
-        ExternalAlertSource,
+    alert_source = models.ForeignKey(
+        AlertSource,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
         related_name='alerts',
-        verbose_name='外部告警接入源',
+        verbose_name='告警源',
     )
     binding_status = models.CharField(
         '业务上下文绑定状态',
@@ -1039,7 +1057,7 @@ class Alert(models.Model):
             models.Index(fields=['knowledge_environment', 'status', 'level'], name='ops_alert_ctx_status_level_idx'),
             models.Index(fields=['status', 'level']),
             models.Index(fields=['source_type', 'source']),
-            models.Index(fields=['ingress_source', 'binding_status']),
+            models.Index(fields=['alert_source', 'status'], name='ops_alert_source_status_idx'),
             models.Index(fields=['service', 'environment']),
             models.Index(fields=['cluster', 'namespace']),
             models.Index(fields=['resource_type', 'resource']),
@@ -1091,9 +1109,19 @@ class AlertRule(models.Model):
         'self', on_delete=models.SET_NULL, null=True, blank=True,
         related_name='instances', verbose_name='来源模板',
     )
-    metric_datasource = models.ForeignKey(
-        'MetricDataSource', on_delete=models.SET_NULL, null=True, blank=True,
-        related_name='alert_rules', verbose_name='指标数据源',
+    alert_source = models.ForeignKey(
+        AlertSource, on_delete=models.CASCADE, null=True, blank=True,
+        related_name='rules', verbose_name='告警源',
+    )
+    template_status = models.CharField(
+        '模板状态', max_length=16,
+        choices=[('draft', '草稿'), ('review', '待审核'), ('published', '已发布'), ('archived', '已归档')],
+        default='draft', db_index=True,
+    )
+    template_version = models.PositiveIntegerField('模板版本', default=1)
+    template_owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='alert_rule_templates', verbose_name='模板创建人',
     )
     notify_config = models.JSONField('通知配置', default=dict, blank=True)
     group_window = models.PositiveIntegerField('聚合窗口(分钟)', default=5)
@@ -1134,13 +1162,13 @@ class AlertRule(models.Model):
         indexes = [
             models.Index(fields=['source_type', 'is_enabled'], name='ops_ar_src_enabled_idx'),
             models.Index(fields=['last_evaluated_at', 'last_triggered_at'], name='ops_ar_eval_trigger_idx'),
-            models.Index(fields=['metric_datasource', 'is_template', 'is_enabled'], name='ops_ar_ds_tpl_enabled_idx'),
+            models.Index(fields=['alert_source', 'is_template', 'is_enabled'], name='ops_ar_src_tpl_enabled_idx'),
         ]
         constraints = [
             models.UniqueConstraint(
-                fields=['template', 'metric_datasource'],
-                condition=models.Q(is_template=False, template__isnull=False, metric_datasource__isnull=False),
-                name='uniq_ops_alert_rule_template_ds',
+                fields=['template', 'alert_source'],
+                condition=models.Q(is_template=False, template__isnull=False, alert_source__isnull=False),
+                name='uniq_ops_alert_rule_template_source',
             ),
         ]
 
@@ -1251,6 +1279,42 @@ class AlertRecipient(models.Model):
         return self.name
 
 
+class AlertSourceOwner(models.Model):
+    ROLE_PRIMARY = 'primary'
+    ROLE_COLLABORATOR = 'collaborator'
+    ROLE_CHOICES = [
+        (ROLE_PRIMARY, '主负责人'),
+        (ROLE_COLLABORATOR, '协同负责人'),
+    ]
+
+    alert_source = models.ForeignKey(
+        AlertSource, on_delete=models.CASCADE, related_name='owner_bindings', verbose_name='告警源',
+    )
+    recipient = models.ForeignKey(
+        AlertRecipient, on_delete=models.CASCADE, related_name='alert_source_bindings', verbose_name='负责人',
+    )
+    role = models.CharField('责任角色', max_length=16, choices=ROLE_CHOICES, default=ROLE_COLLABORATOR)
+    levels = models.JSONField('负责级别', default=default_alert_owner_levels, blank=True)
+    is_enabled = models.BooleanField('启用', default=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '告警源负责人'
+        verbose_name_plural = '告警源负责人'
+        ordering = ['alert_source_id', 'role', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['alert_source', 'recipient'], name='uniq_ops_alert_source_owner'),
+            models.UniqueConstraint(
+                fields=['alert_source'], condition=models.Q(role='primary', is_enabled=True),
+                name='uniq_ops_alert_source_primary_owner',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.alert_source}:{self.recipient}'
+
+
 class AlertRecipientGroup(models.Model):
     name = models.CharField('接收组名称', max_length=128, unique=True)
     description = models.CharField('说明', max_length=255, blank=True, default='')
@@ -1307,22 +1371,14 @@ class AlertNotificationChannel(models.Model):
 
 class AlertNotificationPolicy(models.Model):
     name = models.CharField('策略名称', max_length=128)
-    metric_datasource = models.ForeignKey(
-        'MetricDataSource', on_delete=models.SET_NULL, null=True, blank=True,
-        related_name='alert_notification_policies', verbose_name='指标数据源',
-    )
-    external_alert_source = models.ForeignKey(
-        'ExternalAlertSource', on_delete=models.CASCADE, null=True, blank=True,
-        related_name='notification_policies', verbose_name='外部告警接入源',
+    alert_source = models.ForeignKey(
+        AlertSource, on_delete=models.CASCADE,
+        related_name='notification_policies', verbose_name='告警源',
     )
     matchers = models.JSONField('标签匹配条件', default=list, blank=True)
     min_level = models.CharField('最低告警级别', max_length=16, blank=True, default='')
     priority = models.IntegerField('优先级', default=100, db_index=True)
     continue_matching = models.BooleanField('继续匹配后续策略', default=False)
-    channels = models.ManyToManyField(AlertNotificationChannel, blank=True, related_name='notification_policies', verbose_name='通知渠道')
-    level_channel_ids = models.JSONField('分级通知渠道', default=dict, blank=True)
-    recipient_groups = models.ManyToManyField(AlertRecipientGroup, blank=True, related_name='notification_policies', verbose_name='接收组')
-    use_resource_contacts = models.BooleanField('追加资源负责人', default=False)
     group_by = models.JSONField('聚合维度', default=list, blank=True)
     group_wait_seconds = models.PositiveIntegerField('首次聚合等待秒', default=30)
     group_interval_seconds = models.PositiveIntegerField('同组通知间隔秒', default=300)
@@ -1330,7 +1386,6 @@ class AlertNotificationPolicy(models.Model):
     storm_threshold = models.PositiveIntegerField('告警风暴阈值', default=3)
     mute_schedule = models.JSONField('静默时段', default=dict, blank=True)
     inhibition_matchers = models.JSONField('抑制条件', default=list, blank=True)
-    escalation_steps = models.JSONField('升级步骤', default=list, blank=True)
     notify_on_fire = models.BooleanField('发送触发通知', default=True)
     notify_on_resolved = models.BooleanField('发送恢复通知', default=True)
     notify_on_analysis = models.BooleanField('发送研判完成通知', default=True)
@@ -1344,18 +1399,64 @@ class AlertNotificationPolicy(models.Model):
         verbose_name_plural = '告警通知策略'
         ordering = ['priority', 'id']
         indexes = [
-            models.Index(fields=['metric_datasource', 'is_enabled', 'priority'], name='ops_anp_ds_enabled_prio_idx'),
-            models.Index(fields=['external_alert_source', 'is_enabled', 'priority'], name='ops_anp_ext_enabled_prio_idx'),
-        ]
-        constraints = [
-            models.CheckConstraint(
-                condition=models.Q(metric_datasource__isnull=True) | models.Q(external_alert_source__isnull=True),
-                name='ops_policy_single_source_scope',
-            ),
+            models.Index(fields=['alert_source', 'is_enabled', 'priority'], name='ops_anp_src_enabled_idx'),
         ]
 
     def __str__(self):
         return self.name
+
+
+class AlertNotificationRoute(models.Model):
+    TRIGGER_IMMEDIATE = 'immediate'
+    TRIGGER_UNACKNOWLEDGED = 'unacknowledged'
+    TRIGGER_CHOICES = [
+        (TRIGGER_IMMEDIATE, '立即发送'),
+        (TRIGGER_UNACKNOWLEDGED, '未认领升级'),
+    ]
+    TARGET_FIXED = 'fixed'
+    TARGET_SOURCE_OWNERS = 'source_owners'
+    TARGET_RECIPIENT_GROUP = 'recipient_group'
+    TARGET_RESOURCE_CONTACTS = 'resource_contacts'
+    TARGET_CHOICES = [
+        (TARGET_FIXED, '固定目的地'),
+        (TARGET_SOURCE_OWNERS, '告警源负责人'),
+        (TARGET_RECIPIENT_GROUP, '指定接收组'),
+        (TARGET_RESOURCE_CONTACTS, '资源负责人'),
+    ]
+
+    policy = models.ForeignKey(
+        AlertNotificationPolicy, on_delete=models.CASCADE, related_name='routes', verbose_name='通知策略',
+    )
+    level = models.CharField('告警级别', max_length=16, choices=Alert.LEVEL_CHOICES)
+    trigger = models.CharField('触发阶段', max_length=24, choices=TRIGGER_CHOICES, default=TRIGGER_IMMEDIATE)
+    after_minutes = models.PositiveIntegerField('等待分钟', default=0)
+    escalate_to_level = models.CharField('升级后级别', max_length=16, choices=Alert.LEVEL_CHOICES, blank=True, default='')
+    channel = models.ForeignKey(
+        AlertNotificationChannel, on_delete=models.PROTECT, related_name='alert_routes', verbose_name='通知目的地',
+    )
+    target_type = models.CharField('接收对象', max_length=32, choices=TARGET_CHOICES, default=TARGET_FIXED)
+    recipient_group = models.ForeignKey(
+        AlertRecipientGroup, on_delete=models.PROTECT, null=True, blank=True,
+        related_name='notification_routes', verbose_name='接收组',
+    )
+    sort_order = models.PositiveIntegerField('顺序', default=100)
+    is_enabled = models.BooleanField('启用', default=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '告警通知路由'
+        verbose_name_plural = '告警通知路由'
+        ordering = ['sort_order', 'id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['policy', 'level', 'trigger', 'channel', 'target_type', 'recipient_group'],
+                name='uniq_ops_alert_notification_route',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.policy}:{self.level}:{self.channel}'
 
 
 class InspectionReportSchedule(models.Model):

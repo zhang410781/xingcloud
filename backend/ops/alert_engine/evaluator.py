@@ -97,45 +97,35 @@ def _prometheus_results(rule):
     query_config = _dict(rule.query_config)
     condition = _dict(rule.condition)
     query = str(query_config.get('promql') or query_config.get('query') or query_config.get('metric') or '').strip()
-    if not rule.metric_datasource_id:
-        raise ValueError('Prometheus 规则尚未绑定指标数据源')
-    if not rule.metric_datasource or not rule.metric_datasource.is_enabled:
-        raise ValueError('Prometheus 规则绑定的指标数据源已停用或不存在')
+    source = rule.alert_source
+    datasource = source.metric_datasource if source else None
+    if not source or source.provider != 'prometheus' or not datasource:
+        raise ValueError('Prometheus 规则尚未绑定 Prometheus 告警源')
+    if not source.is_enabled or not datasource.is_enabled:
+        raise ValueError('Prometheus 告警源或指标数据源已停用')
     rule_labels = _dict(rule.labels)
-    contexts = list(
-        rule.metric_datasource.aiops_knowledge_environments
-        .filter(is_enabled=True)
-        .select_related('k8s_cluster')
-        .order_by('id')[:2]
-    )
-    context = contexts[0] if len(contexts) == 1 else None
-    query_environment = context.code if context else (
-        rule.metric_datasource.environment or query_config.get('environment') or rule_labels.get('environment') or ''
-    )
     payload = execute_promql_query(
         query,
         range_query=False,
-        metric_datasource_id=rule.metric_datasource_id,
-        environment=query_environment,
+        metric_datasource_id=datasource.id,
+        environment=datasource.environment or query_config.get('environment') or '',
         prefer_metric_datasource=True,
     )
-    cluster_display_name = rule_labels.get('cluster_display_name')
-    if not cluster_display_name and context and context.k8s_cluster:
-        cluster_display_name = context.k8s_cluster.name
+    cluster_display_name = rule_labels.get('cluster_display_name') or datasource.cluster_name or source.name
     results = []
     for item in payload.get('result') or []:
         metric = _dict(item.get('metric'))
         value = _latest_prom_value(item)
         labels = _labels(rule, metric)
-        labels['metric_datasource_id'] = str(rule.metric_datasource_id)
-        labels['metric_datasource_name'] = rule.metric_datasource.name
-        if context:
-            labels['environment'] = context.code
-            labels['environment_display_name'] = context.name
-        elif rule.metric_datasource.environment:
-            labels.setdefault('environment', rule.metric_datasource.environment)
-        if rule.metric_datasource.cluster_name:
-            labels.setdefault('cluster', rule.metric_datasource.cluster_name)
+        labels['metric_datasource_id'] = str(datasource.id)
+        labels['metric_datasource_name'] = datasource.name
+        labels['alert_source_id'] = str(source.id)
+        labels['alert_source_code'] = source.code
+        labels['alert_source_name'] = source.name
+        if datasource.environment:
+            labels.setdefault('environment', datasource.environment)
+        if datasource.cluster_name:
+            labels.setdefault('cluster', datasource.cluster_name)
         if cluster_display_name:
             labels['cluster_display_name'] = cluster_display_name
         resource = labels.get('pod') or labels.get('instance') or labels.get('node') or labels.get('job') or ''

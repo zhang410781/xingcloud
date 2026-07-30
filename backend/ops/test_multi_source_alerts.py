@@ -15,7 +15,9 @@ from ops.models import (
     AlertNotificationChannel,
     AlertNotificationLog,
     AlertNotificationPolicy,
+    AlertNotificationRoute,
     AlertRule,
+    AlertSource,
     MetricDataSource,
 )
 
@@ -40,6 +42,14 @@ class MultiSourceAlertRuleTests(TestCase):
             config={'url': 'http://prometheus-test.example.com'},
             is_enabled=True,
         )
+        self.prod_source = AlertSource.objects.create(
+            name='生产 Prometheus 告警源', code='prod-prometheus-alerts',
+            provider=AlertSource.PROVIDER_PROMETHEUS, metric_datasource=self.prod,
+        )
+        self.test_source = AlertSource.objects.create(
+            name='测试 Prometheus 告警源', code='test-prometheus-alerts',
+            provider=AlertSource.PROVIDER_PROMETHEUS, metric_datasource=self.test,
+        )
         ensure_builtin_alert_rule_templates()
         self.template = AlertRule.objects.filter(is_template=True, source_type='prometheus', category='k8s').first()
         if not self.template:
@@ -54,15 +64,19 @@ class MultiSourceAlertRuleTests(TestCase):
                 query_config={'query': 'node_cpu_usage_percent'},
                 condition={'operator': '>', 'threshold': 80},
                 is_enabled=False,
+                template_status='published',
             )
+        elif self.template.template_status != 'published':
+            self.template.template_status = 'published'
+            self.template.save(update_fields=['template_status'])
 
     def test_template_instantiation_creates_source_bound_disabled_rule(self):
-        AlertRule.objects.filter(template=self.template, metric_datasource=self.prod).delete()
+        AlertRule.objects.filter(template=self.template, alert_source=self.prod_source).delete()
         response = self.client.post(
             '/api/alert-rules/instantiate/',
             {
-                'template_code': self.template.code,
-                'metric_datasource_id': self.prod.id,
+                'template_id': self.template.id,
+                'alert_source_id': self.prod_source.id,
                 'overrides': {'condition': {'operator': '>', 'threshold': 88}},
             },
             format='json',
@@ -71,7 +85,7 @@ class MultiSourceAlertRuleTests(TestCase):
         self.assertEqual(response.status_code, 201)
         rule = AlertRule.objects.get(pk=response.json()['id'])
         self.assertEqual(rule.template_id, self.template.id)
-        self.assertEqual(rule.metric_datasource_id, self.prod.id)
+        self.assertEqual(rule.alert_source_id, self.prod_source.id)
         self.assertFalse(rule.is_template)
         self.assertFalse(rule.is_enabled)
         self.assertEqual(rule.condition['threshold'], 88)
@@ -82,8 +96,8 @@ class MultiSourceAlertRuleTests(TestCase):
         mock_query.return_value = {
             'result': [{'metric': {'instance': 'node-1'}, 'value': [1710000000, '95']}],
         }
-        prod_rule, _ = instantiate_rule_from_template(self.template, self.prod)
-        test_rule, _ = instantiate_rule_from_template(self.template, self.test)
+        prod_rule, _ = instantiate_rule_from_template(self.template, self.prod_source)
+        test_rule, _ = instantiate_rule_from_template(self.template, self.test_source)
 
         prod_result = evaluate_rule(prod_rule, dry_run=True)
         test_result = evaluate_rule(test_rule, dry_run=True)
@@ -112,34 +126,28 @@ class MultiSourceAlertRuleTests(TestCase):
         result = evaluate_rule(rule, dry_run=True)
 
         self.assertFalse(result['success'])
-        self.assertIn('尚未绑定指标数据源', result['error'])
+        self.assertIn('尚未绑定 Prometheus 告警源', result['error'])
 
-    def test_source_policy_precedes_global_policy_and_preview_matches(self):
-        global_policy = AlertNotificationPolicy.objects.create(name='全局策略', priority=100)
+    def test_source_policy_matches_only_its_alert_source_and_preview(self):
         source_policy = AlertNotificationPolicy.objects.create(
             name='生产集群策略',
-            metric_datasource=self.prod,
+            alert_source=self.prod_source,
             priority=10,
             matchers=[{'key': 'namespace', 'operator': '=', 'value': 'xing-cloud'}],
         )
         alert = Alert(
             title='Pod 异常', level='warning', source='test', source_type=Alert.SOURCE_PLATFORM,
-            message='test', cluster='prod-k8s', namespace='xing-cloud',
+            alert_source=self.prod_source, message='test', cluster='prod-k8s', namespace='xing-cloud',
             labels={'metric_datasource_id': str(self.prod.id), 'namespace': 'xing-cloud'},
         )
 
-        matched = resolve_notification_policies(alert, metric_datasource_id=self.prod.id)
+        matched = resolve_notification_policies(alert)
         self.assertEqual([item.id for item in matched], [source_policy.id])
-
-        source_policy.continue_matching = True
-        source_policy.save(update_fields=['continue_matching'])
-        matched = resolve_notification_policies(alert, metric_datasource_id=self.prod.id)
-        self.assertEqual([item.id for item in matched], [source_policy.id, global_policy.id])
 
         response = self.client.post(
             '/api/alert-notification-policies/preview/',
             {
-                'metric_datasource_id': self.prod.id,
+                'alert_source_id': self.prod_source.id,
                 'level': 'warning',
                 'namespace': 'xing-cloud',
                 'labels': {'metric_datasource_id': str(self.prod.id), 'namespace': 'xing-cloud'},
@@ -147,10 +155,10 @@ class MultiSourceAlertRuleTests(TestCase):
             format='json',
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()['matched_count'], 2)
+        self.assertEqual(response.json()['matched_count'], 1)
 
     def test_notification_group_and_repeat_dedup_include_datasource(self):
-        rule, _ = instantiate_rule_from_template(self.template, self.prod)
+        rule, _ = instantiate_rule_from_template(self.template, self.prod_source)
         rule.is_enabled = True
         rule.notify_enabled = True
         rule.save(update_fields=['is_enabled', 'notify_enabled'])
@@ -161,20 +169,24 @@ class MultiSourceAlertRuleTests(TestCase):
         )
         policy = AlertNotificationPolicy.objects.create(
             name='生产通知策略',
-            metric_datasource=self.prod,
+            alert_source=self.prod_source,
             priority=10,
             group_by=['cluster', 'namespace', 'resource'],
             group_wait_seconds=0,
             group_interval_seconds=300,
             repeat_interval_minutes=30,
         )
-        policy.channels.add(channel)
+        AlertNotificationRoute.objects.create(
+            policy=policy, level='warning', trigger='immediate',
+            channel=channel, target_type='fixed',
+        )
         alert = Alert.objects.create(
             title='Pod CPU 高',
             level='warning',
             status=Alert.STATUS_ACTIVE,
             source='Xing-Cloud 告警规则',
             source_type=Alert.SOURCE_PLATFORM,
+            alert_source=self.prod_source,
             message='CPU high',
             cluster='prod-k8s',
             namespace='xing-cloud',
@@ -194,6 +206,6 @@ class MultiSourceAlertRuleTests(TestCase):
         self.assertEqual(len(first), 1)
         self.assertEqual(second, [])
         alert.refresh_from_db()
-        self.assertIn(f'label.metric_datasource_id={self.prod.id}', alert.group_key)
+        self.assertIn(f'alert_source_code={self.prod_source.code}', alert.group_key)
         log = AlertNotificationLog.objects.get()
         self.assertEqual(log.policy_id, policy.id)

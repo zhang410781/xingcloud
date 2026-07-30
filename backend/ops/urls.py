@@ -20,7 +20,7 @@ router.register(r'deployment-approval-flows', views.DeploymentApprovalFlowViewSe
 router.register(r'deployments', views.DeploymentViewSet)
 router.register(r'transaction-tickets', views.TransactionTicketViewSet, basename='transaction-ticket')
 router.register(r'alerts', views.AlertViewSet)
-router.register(r'external-alert-sources', views.ExternalAlertSourceViewSet, basename='external-alert-source')
+router.register(r'alert-sources', views.AlertSourceViewSet, basename='alert-source')
 router.register(r'alert-rules', views.AlertRuleViewSet, basename='alert-rule')
 router.register(r'alert-rule-templates', views.AlertRuleTemplateViewSet, basename='alert-rule-template')
 router.register(r'alert-silences', views.AlertSilenceViewSet, basename='alert-silence')

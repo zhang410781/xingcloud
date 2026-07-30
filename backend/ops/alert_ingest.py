@@ -56,6 +56,52 @@ def _dict(value):
     return value if isinstance(value, dict) else {}
 
 
+def _path_value(value, path):
+    current = value
+    for part in str(path or '').split('.'):
+        if not part:
+            continue
+        if not isinstance(current, dict):
+            return ''
+        current = current.get(part)
+    return current
+
+
+def _apply_source_mapping(normalized, source):
+    mapped = dict(normalized)
+    mapped['labels'] = dict(_dict(normalized.get('labels')))
+    mapping = source.field_mapping if isinstance(source.field_mapping, dict) else {}
+    for target, source_path in mapping.items():
+        value = _path_value(mapped, source_path)
+        if value in (None, ''):
+            value = _path_value(_dict(mapped.get('raw_payload')), source_path)
+        if value in (None, ''):
+            continue
+        if str(target).startswith('labels.'):
+            mapped['labels'][str(target).split('.', 1)[1]] = value
+        else:
+            mapped[str(target)] = value
+    return mapped
+
+
+def _source_fingerprint(normalized, source):
+    fields = source.fingerprint_fields if isinstance(source.fingerprint_fields, list) else []
+    if not fields:
+        return normalized['fingerprint']
+    labels = _dict(normalized.get('labels'))
+    parts = []
+    for field in fields:
+        field = str(field or '').strip()
+        if not field:
+            continue
+        if field.startswith('labels.'):
+            value = _path_value({'labels': labels}, field)
+        else:
+            value = normalized.get(field, labels.get(field, ''))
+        parts.append(f'{field}={_text(value) or "-"}')
+    return _stable_fingerprint(source.provider, *parts) if parts else normalized['fingerprint']
+
+
 def _level(value):
     return SEVERITY_MAP.get(_text(value).casefold(), 'warning')
 
@@ -328,13 +374,13 @@ def prepare_external_alerts(payload, ingress_source):
         )
     prepared = []
     for normalized in normalized_alerts:
-        normalized = dict(normalized)
-        original_fingerprint = normalized['fingerprint']
+        normalized = _apply_source_mapping(normalized, ingress_source)
+        original_fingerprint = _source_fingerprint(normalized, ingress_source)
         normalized['fingerprint'] = _stable_fingerprint(
             'external', ingress_source.public_id, original_fingerprint,
         )
         normalized['source'] = ingress_source.code
-        normalized['ingress_source'] = ingress_source
+        normalized['alert_source'] = ingress_source
         normalized['knowledge_environment'] = None
         normalized['binding_status'] = 'not_applicable'
         raw_payload = _dict(normalized.get('raw_payload')).copy()

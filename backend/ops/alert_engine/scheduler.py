@@ -10,7 +10,11 @@ from .evaluator import evaluate_rule
 
 def due_rules(limit=100):
     now = timezone.now()
-    candidates = AlertRule.objects.filter(is_enabled=True, is_template=False).order_by('last_evaluated_at', 'id')
+    candidates = AlertRule.objects.filter(
+        is_enabled=True,
+        is_template=False,
+        alert_source__is_enabled=True,
+    ).select_related('alert_source', 'alert_source__metric_datasource').order_by('last_evaluated_at', 'id')
     rules = []
     for rule in candidates[: max(limit * 3, limit)]:
         if not rule.last_evaluated_at:

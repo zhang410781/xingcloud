@@ -16,8 +16,6 @@
       </div>
     </section>
 
-    <ObservabilityRouteTabs v-if="!embedded" group="datasources" />
-
     <div class="workbench-card log-datasource-card">
       <div class="section-toolbar">
         <div class="toolbar-head">
@@ -346,7 +344,6 @@ import {
   updateLogDataSource,
 } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
-import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
 
 defineProps({
   embedded: { type: Boolean, default: false },

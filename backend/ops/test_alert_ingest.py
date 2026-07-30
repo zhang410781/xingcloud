@@ -20,9 +20,10 @@ from ops.models import (
     AlertAnalysis,
     AlertNotificationChannel,
     AlertNotificationPolicy,
+    AlertNotificationRoute,
+    AlertRecipient,
+    AlertSource,
     ExternalAlertIngressLog,
-    ExternalAlertSource,
-    MetricDataSource,
 )
 from ops.serializers import AlertNotificationPolicySerializer
 from aiops.models import AIOpsKnowledgeEnvironment
@@ -272,6 +273,7 @@ class ManagedExternalAlertSourceTests(TestCase):
         )
         self.client = APIClient()
         self.client.force_authenticate(self.user)
+        self.recipient = AlertRecipient.objects.create(name='外部告警负责人')
         self.context = AIOpsKnowledgeEnvironment.objects.create(name='外部生产环境', code='external-prod')
 
     def alertmanager_payload(self, fingerprint='same-external-fingerprint', namespace='external-ns'):
@@ -293,10 +295,12 @@ class ManagedExternalAlertSourceTests(TestCase):
         }
 
     def create_source(self, code, **overrides):
-        source = ExternalAlertSource.objects.create(
+        overrides.pop('default_knowledge_environment', None)
+        overrides.pop('mapping_rules', None)
+        source = AlertSource.objects.create(
             name=overrides.pop('name', code),
             code=code,
-            provider=overrides.pop('provider', ExternalAlertSource.PROVIDER_ALERTMANAGER),
+            provider=overrides.pop('provider', AlertSource.PROVIDER_ALERTMANAGER),
             analyze_enabled=overrides.pop('analyze_enabled', False),
             **overrides,
         )
@@ -312,16 +316,22 @@ class ManagedExternalAlertSourceTests(TestCase):
         )
 
     def test_create_source_returns_token_once(self):
-        response = self.client.post('/api/external-alert-sources/', {
+        response = self.client.post('/api/alert-sources/', {
             'name': '生产 Alertmanager',
             'code': 'production-alertmanager',
             'provider': 'alertmanager',
+            'owner_bindings': [{
+                'recipient': self.recipient.id,
+                'role': 'primary',
+                'levels': ['warning', 'critical'],
+                'is_enabled': True,
+            }],
         }, format='json')
 
         self.assertEqual(response.status_code, 201)
         self.assertTrue(response.data['token'])
         self.assertIn(str(response.data['public_id']), response.data['endpoint'])
-        detail = self.client.get(f"/api/external-alert-sources/{response.data['id']}/")
+        detail = self.client.get(f"/api/alert-sources/{response.data['id']}/")
         self.assertEqual(detail.status_code, 200)
         self.assertNotIn('token', detail.data)
         self.assertTrue(detail.data['token_configured'])
@@ -338,7 +348,7 @@ class ManagedExternalAlertSourceTests(TestCase):
 
         self.assertEqual(response.status_code, 201)
         alert = Alert.objects.get()
-        self.assertEqual(alert.ingress_source, source)
+        self.assertEqual(alert.alert_source, source)
         self.assertIsNone(alert.knowledge_environment)
         self.assertEqual(alert.binding_status, 'not_applicable')
         self.assertEqual(alert.raw_payload['ingest']['binding_reason'], 'not_required')
@@ -346,7 +356,7 @@ class ManagedExternalAlertSourceTests(TestCase):
         detail = self.client.get(f'/api/alerts/{alert.id}/')
         self.assertEqual(detail.status_code, 200)
         self.assertEqual(detail.data['environment_display'], source.name)
-        self.assertEqual(detail.data['scope_display'], '外部接入')
+        self.assertEqual(detail.data['scope_display'], 'Alertmanager')
         self.assertEqual(detail.data['source_display'], source.name)
         source.refresh_from_db()
         self.assertEqual(source.accepted_requests, 1)
@@ -363,7 +373,7 @@ class ManagedExternalAlertSourceTests(TestCase):
         self.assertEqual(Alert.objects.count(), 2)
         fingerprints = set(Alert.objects.values_list('fingerprint', flat=True))
         self.assertEqual(len(fingerprints), 2)
-        self.assertEqual(set(Alert.objects.values_list('ingress_source_id', flat=True)), {first_source.id, second_source.id})
+        self.assertEqual(set(Alert.objects.values_list('alert_source_id', flat=True)), {first_source.id, second_source.id})
 
     def test_legacy_context_mapping_is_ignored(self):
         mapped_context = AIOpsKnowledgeEnvironment.objects.create(name='映射环境', code='mapped-context')
@@ -404,7 +414,7 @@ class ManagedExternalAlertSourceTests(TestCase):
         )
 
         response = self.client.post(
-            f'/api/external-alert-sources/{source.id}/preview-payload/',
+            f'/api/alert-sources/{source.id}/preview-payload/',
             {'payload': self.alertmanager_payload()},
             format='json',
         )
@@ -416,7 +426,7 @@ class ManagedExternalAlertSourceTests(TestCase):
         self.assertEqual(result['source'], source.code)
 
     def test_provider_mismatch_is_rejected_and_logged(self):
-        source, token = self.create_source('zabbix-source', provider=ExternalAlertSource.PROVIDER_ZABBIX)
+        source, token = self.create_source('zabbix-source', provider=AlertSource.PROVIDER_ZABBIX)
 
         response = self.ingest(source, token)
 
@@ -461,7 +471,7 @@ class ManagedExternalAlertSourceTests(TestCase):
         source, _token = self.create_source('immutable-alertmanager')
 
         response = self.client.patch(
-            f'/api/external-alert-sources/{source.id}/',
+            f'/api/alert-sources/{source.id}/',
             {'code': 'changed-code', 'provider': 'zabbix'},
             format='json',
         )
@@ -591,17 +601,17 @@ class LightweightAlertAnalysisTests(TestCase):
 
     @patch('ops.alerting.dispatch_alert_notifications', return_value=[])
     @patch('ops.alert_analysis._llm_synthesis')
-    def test_lightweight_analysis_does_not_notify_when_ingress_source_notifications_are_disabled(self, synthesize, dispatch):
-        source = ExternalAlertSource.objects.create(
+    def test_lightweight_analysis_does_not_notify_when_alert_source_notifications_are_disabled(self, synthesize, dispatch):
+        source = AlertSource.objects.create(
             name='Silent Alertmanager',
             code='silent-alertmanager',
-            provider=ExternalAlertSource.PROVIDER_ALERTMANAGER,
+            provider=AlertSource.PROVIDER_ALERTMANAGER,
             notify_enabled=False,
             analyze_enabled=True,
         )
-        self.alert.ingress_source = source
+        self.alert.alert_source = source
         self.alert.binding_status = 'not_applicable'
-        self.alert.save(update_fields=['ingress_source', 'binding_status'])
+        self.alert.save(update_fields=['alert_source', 'binding_status'])
         synthesize.return_value = ('provider', 'model', {
             'summary': '分析完成',
             'root_cause': '仅基于外部告警文本',
@@ -624,12 +634,15 @@ class ExternalAlertNotificationPolicyTests(TestCase):
         self.client = APIClient()
         self.user = get_user_model().objects.create_superuser(username='external-policy-admin', password='test-pass')
         self.client.force_authenticate(self.user)
+        self.source = AlertSource.objects.create(
+            name='Shared Zabbix', code='shared-zabbix', provider=AlertSource.PROVIDER_ZABBIX,
+        )
 
-    def test_external_source_code_is_available_as_notification_dimension(self):
-        source = ExternalAlertSource.objects.create(
+    def test_alert_source_code_is_available_as_notification_dimension(self):
+        source = AlertSource.objects.create(
             name='Production Alertmanager',
             code='production-alertmanager',
-            provider=ExternalAlertSource.PROVIDER_ALERTMANAGER,
+            provider=AlertSource.PROVIDER_ALERTMANAGER,
         )
         alert = Alert.objects.create(
             title='External alert',
@@ -637,16 +650,19 @@ class ExternalAlertNotificationPolicyTests(TestCase):
             status=Alert.STATUS_ACTIVE,
             source=source.code,
             source_type=Alert.SOURCE_ALERTMANAGER,
-            ingress_source=source,
+            alert_source=source,
             binding_status='not_applicable',
             fingerprint='alertmanager:dimension',
             starts_at=timezone.now(),
         )
 
-        self.assertEqual(alert_dimension_value(alert, 'ingress_source_code'), source.code)
-        self.assertEqual(alert_dimension_value(alert, 'ingress_source_id'), str(source.id))
+        self.assertEqual(alert_dimension_value(alert, 'alert_source_code'), source.code)
+        self.assertEqual(alert_dimension_value(alert, 'alert_source_id'), str(source.id))
 
     def test_external_alert_without_rule_uses_notification_policy(self):
+        source = AlertSource.objects.create(
+            name='Zabbix', code='zabbix-notify', provider=AlertSource.PROVIDER_ZABBIX,
+        )
         channel = AlertNotificationChannel.objects.create(
             name='email-test',
             channel_type=AlertNotificationChannel.CHANNEL_EMAIL,
@@ -654,16 +670,20 @@ class ExternalAlertNotificationPolicyTests(TestCase):
         )
         policy = AlertNotificationPolicy.objects.create(
             name='external-alerts',
+            alert_source=source,
             matchers=[{'key': 'source_type', 'op': '==', 'value': 'zabbix'}],
             group_wait_seconds=0,
         )
-        policy.channels.add(channel)
+        AlertNotificationRoute.objects.create(
+            policy=policy, level='warning', trigger='immediate', channel=channel, target_type='fixed',
+        )
         alert = Alert.objects.create(
             title='External alert',
             level='warning',
             status=Alert.STATUS_ACTIVE,
             source='zabbix',
             source_type=Alert.SOURCE_ZABBIX,
+            alert_source=source,
             fingerprint='zabbix:notify',
             message='external alert',
             starts_at=timezone.now(),
@@ -676,91 +696,88 @@ class ExternalAlertNotificationPolicyTests(TestCase):
         self.assertEqual(logs[0].policy_id, policy.id)
 
     def test_external_source_policy_only_matches_selected_source(self):
-        first_source = ExternalAlertSource.objects.create(
-            name='First Alertmanager', code='first-alertmanager', provider=ExternalAlertSource.PROVIDER_ALERTMANAGER,
+        first_source = AlertSource.objects.create(
+            name='First Alertmanager', code='first-alertmanager', provider=AlertSource.PROVIDER_ALERTMANAGER,
         )
-        second_source = ExternalAlertSource.objects.create(
-            name='Second Alertmanager', code='second-alertmanager', provider=ExternalAlertSource.PROVIDER_ALERTMANAGER,
+        second_source = AlertSource.objects.create(
+            name='Second Alertmanager', code='second-alertmanager', provider=AlertSource.PROVIDER_ALERTMANAGER,
         )
         first_policy = AlertNotificationPolicy.objects.create(
-            name='first-source-policy', external_alert_source=first_source, priority=10, continue_matching=True,
+            name='first-source-policy', alert_source=first_source, priority=10, continue_matching=True,
         )
         AlertNotificationPolicy.objects.create(
-            name='second-source-policy', external_alert_source=second_source, priority=20, continue_matching=True,
+            name='second-source-policy', alert_source=second_source, priority=20, continue_matching=True,
         )
-        global_policy = AlertNotificationPolicy.objects.create(name='global-policy', priority=100)
         external_alert = Alert(
             title='External alert', level='warning', source=first_source.code,
-            source_type=Alert.SOURCE_ALERTMANAGER, ingress_source=first_source,
-        )
-        platform_alert = Alert(
-            title='Platform alert', level='warning', source='platform', source_type=Alert.SOURCE_PLATFORM,
+            source_type=Alert.SOURCE_ALERTMANAGER, alert_source=first_source,
         )
 
-        self.assertEqual(resolve_notification_policies(external_alert), [first_policy, global_policy])
-        self.assertEqual(resolve_notification_policies(platform_alert), [global_policy])
+        self.assertEqual(resolve_notification_policies(external_alert), [first_policy])
 
     @patch('ops.alerting.compute_group_key', return_value='external-source-group')
-    def test_external_notification_group_includes_ingress_source(self, compute_group_key):
-        source = ExternalAlertSource.objects.create(
-            name='Production Zabbix', code='production-zabbix', provider=ExternalAlertSource.PROVIDER_ZABBIX,
+    def test_external_notification_group_includes_alert_source(self, compute_group_key):
+        source = AlertSource.objects.create(
+            name='Production Zabbix', code='production-zabbix', provider=AlertSource.PROVIDER_ZABBIX,
         )
         channel = AlertNotificationChannel.objects.create(
             name='external-email', channel_type=AlertNotificationChannel.CHANNEL_EMAIL, config={},
         )
         policy = AlertNotificationPolicy.objects.create(
-            name='zabbix-policy', external_alert_source=source, group_by=['namespace'], group_wait_seconds=0,
+            name='zabbix-policy', alert_source=source, group_by=['namespace'], group_wait_seconds=0,
         )
-        policy.channels.add(channel)
+        AlertNotificationRoute.objects.create(
+            policy=policy, level='warning', trigger='immediate', channel=channel, target_type='fixed',
+        )
         alert = Alert.objects.create(
             title='External alert', level='warning', status=Alert.STATUS_ACTIVE,
-            source=source.code, source_type=Alert.SOURCE_ZABBIX, ingress_source=source,
+            source=source.code, source_type=Alert.SOURCE_ZABBIX, alert_source=source,
             namespace='production', fingerprint='zabbix:group-source', starts_at=timezone.now(),
         )
 
         dispatch_alert_notifications(alert, action='fire', force=True)
 
-        self.assertEqual(compute_group_key.call_args.args[1], ['ingress_source_code', 'namespace'])
+        self.assertEqual(compute_group_key.call_args.args[1], ['alert_source_code', 'namespace'])
 
-    def test_policy_rejects_metric_and_external_sources_together(self):
-        metric_source = MetricDataSource.objects.create(name='Prometheus')
-        external_source = ExternalAlertSource.objects.create(
-            name='Zabbix', code='zabbix-source', provider=ExternalAlertSource.PROVIDER_ZABBIX,
-        )
-
+    def test_policy_requires_alert_source(self):
         serializer = AlertNotificationPolicySerializer(data={
             'name': 'invalid-policy',
-            'metric_datasource': metric_source.id,
-            'external_alert_source': external_source.id,
         })
 
         self.assertFalse(serializer.is_valid())
-        self.assertIn('指标数据源与外部告警接入源不能同时选择', str(serializer.errors))
+        self.assertIn('alert_source', serializer.errors)
 
-    def test_policy_rejects_level_channels_outside_selected_channels(self):
+    def test_policy_rejects_duplicate_routes(self):
+        source = AlertSource.objects.create(
+            name='Zabbix', code='zabbix-routes', provider=AlertSource.PROVIDER_ZABBIX,
+        )
         channel = AlertNotificationChannel.objects.create(
             name='voice-critical', channel_type=AlertNotificationChannel.CHANNEL_VOICE, config={},
         )
+        route = {
+            'level': 'critical', 'trigger': 'immediate', 'channel': channel.id,
+            'target_type': 'fixed', 'recipient_group': None,
+        }
 
         serializer = AlertNotificationPolicySerializer(data={
             'name': 'invalid-level-route',
-            'channel_ids': [],
-            'level_channel_ids': {'critical': [channel.id]},
+            'alert_source': source.id,
+            'routes': [route, route],
         })
 
         self.assertFalse(serializer.is_valid())
-        self.assertIn('分级渠道必须包含在策略通知渠道中', str(serializer.errors))
+        self.assertIn('重复', str(serializer.errors))
 
     def test_policy_preview_uses_external_source_scope(self):
-        external_source = ExternalAlertSource.objects.create(
-            name='Production Zabbix', code='production-zabbix', provider=ExternalAlertSource.PROVIDER_ZABBIX,
+        external_source = AlertSource.objects.create(
+            name='Production Zabbix', code='production-zabbix-preview', provider=AlertSource.PROVIDER_ZABBIX,
         )
         policy = AlertNotificationPolicy.objects.create(
-            name='zabbix-policy', external_alert_source=external_source, priority=10,
+            name='zabbix-policy', alert_source=external_source, priority=10,
         )
 
         response = self.client.post('/api/alert-notification-policies/preview/', {
-            'external_alert_source_id': external_source.id,
+            'alert_source_id': external_source.id,
             'level': 'warning',
             'labels': {'host': 'server-01'},
         }, format='json')
@@ -781,20 +798,24 @@ class ExternalAlertNotificationPolicyTests(TestCase):
         )
         policy = AlertNotificationPolicy.objects.create(
             name='external-escalation',
+            alert_source=self.source,
             matchers=[{'key': 'source_type', 'op': '==', 'value': 'zabbix'}],
-            escalation_steps=[{'after_minutes': 5, 'channel_ids': []}],
-            level_channel_ids={
-                'warning': [warning_channel.id],
-                'critical': [critical_channel.id],
-            },
         )
-        policy.channels.add(warning_channel, critical_channel)
+        AlertNotificationRoute.objects.create(
+            policy=policy, level='warning', trigger='immediate',
+            channel=warning_channel, target_type='fixed',
+        )
+        AlertNotificationRoute.objects.create(
+            policy=policy, level='warning', trigger='unacknowledged', after_minutes=5,
+            escalate_to_level='critical', channel=critical_channel, target_type='fixed',
+        )
         alert = Alert.objects.create(
             title='External alert',
             level='warning',
             status=Alert.STATUS_ACTIVE,
             source='zabbix',
             source_type=Alert.SOURCE_ZABBIX,
+            alert_source=self.source,
             fingerprint='zabbix:escalate',
             message='external alert',
             starts_at=timezone.now() - timedelta(minutes=10),
@@ -822,6 +843,7 @@ class ExternalAlertNotificationPolicyTests(TestCase):
             'status': Alert.STATUS_ACTIVE,
             'source': 'zabbix',
             'source_type': Alert.SOURCE_ZABBIX,
+            'alert_source': self.source,
             'fingerprint': alert.fingerprint,
             'message': 'still active',
             'starts_at': alert.starts_at,
@@ -842,20 +864,26 @@ class ExternalAlertNotificationPolicyTests(TestCase):
         )
         policy = AlertNotificationPolicy.objects.create(
             name='level-routing',
-            level_channel_ids={
-                'warning': [warning_channel.id],
-                'critical': [critical_channel.id],
-            },
+            alert_source=self.source,
         )
-        policy.channels.add(warning_channel, critical_channel)
+        AlertNotificationRoute.objects.create(
+            policy=policy, level='warning', trigger='immediate',
+            channel=warning_channel, target_type='fixed',
+        )
+        AlertNotificationRoute.objects.create(
+            policy=policy, level='critical', trigger='immediate',
+            channel=critical_channel, target_type='fixed',
+        )
         warning_alert = Alert.objects.create(
             title='Warning alert', level='warning', status=Alert.STATUS_ACTIVE,
             source='zabbix', source_type=Alert.SOURCE_ZABBIX,
+            alert_source=self.source,
             fingerprint='zabbix:warning-route', message='warning', starts_at=timezone.now(),
         )
         critical_alert = Alert.objects.create(
             title='Critical alert', level='critical', status=Alert.STATUS_ACTIVE,
             source='zabbix', source_type=Alert.SOURCE_ZABBIX,
+            alert_source=self.source,
             fingerprint='zabbix:critical-route', message='critical', starts_at=timezone.now(),
         )
 
@@ -872,18 +900,23 @@ class ExternalAlertNotificationPolicyTests(TestCase):
             config={'to': ['critical@example.com']},
         )
         policy = AlertNotificationPolicy.objects.create(
-            name='external-escalation', escalation_steps=[{'after_minutes': 5, 'channel_ids': []}],
+            name='external-escalation', alert_source=self.source,
         )
-        policy.channels.add(channel)
+        AlertNotificationRoute.objects.create(
+            policy=policy, level='warning', trigger='unacknowledged', after_minutes=5,
+            escalate_to_level='critical', channel=channel, target_type='fixed',
+        )
         acknowledged = Alert.objects.create(
             title='Acknowledged', level='warning', status=Alert.STATUS_ACTIVE,
             source='zabbix', source_type=Alert.SOURCE_ZABBIX,
+            alert_source=self.source,
             fingerprint='zabbix:acknowledged', message='ack', is_acknowledged=True,
             starts_at=timezone.now() - timedelta(minutes=10),
         )
         claimed = Alert.objects.create(
             title='Claimed', level='warning', status=Alert.STATUS_ACTIVE,
             source='zabbix', source_type=Alert.SOURCE_ZABBIX,
+            alert_source=self.source,
             fingerprint='zabbix:claimed', message='claimed', claimed_by='operator',
             starts_at=timezone.now() - timedelta(minutes=10),
         )
@@ -903,13 +936,16 @@ class ExternalAlertNotificationPolicyTests(TestCase):
         )
         policy = AlertNotificationPolicy.objects.create(
             name='retry-escalation',
-            escalation_steps=[{'after_minutes': 5, 'channel_ids': []}],
-            level_channel_ids={'critical': [channel.id]},
+            alert_source=self.source,
         )
-        policy.channels.add(channel)
+        AlertNotificationRoute.objects.create(
+            policy=policy, level='warning', trigger='unacknowledged', after_minutes=5,
+            escalate_to_level='critical', channel=channel, target_type='fixed',
+        )
         alert = Alert.objects.create(
             title='Retry alert', level='warning', status=Alert.STATUS_ACTIVE,
             source='zabbix', source_type=Alert.SOURCE_ZABBIX,
+            alert_source=self.source,
             fingerprint='zabbix:retry-escalation', message='retry',
             starts_at=timezone.now() - timedelta(minutes=10),
         )

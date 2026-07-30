@@ -9,7 +9,15 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from ops.models import Alert, AlertNotificationPolicy, AlertRecipient, K8sCluster
+from ops.models import (
+    Alert,
+    AlertNotificationChannel,
+    AlertNotificationPolicy,
+    AlertNotificationRoute,
+    AlertRecipient,
+    AlertSource,
+    K8sCluster,
+)
 from ops.alerting import _recipient_contacts
 from aiops.models import AIOpsKnowledgeEnvironment
 
@@ -187,16 +195,27 @@ class ResourceApiTests(TestCase):
         ResourceIdentifier.objects.create(resource=resource, kind='ip', value='10.20.0.1', scope='manual', is_primary=True)
         recipient = AlertRecipient.objects.create(name='主机运维', phone='13800000000', preferred_channels=['voice'])
         ResourceContact.objects.create(resource=resource, role='ops_owner', recipient=recipient, is_primary=True)
+        alert_source = AlertSource.objects.create(
+            name='统一 Zabbix', code='resource-zabbix', provider=AlertSource.PROVIDER_ZABBIX,
+        )
         alert = Alert.objects.create(
             title='Redis 内存风险', level='critical', source='Zabbix', source_type=Alert.SOURCE_ZABBIX,
             message='Redis memory usage high', resource='10.20.0.1:6379', labels={'instance': '10.20.0.1:6379'},
+            alert_source=alert_source,
         )
         alert.refresh_from_db()
         self.assertEqual(alert.matched_resource_id, resource.id)
         self.assertEqual(alert.resource_match_status, 'matched')
         self.assertEqual(resource_contact_recipients(resource, level='critical'), [recipient.id])
-        policy = AlertNotificationPolicy.objects.create(name='按资源负责人通知', use_resource_contacts=True)
-        contacts = _recipient_contacts(policy=policy, alert=alert)
+        policy = AlertNotificationPolicy.objects.create(name='按资源负责人通知', alert_source=alert_source)
+        channel = AlertNotificationChannel.objects.create(name='严重告警语音', channel_type='voice')
+        route = AlertNotificationRoute.objects.create(
+            policy=policy,
+            level='critical',
+            channel=channel,
+            target_type=AlertNotificationRoute.TARGET_RESOURCE_CONTACTS,
+        )
+        contacts = _recipient_contacts(policy=policy, route=route, alert=alert)
         self.assertEqual(contacts['phones'], ['13800000000'])
 
     def test_resource_contacts_follow_relation_direction_and_inheritance(self):

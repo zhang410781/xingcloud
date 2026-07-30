@@ -19,9 +19,11 @@ from ops.models import (
     AlertAction,
     AlertInteractionToken,
     AlertRule,
+    AlertSource,
     AlertNotificationChannel,
     AlertNotificationLog,
     AlertNotificationPolicy,
+    AlertNotificationRoute,
     AlertRecipient,
     AlertRecipientGroup,
     DockerHost,
@@ -2584,11 +2586,15 @@ class AlertPlatformRuleTests(TestCase):
             config={'query_url': 'http://prometheus.local:9090'},
             is_enabled=True,
         )
+        source = AlertSource.objects.create(
+            name='API Prometheus 告警源', code='api-prometheus-alerts',
+            provider=AlertSource.PROVIDER_PROMETHEUS, metric_datasource=datasource,
+        )
         rule = AlertRule.objects.create(
             name='API CPU high',
             code='api-cpu-high-dry-run',
             source_type='prometheus',
-            metric_datasource=datasource,
+            alert_source=source,
             level='critical',
             query_config={'promql': 'node_cpu_usage_percent'},
             condition={'operator': '>', 'threshold': 90},
@@ -2878,7 +2884,13 @@ class AlertActionApiTests(TestCase):
         self.user = get_user_model().objects.create_superuser('alert-operator', 'operator@example.com', 'Admin@123456')
         self.second_user = get_user_model().objects.create_superuser('backup-operator', 'backup@example.com', 'Admin@123456')
         self.client.force_authenticate(user=self.user)
-        self.alert = Alert.objects.create(title='CPU high', level='warning', source='monitor', source_type=Alert.SOURCE_PLATFORM, message='cpu high')
+        self.alert_source = AlertSource.objects.create(
+            name='Action Test Source', code='action-test-source', provider=AlertSource.PROVIDER_ZABBIX,
+        )
+        self.alert = Alert.objects.create(
+            title='CPU high', level='warning', source='monitor', source_type=Alert.SOURCE_PLATFORM,
+            alert_source=self.alert_source, message='cpu high',
+        )
 
     def test_claim_and_mute_alert(self):
         claim_response = self.client.post(f'/api/alerts/{self.alert.id}/claim/')
@@ -2943,20 +2955,23 @@ class AlertActionApiTests(TestCase):
         group = AlertRecipientGroup.objects.create(name='oncall')
         group.recipients.add(recipient)
         response = self.client.post(
-            '/api/alert-notification-rules/',
+            '/api/alert-notification-policies/',
             {
                 'name': 'critical notify',
+                'alert_source': self.alert_source.id,
                 'min_level': 'warning',
-                'matchers': [{'key': 'source_type', 'op': '==', 'value': Alert.SOURCE_PLATFORM}],
-                'channel_ids': [channel.id],
-                'recipient_group_ids': [group.id],
+                'matchers': [{'key': 'source_type', 'operator': '=', 'value': Alert.SOURCE_PLATFORM}],
+                'routes': [{
+                    'level': 'warning', 'trigger': 'immediate', 'channel': channel.id,
+                    'target_type': 'recipient_group', 'recipient_group': group.id,
+                }],
             },
             format='json',
         )
         self.assertEqual(response.status_code, 201)
         policy = AlertNotificationPolicy.objects.get(name='critical notify')
-        self.assertEqual(policy.channels.count(), 1)
-        self.assertEqual(policy.recipient_groups.count(), 1)
+        self.assertEqual(policy.routes.count(), 1)
+        self.assertEqual(policy.routes.get().recipient_group, group)
 
     def test_recipient_group_reports_contact_health_and_policy_references(self):
         recipient = AlertRecipient.objects.create(
@@ -2967,8 +2982,12 @@ class AlertActionApiTests(TestCase):
         )
         group = AlertRecipientGroup.objects.create(name='primary-oncall')
         group.recipients.add(recipient)
-        policy = AlertNotificationPolicy.objects.create(name='primary routing')
-        policy.recipient_groups.add(group)
+        policy = AlertNotificationPolicy.objects.create(name='primary routing', alert_source=self.alert_source)
+        AlertNotificationRoute.objects.create(
+            policy=policy, level='warning', trigger='immediate',
+            channel=AlertNotificationChannel.objects.create(name='primary email', channel_type='email'),
+            target_type='recipient_group', recipient_group=group,
+        )
 
         response = self.client.get('/api/alert-recipient-groups/?page_size=200')
 
@@ -2998,8 +3017,12 @@ class AlertActionApiTests(TestCase):
         recipient = AlertRecipient.objects.create(name='Operator', email='operator@example.com')
         group = AlertRecipientGroup.objects.create(name='protected-oncall')
         group.recipients.add(recipient)
-        policy = AlertNotificationPolicy.objects.create(name='protected routing')
-        policy.recipient_groups.add(group)
+        policy = AlertNotificationPolicy.objects.create(name='protected routing', alert_source=self.alert_source)
+        AlertNotificationRoute.objects.create(
+            policy=policy, level='warning', trigger='immediate',
+            channel=AlertNotificationChannel.objects.create(name='protected email', channel_type='email'),
+            target_type='recipient_group', recipient_group=group,
+        )
 
         response = self.client.delete(f'/api/alert-recipient-groups/{group.id}/')
 

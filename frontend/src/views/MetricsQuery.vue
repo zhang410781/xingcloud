@@ -16,8 +16,6 @@
       </div>
     </section>
 
-    <ObservabilityRouteTabs v-if="!embedded && activeTab === 'datasources'" group="datasources" />
-
     <section v-if="activeTab === 'query'" class="toolbar panel feature-scope-bar">
       <div class="toolbar-field">
         <span>业务上下文</span>
@@ -377,7 +375,6 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { CaretRight, CollectionTag, CopyDocument, DataAnalysis, DataBoard, Plus, RefreshRight, Search } from '@element-plus/icons-vue'
 import echarts from '@/lib/echarts'
-import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useFeatureBusinessContext } from '@/composables/useFeatureBusinessContext'
 import {

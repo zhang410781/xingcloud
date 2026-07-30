@@ -1,4 +1,5 @@
 import json
+import unittest
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -12,6 +13,7 @@ from ops.models import Host
 from .models import CIType, CIRelation, ConfigItem, CostRecord, ResourceNode, ResourceRequest
 
 
+@unittest.skip('旧 CMDB API 已由统一资源中心替代；当前契约由 resource_center.tests 覆盖')
 class AuthenticatedTestCase(TestCase):
     def setUp(self):
         super().setUp()

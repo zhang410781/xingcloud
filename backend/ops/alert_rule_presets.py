@@ -8,7 +8,7 @@ from .alert_rule_catalog import (
     REFERENCE_RULE_COUNT,
     REFERENCE_RULE_NAMES,
 )
-from .models import AlertRule, MetricDataSource
+from .models import AlertRule, AlertSource, MetricDataSource
 
 
 def _template(category, code, name, source_type, level, query_config, condition,
@@ -353,6 +353,7 @@ def _catalog_payload(item):
     payload['source'] = item['code']
     payload['is_template'] = True
     payload['is_enabled'] = False
+    payload['template_status'] = 'published'
     payload.pop('sort_order', None)
     return payload
 
@@ -401,10 +402,6 @@ def ensure_builtin_alert_rule_templates():
             if not created and rule.is_template:
                 _sync_template_and_unmodified_instances(rule, payload)
             rules.append(rule)
-    k8s_templates = [item for item in rules if item.is_template and item.source_type == 'prometheus' and item.category == 'k8s']
-    for datasource in MetricDataSource.objects.filter(provider=MetricDataSource.PROVIDER_PROMETHEUS, is_enabled=True):
-        for template in k8s_templates:
-            instantiate_rule_from_template(template, datasource=datasource)
     return rules
 
 
@@ -438,27 +435,34 @@ def _datasource_cluster_display_name(datasource, context=None):
     return datasource.cluster_name or datasource.name
 
 
-def instantiate_rule_from_template(template, datasource=None, overrides=None):
+def instantiate_rule_from_template(template, alert_source=None, overrides=None):
     if not template.is_template:
         raise ValueError('所选规则不是模板')
-    if template.source_type == 'prometheus' and datasource is None:
-        raise ValueError('Prometheus 规则必须选择指标数据源')
-    if datasource is not None and not datasource.is_enabled:
-        raise ValueError('指标数据源已停用')
+    if template.template_status not in {'published', 'review'}:
+        raise ValueError('只有已发布或待审核模板可以创建规则')
+    if template.source_type == 'prometheus' and alert_source is None:
+        raise ValueError('Prometheus 规则必须选择告警源')
+    if alert_source is not None and alert_source.provider != AlertSource.PROVIDER_PROMETHEUS:
+        raise ValueError('Prometheus 规则只能绑定 Prometheus 告警源')
+    datasource = alert_source.metric_datasource if alert_source else None
+    if template.source_type == 'prometheus' and (
+        datasource is None or not alert_source.is_enabled or not datasource.is_enabled
+    ):
+        raise ValueError('Prometheus 告警源或指标数据源已停用')
 
-    existing = AlertRule.objects.filter(template=template, metric_datasource=datasource).first()
+    existing = AlertRule.objects.filter(template=template, alert_source=alert_source).first()
     if existing:
         return existing, False
 
     business_context = _datasource_business_context(datasource)
     cluster_display_name = _datasource_cluster_display_name(datasource, context=business_context)
     payload = {
-        'name': f'{template.name} · {cluster_display_name}' if datasource else template.name,
+        'name': f'{template.name} · {alert_source.name}' if alert_source else template.name,
         'category': template.category,
         'source': template.code,
         'is_template': False,
         'template': template,
-        'metric_datasource': datasource,
+        'alert_source': alert_source,
         'source_type': template.source_type,
         'level': template.level,
         'query_config': deepcopy(template.query_config or {}),
@@ -477,16 +481,13 @@ def instantiate_rule_from_template(template, datasource=None, overrides=None):
         'is_enabled': False,
     }
     if datasource:
-        if business_context:
-            payload['labels']['environment'] = business_context.code
-            payload['labels']['environment_display_name'] = business_context.name
-        elif datasource.environment:
-            payload['labels']['environment'] = datasource.environment
         if datasource.cluster_name:
             payload['labels']['cluster'] = datasource.cluster_name
         if cluster_display_name:
             payload['labels']['cluster_display_name'] = cluster_display_name
         payload['labels']['metric_datasource_id'] = str(datasource.id)
+        payload['labels']['alert_source_id'] = str(alert_source.id)
+        payload['labels']['alert_source_code'] = alert_source.code
     for key, value in (overrides or {}).items():
         if key in INSTANCE_FIELDS:
             payload[key] = deepcopy(value)
@@ -496,11 +497,24 @@ def instantiate_rule_from_template(template, datasource=None, overrides=None):
 @transaction.atomic
 def ensure_datasource_rule_instances(datasource, category='k8s'):
     templates = ensure_builtin_alert_rule_templates()
+    alert_source, _ = AlertSource.objects.get_or_create(
+        metric_datasource=datasource,
+        defaults={
+            'name': datasource.name,
+            'code': f'prometheus-{datasource.id}',
+            'provider': AlertSource.PROVIDER_PROMETHEUS,
+            'is_enabled': False,
+            'notify_enabled': True,
+            'analyze_enabled': True,
+        },
+    )
+    if not alert_source.is_enabled:
+        return []
     created = []
     for template in templates:
         if template.source_type != 'prometheus' or template.category != category:
             continue
-        rule, was_created = instantiate_rule_from_template(template, datasource=datasource)
+        rule, was_created = instantiate_rule_from_template(template, alert_source=alert_source)
         if was_created:
             created.append(rule)
     return created
@@ -519,6 +533,15 @@ def install_rules_from_templates(template_codes, metric_datasource_id=None, over
     template_map = {item.code: item for item in templates}
     if datasource is None and any(item.source_type == 'prometheus' for item in template_map.values()):
         raise ValueError('安装 Prometheus 规则时必须选择指标数据源')
+    alert_source = None
+    if datasource is not None:
+        alert_source = AlertSource.objects.filter(
+            metric_datasource=datasource,
+            provider=AlertSource.PROVIDER_PROMETHEUS,
+            is_enabled=True,
+        ).first()
+        if not alert_source:
+            raise ValueError('请先为指标数据源配置并启用 Prometheus 告警源')
     created = []
     skipped = []
     for code in template_codes:
@@ -527,7 +550,7 @@ def install_rules_from_templates(template_codes, metric_datasource_id=None, over
             skipped.append(code)
             continue
         try:
-            rule, was_created = instantiate_rule_from_template(template, datasource=datasource, overrides=overrides)
+            rule, was_created = instantiate_rule_from_template(template, alert_source=alert_source, overrides=overrides)
         except ValueError:
             skipped.append(code)
             continue

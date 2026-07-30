@@ -15,8 +15,6 @@
       </div>
     </section>
 
-    <ObservabilityRouteTabs group="observability" />
-
     <section v-if="activeTab === 'events'" class="toolbar panel feature-scope-bar">
       <div v-if="filters.binding_scope === 'current'" class="toolbar-field">
         <span>业务上下文</span>
@@ -462,10 +460,10 @@
           <section class="alert-detail-card">
             <el-descriptions class="alert-detail-summary" :column="1" size="small" border>
               <el-descriptions-item label="&#x6765;&#x6E90;">{{ providerText(selectedAlert.source_type) }} / {{ selectedAlert.source_display || selectedAlert.source }}</el-descriptions-item>
-              <el-descriptions-item v-if="selectedAlert.ingress_source_detail" label="外部接入源">{{ selectedAlert.ingress_source_detail.name }} / {{ selectedAlert.ingress_source_detail.code }}</el-descriptions-item>
+              <el-descriptions-item v-if="selectedAlert.alert_source_detail" label="告警源">{{ selectedAlert.alert_source_detail.name }} / {{ selectedAlert.alert_source_detail.code }}</el-descriptions-item>
               <el-descriptions-item label="&#x8D44;&#x6E90;">{{ selectedAlert.resource || selectedAlert.host_name || '-' }}</el-descriptions-item>
               <el-descriptions-item label="&#x670D;&#x52A1;">{{ selectedAlert.service || '-' }}</el-descriptions-item>
-              <el-descriptions-item :label="selectedAlert.ingress_source_detail ? '接入源' : '业务上下文'">{{ selectedAlert.environment_display || '-' }}</el-descriptions-item>
+              <el-descriptions-item label="来源范围">{{ selectedAlert.environment_display || '-' }}</el-descriptions-item>
               <el-descriptions-item label="集群">{{ selectedAlert.cluster_display || '-' }}</el-descriptions-item>
               <el-descriptions-item label="资源中心匹配">
                 <template v-if="selectedAlert.matched_resource_detail">
@@ -1024,7 +1022,6 @@ import {
 } from '@/api/modules/ops'
 import { useAuthStore } from '@/stores/auth'
 import { useFeatureBusinessContext } from '@/composables/useFeatureBusinessContext'
-import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
 import AlertRuleWizard from '@/components/observability/AlertRuleWizard.vue'
 import ExternalAlertSourcesPanel from '@/components/observability/ExternalAlertSourcesPanel.vue'
 
@@ -1274,7 +1271,7 @@ const channelOptions = [
 
 const dimensionOptions = [
   { label: '\u6765\u6E90\u7C7B\u578B', value: 'source_type' },
-  { label: '外部接入源', value: 'ingress_source_code' },
+  { label: '告警源', value: 'alert_source_code' },
   { label: '\u73AF\u5883', value: 'environment' },
   { label: '\u670D\u52A1', value: 'service' },
   { label: '\u96C6\u7FA4', value: 'cluster' },

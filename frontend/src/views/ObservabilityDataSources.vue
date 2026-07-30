@@ -12,8 +12,6 @@
       </div>
     </section>
 
-    <ObservabilityRouteTabs group="datasources" />
-
     <el-tabs v-model="activeTab" class="data-source-tabs">
       <el-tab-pane label="指标数据源" name="metrics">
         <MetricsQuery embedded initial-tab="datasources" />
@@ -28,7 +26,6 @@
 <script setup>
 import { ref } from 'vue'
 import { DataBoard } from '@element-plus/icons-vue'
-import ObservabilityRouteTabs from '@/components/observability/ObservabilityRouteTabs.vue'
 import MetricsQuery from './MetricsQuery.vue'
 import LogDataSources from './LogDataSources.vue'
 

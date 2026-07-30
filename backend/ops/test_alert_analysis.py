@@ -30,8 +30,9 @@ from ops.models import (
     AlertNotificationChannel,
     AlertNotificationLog,
     AlertNotificationPolicy,
+    AlertNotificationRoute,
     AlertRule,
-    ExternalAlertSource,
+    AlertSource,
     LogDataSource,
     MetricDataSource,
 )
@@ -55,6 +56,11 @@ class AlertAnalysisTests(TestCase):
                 'field_map': {'namespace': 'kubernetes.namespace_name', 'pod': 'kubernetes.pod_name'},
             },
         )
+        self.alert_source = AlertSource.objects.create(
+            name='analysis-alert-source', code='analysis-alert-source',
+            provider=AlertSource.PROVIDER_PROMETHEUS,
+            metric_datasource=self.metric,
+        )
         self.environment = AIOpsKnowledgeEnvironment.objects.create(
             name='production',
             code='prod',
@@ -69,6 +75,7 @@ class AlertAnalysisTests(TestCase):
             status=Alert.STATUS_ACTIVE,
             source='Xing-Cloud 告警规则',
             source_type=Alert.SOURCE_PLATFORM,
+            alert_source=self.alert_source,
             message='Pod 15 分钟内重启超过阈值',
             environment='prod',
             knowledge_environment=self.environment,
@@ -92,6 +99,15 @@ class AlertAnalysisTests(TestCase):
             },
             starts_at=timezone.now() - timedelta(minutes=2),
         )
+
+    def add_routes(self, policy, *channels):
+        return [
+            AlertNotificationRoute.objects.create(
+                policy=policy, level='warning', trigger='immediate',
+                channel=channel, target_type='fixed', sort_order=index * 10,
+            )
+            for index, channel in enumerate(channels, start=1)
+        ]
 
     @patch('ops.observability_evidence._run_query')
     def test_collects_elasticsearch_logs_with_environment_dimensions_and_window(self, run_query):
@@ -184,16 +200,16 @@ class AlertAnalysisTests(TestCase):
     def test_notification_dispatch_allows_resolved_analysis(self, send_notification):
         rule = AlertRule.objects.create(
             name='analysis rule', source_type='prometheus', category='k8s',
-            metric_datasource=self.metric, is_template=False, notify_enabled=True,
+            alert_source=self.alert_source, is_template=False, notify_enabled=True,
         )
         channel = AlertNotificationChannel.objects.create(
             name='analysis feishu', channel_type='feishu',
             config={'webhook_url': 'https://open.feishu.cn/test', 'secret': 'secret'},
         )
         policy = AlertNotificationPolicy.objects.create(
-            name='analysis policy', metric_datasource=self.metric, notify_on_analysis=True,
+            name='analysis policy', alert_source=self.alert_source, notify_on_analysis=True,
         )
-        policy.channels.add(channel)
+        self.add_routes(policy, channel)
         self.alert.status = Alert.STATUS_RESOLVED
         self.alert.labels = {**self.alert.labels, 'alert_rule_id': str(rule.id)}
         self.alert.save(update_fields=['status', 'labels'])
@@ -211,16 +227,16 @@ class AlertAnalysisTests(TestCase):
     def test_analysis_is_not_sent_when_current_cycle_alert_was_not_delivered(self, send_notification):
         rule = AlertRule.objects.create(
             name='analysis gate rule', source_type='prometheus', category='k8s',
-            metric_datasource=self.metric, is_template=False, notify_enabled=True,
+            alert_source=self.alert_source, is_template=False, notify_enabled=True,
         )
         channel = AlertNotificationChannel.objects.create(
             name='analysis gate feishu', channel_type='feishu',
             config={'webhook_url': 'https://open.feishu.cn/test', 'secret': 'secret'},
         )
         policy = AlertNotificationPolicy.objects.create(
-            name='analysis gate policy', metric_datasource=self.metric, notify_on_analysis=True,
+            name='analysis gate policy', alert_source=self.alert_source, notify_on_analysis=True,
         )
-        policy.channels.add(channel)
+        self.add_routes(policy, channel)
         self.alert.labels = {**self.alert.labels, 'alert_rule_id': str(rule.id)}
         self.alert.save(update_fields=['labels'])
 
@@ -233,16 +249,16 @@ class AlertAnalysisTests(TestCase):
     def test_analysis_does_not_bypass_alert_suppression_even_when_forced(self, send_notification):
         rule = AlertRule.objects.create(
             name='suppressed analysis rule', source_type='prometheus', category='k8s',
-            metric_datasource=self.metric, is_template=False, notify_enabled=True,
+            alert_source=self.alert_source, is_template=False, notify_enabled=True,
         )
         channel = AlertNotificationChannel.objects.create(
             name='suppressed feishu', channel_type='feishu',
             config={'webhook_url': 'https://open.feishu.cn/test', 'secret': 'secret'},
         )
         policy = AlertNotificationPolicy.objects.create(
-            name='suppressed policy', metric_datasource=self.metric, notify_on_analysis=True,
+            name='suppressed policy', alert_source=self.alert_source, notify_on_analysis=True,
         )
-        policy.channels.add(channel)
+        self.add_routes(policy, channel)
         self.alert.labels = {**self.alert.labels, 'alert_rule_id': str(rule.id)}
         self.alert.is_suppressed = True
         self.alert.suppressed_by = 'silence:test'
@@ -261,16 +277,16 @@ class AlertAnalysisTests(TestCase):
     def test_analysis_is_not_sent_for_storm_primary_alert(self, send_notification):
         rule = AlertRule.objects.create(
             name='storm analysis rule', source_type='prometheus', category='k8s',
-            metric_datasource=self.metric, is_template=False, notify_enabled=True,
+            alert_source=self.alert_source, is_template=False, notify_enabled=True,
         )
         channel = AlertNotificationChannel.objects.create(
             name='storm feishu', channel_type='feishu',
             config={'webhook_url': 'https://open.feishu.cn/test', 'secret': 'secret'},
         )
         policy = AlertNotificationPolicy.objects.create(
-            name='storm policy', metric_datasource=self.metric, notify_on_analysis=True,
+            name='storm policy', alert_source=self.alert_source, notify_on_analysis=True,
         )
-        policy.channels.add(channel)
+        self.add_routes(policy, channel)
         self.alert.labels = {**self.alert.labels, 'alert_rule_id': str(rule.id)}
         self.alert.raw_payload = {
             **self.alert.raw_payload,
@@ -290,16 +306,16 @@ class AlertAnalysisTests(TestCase):
     def test_analysis_does_not_inherit_fire_delivery_from_previous_cycle(self, send_notification):
         rule = AlertRule.objects.create(
             name='cycle gate rule', source_type='prometheus', category='k8s',
-            metric_datasource=self.metric, is_template=False, notify_enabled=True,
+            alert_source=self.alert_source, is_template=False, notify_enabled=True,
         )
         channel = AlertNotificationChannel.objects.create(
             name='cycle gate feishu', channel_type='feishu',
             config={'webhook_url': 'https://open.feishu.cn/test', 'secret': 'secret'},
         )
         policy = AlertNotificationPolicy.objects.create(
-            name='cycle gate policy', metric_datasource=self.metric, notify_on_analysis=True,
+            name='cycle gate policy', alert_source=self.alert_source, notify_on_analysis=True,
         )
-        policy.channels.add(channel)
+        self.add_routes(policy, channel)
         self.alert.labels = {**self.alert.labels, 'alert_rule_id': str(rule.id)}
         self.alert.save(update_fields=['labels'])
         old_log = AlertNotificationLog.objects.create(
@@ -319,7 +335,7 @@ class AlertAnalysisTests(TestCase):
     def test_analysis_only_follows_channels_that_delivered_the_alert(self, send_notification):
         rule = AlertRule.objects.create(
             name='channel inheritance rule', source_type='prometheus', category='k8s',
-            metric_datasource=self.metric, is_template=False, notify_enabled=True,
+            alert_source=self.alert_source, is_template=False, notify_enabled=True,
         )
         delivered = AlertNotificationChannel.objects.create(
             name='delivered feishu', channel_type='feishu',
@@ -330,9 +346,9 @@ class AlertAnalysisTests(TestCase):
             config={'webhook_url': 'https://qyapi.weixin.qq.com/test'},
         )
         policy = AlertNotificationPolicy.objects.create(
-            name='channel inheritance policy', metric_datasource=self.metric, notify_on_analysis=True,
+            name='channel inheritance policy', alert_source=self.alert_source, notify_on_analysis=True,
         )
-        policy.channels.add(delivered, skipped)
+        self.add_routes(policy, delivered, skipped)
         self.alert.labels = {**self.alert.labels, 'alert_rule_id': str(rule.id)}
         self.alert.save(update_fields=['labels'])
         AlertNotificationLog.objects.create(
@@ -373,7 +389,7 @@ class AlertAnalysisTests(TestCase):
     def test_continuous_rule_matches_keep_one_analysis_for_current_cycle(self):
         rule = AlertRule.objects.create(
             name='continuous analysis rule', code='continuous-analysis-rule',
-            source_type='prometheus', category='k8s', metric_datasource=self.metric,
+            source_type='prometheus', category='k8s', alert_source=self.alert_source,
             is_template=False, is_enabled=True, notify_enabled=False, auto_analyze=True,
         )
         payload = {'title': 'continuous alert', 'labels': {'namespace': 'ops', 'pod': 'api-0'}}
@@ -387,7 +403,7 @@ class AlertAnalysisTests(TestCase):
     def test_reactivated_alert_resets_start_time_and_creates_new_analysis(self):
         rule = AlertRule.objects.create(
             name='reactivated analysis rule', code='reactivated-analysis-rule',
-            source_type='prometheus', category='k8s', metric_datasource=self.metric,
+            source_type='prometheus', category='k8s', alert_source=self.alert_source,
             is_template=False, is_enabled=True, notify_enabled=False, auto_analyze=True,
         )
         payload = {'title': 'reactivated alert', 'labels': {'namespace': 'ops', 'pod': 'api-0'}}
@@ -483,10 +499,10 @@ class AlertAnalysisTests(TestCase):
     def test_completed_analysis_reports_disabled_notification_policy(self):
         rule = AlertRule.objects.create(
             name='disabled analysis notification', source_type='prometheus', category='k8s',
-            metric_datasource=self.metric, is_template=False, is_enabled=True, notify_enabled=True,
+            alert_source=self.alert_source, is_template=False, is_enabled=True, notify_enabled=True,
         )
         AlertNotificationPolicy.objects.create(
-            name='analysis disabled policy', metric_datasource=self.metric, notify_on_analysis=False,
+            name='analysis disabled policy', alert_source=self.alert_source, notify_on_analysis=False,
         )
         self.alert.labels = {**self.alert.labels, 'alert_rule_id': str(rule.id)}
         self.alert.save(update_fields=['labels'])
@@ -503,10 +519,10 @@ class AlertAnalysisTests(TestCase):
     def test_completed_analysis_reports_storm_suppression(self):
         rule = AlertRule.objects.create(
             name='storm delivery status', source_type='prometheus', category='k8s',
-            metric_datasource=self.metric, is_template=False, is_enabled=True, notify_enabled=True,
+            alert_source=self.alert_source, is_template=False, is_enabled=True, notify_enabled=True,
         )
         policy = AlertNotificationPolicy.objects.create(
-            name='storm delivery policy', metric_datasource=self.metric, notify_on_analysis=True,
+            name='storm delivery policy', alert_source=self.alert_source, notify_on_analysis=True,
         )
         self.alert.labels = {**self.alert.labels, 'alert_rule_id': str(rule.id)}
         self.alert.raw_payload = {
@@ -531,7 +547,7 @@ class AlertAnalysisTests(TestCase):
     def test_existing_active_alert_without_analysis_is_backfilled_once(self):
         rule = AlertRule.objects.create(
             name='existing active rule', source_type='prometheus', category='k8s',
-            metric_datasource=self.metric, is_template=False, auto_analyze=True,
+            alert_source=self.alert_source, is_template=False, auto_analyze=True,
         )
 
         analysis, created = enqueue_for_rule_alert(self.alert, rule, created=False)
@@ -545,7 +561,7 @@ class AlertAnalysisTests(TestCase):
     def test_completed_current_cycle_analysis_is_not_requeued_by_backfill(self):
         rule = AlertRule.objects.create(
             name='completed cycle rule', source_type='prometheus', category='k8s',
-            metric_datasource=self.metric, is_template=False, auto_analyze=True,
+            alert_source=self.alert_source, is_template=False, auto_analyze=True,
         )
         self.alert.labels = {**self.alert.labels, 'alert_rule_id': str(rule.id)}
         self.alert.save(update_fields=['labels'])
@@ -564,7 +580,7 @@ class AlertAnalysisTests(TestCase):
     def test_worker_repairs_active_alert_with_pending_marker_only(self):
         rule = AlertRule.objects.create(
             name='repair rule', source_type='prometheus', category='k8s',
-            metric_datasource=self.metric, is_template=False, auto_analyze=True,
+            alert_source=self.alert_source, is_template=False, auto_analyze=True,
         )
         self.alert.raw_payload = {
             **self.alert.raw_payload,
@@ -588,7 +604,7 @@ class AlertAnalysisTests(TestCase):
         instance = AlertRule.objects.create(
             name='legacy pod restart instance', source='k8s-abnormal-pods',
             source_type='prometheus', category='k8s', is_template=False,
-            template=legacy, metric_datasource=self.metric,
+            template=legacy, alert_source=self.alert_source,
         )
 
         ensure_builtin_alert_rule_templates()
@@ -625,7 +641,7 @@ class AlertAnalysisTests(TestCase):
         enqueue.side_effect = lambda *args, **kwargs: order.append('enqueue') or (None, False)
         rule = AlertRule.objects.create(
             name='ordered rule', code='ordered-rule', source_type='prometheus', category='k8s',
-            metric_datasource=self.metric, is_template=False, is_enabled=True,
+            alert_source=self.alert_source, is_template=False, is_enabled=True,
             notify_enabled=True, auto_analyze=True,
         )
 
@@ -679,7 +695,7 @@ class AlertAnalysisTests(TestCase):
             labels={'alert_rule_code': 'pod-restarts'}, starts_at=timezone.now(),
         )
         policy = AlertNotificationPolicy.objects.create(
-            name='agent4', inhibition_matchers=[{
+            name='agent4', alert_source=self.alert_source, inhibition_matchers=[{
                 'source_level': 'critical',
                 'target_levels': ['warning', 'info'],
                 'equal': ['environment', 'namespace', 'alert_rule_code'],
@@ -720,30 +736,30 @@ class AlertAnalysisTests(TestCase):
         self.assertLessEqual(primary['end_ms'] - primary['start_ms'], 5 * 60 * 1000)
 
     def test_notification_policy_exposes_analysis_switch_default(self):
-        policy = AlertNotificationPolicy.objects.create(name='analysis policy')
+        policy = AlertNotificationPolicy.objects.create(name='analysis policy', alert_source=self.alert_source)
         self.assertTrue(policy.notify_on_analysis)
 
     def test_default_notification_hides_value_threshold_and_promql(self):
         body = _default_body(self.alert, action='fire')
 
         self.assertIn('Pod 15 分钟内重启超过阈值', body)
-        self.assertIn('业务上下文：** production', body)
+        self.assertIn('告警源：** analysis-alert-source', body)
         self.assertNotIn('当前值', body)
         self.assertNotIn('触发条件', body)
         self.assertNotIn('increase(restarts[15m])', body)
 
     def test_external_notification_displays_ingress_source_name(self):
-        source = ExternalAlertSource.objects.create(
+        source = AlertSource.objects.create(
             name='生产 Alertmanager', code='production-alertmanager', provider='alertmanager',
         )
         alert = Alert.objects.create(
             title='外部告警', source=source.code, source_type=Alert.SOURCE_ALERTMANAGER,
-            ingress_source=source, message='外部系统告警', namespace='external',
+            alert_source=source, message='外部系统告警', namespace='external',
         )
 
         body = _default_body(alert, action='fire')
 
-        self.assertIn('接入源：** 生产 Alertmanager', body)
+        self.assertIn('告警源：** 生产 Alertmanager', body)
         self.assertNotIn('业务上下文：**', body)
 
     @patch('ops.alert_analysis.execute_alert_analysis')
@@ -780,12 +796,12 @@ class AlertAnalysisTests(TestCase):
 
         self.assertIn('研判状态：** 研判期间已恢复', body)
 
-    def test_platform_alert_uses_bound_context_code_not_datasource_display_name(self):
+    def test_platform_alert_preserves_rule_result_environment_without_global_context(self):
         self.metric.environment = '智能运维平台'
         self.metric.save(update_fields=['environment'])
         rule = AlertRule.objects.create(
             name='context rule', code='context-rule', source_type='prometheus',
-            category='k8s', metric_datasource=self.metric, is_template=False,
+            category='k8s', alert_source=self.alert_source, is_template=False,
         )
 
         payload = build_platform_alert_payload(
@@ -796,9 +812,8 @@ class AlertAnalysisTests(TestCase):
             },
         )
 
-        self.assertEqual(payload['environment'], self.environment.code)
-        self.assertEqual(payload['labels']['environment'], self.environment.code)
-        self.assertEqual(payload['labels']['environment_display_name'], self.environment.name)
+        self.assertEqual(payload['environment'], '智能运维平台')
+        self.assertEqual(payload['labels']['environment'], '智能运维平台')
 
     @override_settings(XING_CLOUD_PUBLIC_BASE_URL='https://xingcloud.example.com')
     def test_alert_card_includes_detail_claim_and_mute_buttons(self):
@@ -836,14 +851,14 @@ class AlertAnalysisApiTests(TestCase):
         self.assertEqual(history_response.data['latest']['status'], AlertAnalysis.STATUS_PENDING)
 
     def test_manual_external_analysis_uses_webhook_text_only(self):
-        source = ExternalAlertSource.objects.create(
+        source = AlertSource.objects.create(
             name='External Alertmanager', code='external-alertmanager', provider='alertmanager',
         )
         self.alert.source = source.code
         self.alert.source_type = Alert.SOURCE_ALERTMANAGER
-        self.alert.ingress_source = source
+        self.alert.alert_source = source
         self.alert.binding_status = 'not_applicable'
-        self.alert.save(update_fields=['source', 'source_type', 'ingress_source', 'binding_status'])
+        self.alert.save(update_fields=['source', 'source_type', 'alert_source', 'binding_status'])
 
         response = self.client.post(reverse('alert-analyze', args=[self.alert.id]), {}, format='json')
 

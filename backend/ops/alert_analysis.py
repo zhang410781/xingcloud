@@ -70,7 +70,7 @@ def _alert_rule(alert):
     rule_data = _dict(_dict(alert.raw_payload).get('rule'))
     rule_id = rule_data.get('id') or _dict(alert.labels).get('alert_rule_id')
     try:
-        return AlertRule.objects.select_related('metric_datasource').filter(pk=int(rule_id)).first()
+        return AlertRule.objects.select_related('alert_source', 'alert_source__metric_datasource').filter(pk=int(rule_id)).first()
     except (TypeError, ValueError):
         return None
 
@@ -78,7 +78,12 @@ def _alert_rule(alert):
 def _metric_datasource_id(alert, rule=None):
     labels = _dict(alert.labels)
     raw_rule = _dict(_dict(alert.raw_payload).get('rule'))
-    value = (rule.metric_datasource_id if rule else None) or raw_rule.get('metric_datasource_id') or labels.get('metric_datasource_id')
+    datasource_id = (
+        rule.alert_source.metric_datasource_id
+        if rule and rule.alert_source_id and rule.alert_source.metric_datasource_id
+        else None
+    )
+    value = datasource_id or raw_rule.get('metric_datasource_id') or labels.get('metric_datasource_id')
     try:
         return int(value) if value else None
     except (TypeError, ValueError):
@@ -91,9 +96,13 @@ def _resolve_environment(alert, rule=None):
     metric_id = _metric_datasource_id(alert, rule=rule)
     environment = alert.knowledge_environment if alert.knowledge_environment_id else resolve_business_context(alert.environment)
     if not environment:
-        return None, [], [], '告警未匹配到知识环境，未查询任何默认数据源'
+        metric_ids = [metric_id] if metric_id else []
+        message = '告警未匹配到业务上下文，仅使用告警源已绑定的证据源'
+        return None, metric_ids, [], message
     if alert.environment != environment.code:
-        return environment, [], [], f'告警环境“{alert.environment}”与业务上下文编码“{environment.code}”不一致'
+        metric_ids = [metric_id] if metric_id else []
+        log_ids = [environment.log_datasource_id] if environment.log_datasource_id else []
+        return environment, metric_ids, log_ids, f'告警环境“{alert.environment}”与业务上下文编码“{environment.code}”不一致'
     metric_ids = [environment.metric_datasource_id] if environment.metric_datasource_id else []
     log_ids = [environment.log_datasource_id] if environment.log_datasource_id else []
     if metric_id and (not metric_ids or metric_ids[0] != metric_id):
@@ -641,8 +650,8 @@ def execute_lightweight_alert_analysis(analysis):
     ])
     _project_compatibility(analysis)
     analysis.alert.refresh_from_db(fields=['status'])
-    ingress_source = analysis.alert.ingress_source if analysis.alert.ingress_source_id else None
-    notification_enabled = ingress_source is None or ingress_source.notify_enabled
+    alert_source = analysis.alert.alert_source if analysis.alert.alert_source_id else None
+    notification_enabled = alert_source is None or alert_source.notify_enabled
     if notification_enabled and analysis.alert.status in {Alert.STATUS_ACTIVE, Alert.STATUS_RESOLVED}:
         try:
             from .alerting import dispatch_alert_notifications
@@ -881,7 +890,7 @@ def _analysis_notification_delivery(analysis):
         }
         for log in logs
     ]
-    ingress_source = analysis.alert.ingress_source if analysis.alert.ingress_source_id else None
+    alert_source = analysis.alert.alert_source if analysis.alert.alert_source_id else None
     if any(log.status == AlertNotificationLog.STATUS_SUCCESS for log in logs):
         status, message = 'sent', '研判结果通知已发送'
     elif any(log.status == AlertNotificationLog.STATUS_ERROR for log in logs):
@@ -890,8 +899,8 @@ def _analysis_notification_delivery(analysis):
         status, message = 'skipped', '研判结果通知已跳过'
     elif analysis.status in {AlertAnalysis.STATUS_PENDING, AlertAnalysis.STATUS_RUNNING}:
         status, message = 'pending', '研判尚未完成'
-    elif ingress_source and not ingress_source.notify_enabled:
-        status, message = 'disabled', '研判已完成并入库，但该外部接入源已关闭通知'
+    elif alert_source and not alert_source.notify_enabled:
+        status, message = 'disabled', '研判已完成并入库，但该告警源已关闭通知'
     else:
         from .alerting import analysis_notification_gate, resolve_notification_policies
 
