@@ -53,7 +53,7 @@ class FlashcatDashboardTests(TestCase):
                         'message': 'request failed',
                         'kubernetes': {
                             'namespace_name': 'prod', 'pod_name': 'api-1',
-                            'container_name': 'api', 'host': 'worker-1',
+                            'container_name': 'api', 'node_name': 'worker-1',
                         },
                     },
                 }],

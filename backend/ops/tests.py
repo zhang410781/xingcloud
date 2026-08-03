@@ -1337,6 +1337,11 @@ class ObservabilityViewsTests(TestCase):
             config={'query_url': 'http://prometheus.local:9090'},
             is_enabled=True,
         )
+        AlertSource.objects.create(
+            name='Redis Prometheus 告警源', code='redis-prometheus-alerts',
+            provider=AlertSource.PROVIDER_PROMETHEUS, metric_datasource=datasource,
+            is_enabled=True,
+        )
         response = self.client.post(
             '/api/observability/integrations/redis/install-rules/',
             {
@@ -1434,12 +1439,17 @@ class ObservabilityViewsTests(TestCase):
             config={'query_url': 'http://prometheus.local:9090'},
             is_enabled=True,
         )
+        source = AlertSource.objects.create(
+            name='Draft Prometheus 告警源', code='draft-prometheus-alerts',
+            provider=AlertSource.PROVIDER_PROMETHEUS, metric_datasource=datasource,
+            is_enabled=True,
+        )
         response = self.client.post(
             '/api/alert-rules/dry-run-draft/',
             {
                 'name': 'Draft Redis Down',
                 'source_type': 'prometheus',
-                'metric_datasource': datasource.id,
+                'alert_source': source.id,
                 'level': 'critical',
                 'query_config': {'query': 'redis_up == 0'},
                 'condition': {'operator': '>', 'threshold': 0},
@@ -2931,7 +2941,7 @@ class AlertIngressBoundaryTests(TestCase):
         source_values = {value for value, _ in Alert.SOURCE_TYPE_CHOICES}
 
         self.assertEqual(Alert.SOURCE_PLATFORM, Alert._meta.get_field('source_type').default)
-        self.assertEqual({'platform', 'zabbix', 'alertmanager'}, source_values)
+        self.assertEqual({'platform', 'prometheus', 'zabbix', 'alertmanager'}, source_values)
 
 
 class AlertActionApiTests(TestCase):
