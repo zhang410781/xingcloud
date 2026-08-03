@@ -373,10 +373,12 @@ class K8sClusterSerializer(serializers.ModelSerializer):
 
     @staticmethod
     def _discovery_source(obj):
-        try:
-            return obj.resource_discovery_source
-        except ObjectDoesNotExist:
+        manager = getattr(obj, 'resource_discovery_source', None)
+        if manager is None:
             return None
+        if hasattr(manager, 'first'):
+            return manager.first()
+        return manager
 
     def get_discovery_status(self, obj):
         source = self._discovery_source(obj)

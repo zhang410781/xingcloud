@@ -216,7 +216,7 @@ class AppReleaseRuntimeTests(DeploymentTestCase):
             display_name=self.cluster.name, source='k8s',
         )
         ResourceSourceBinding.objects.create(
-            source=self.cluster.resource_discovery_source,
+            source=self.cluster.resource_discovery_source.first(),
             resource=cluster_resource,
             external_type='cluster',
             external_id='test-cluster-uid',

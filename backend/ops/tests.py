@@ -1777,6 +1777,41 @@ class ContainerManagementTests(TestCase):
         self.assertIn('证书校验失败', payload['message'])
         self.assertEqual(K8sCluster.objects.get(id=cluster.id).status, 'error')
 
+    def test_delete_cluster_with_discovery_dependencies_succeeds(self):
+        from resource_center.models import DiscoveryRun, DiscoverySource, Resource, ResourceSourceBinding, RuntimeResource
+        from resource_center.discovery import ensure_builtin_resource_types
+
+        ensure_builtin_resource_types()
+        types = ensure_builtin_resource_types()
+        cluster = K8sCluster.objects.create(
+            name='制品仓',
+            api_server='https://10.140.117.8:6443',
+            kubeconfig='apiVersion: v1\nkind: Config',
+            status='error',
+        )
+        source = DiscoverySource.objects.filter(k8s_cluster=cluster).first()
+        self.assertIsNotNone(source)
+        resource = Resource.objects.create(
+            resource_type=types['k8s_cluster'], name=cluster.name, display_name=cluster.name, source='k8s',
+        )
+        DiscoveryRun.objects.create(source=source, status='pending')
+        RuntimeResource.objects.create(
+            source=source, cluster_resource=resource, kind='Pod', uid='pod-1', name='web-1', namespace='default',
+            last_seen_at=timezone.now(), expires_at=timezone.now() + timedelta(minutes=10),
+        )
+        ResourceSourceBinding.objects.create(
+            source=source, resource=resource, external_type='cluster', external_id='cluster-uid-1',
+        )
+
+        response = self.client.delete(f'/api/k8s/clusters/{cluster.id}/')
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(K8sCluster.objects.filter(id=cluster.id).exists())
+        self.assertFalse(DiscoverySource.objects.filter(pk=source.pk).exists())
+        self.assertFalse(DiscoveryRun.objects.filter(source_id=source.pk).exists())
+        self.assertFalse(RuntimeResource.objects.filter(source_id=source.pk).exists())
+        self.assertFalse(ResourceSourceBinding.objects.filter(source_id=source.pk).exists())
+
     def test_k8s_summary_returns_demo_cluster_metrics(self):
         cluster = K8sCluster.objects.create(
             name='demo-cluster',

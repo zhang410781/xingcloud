@@ -157,8 +157,8 @@ class DiscoverySource(models.Model):
 
     name = models.CharField('发现源名称', max_length=128)
     source_type = models.CharField('发现源类型', max_length=32, choices=TYPE_CHOICES)
-    k8s_cluster = models.OneToOneField(
-        'ops.K8sCluster', on_delete=models.CASCADE, null=True, blank=True,
+    k8s_cluster = models.ForeignKey(
+        'ops.K8sCluster', on_delete=models.SET_NULL, null=True, blank=True,
         related_name='resource_discovery_source', verbose_name='K8S 集群连接',
     )
     config = models.JSONField('发现配置', default=dict, blank=True)
@@ -175,12 +175,6 @@ class DiscoverySource(models.Model):
 
     class Meta:
         ordering = ['source_type', 'name', 'id']
-        constraints = [
-            models.CheckConstraint(
-                condition=~models.Q(source_type='k8s') | models.Q(k8s_cluster__isnull=False),
-                name='rc_k8s_source_has_cluster',
-            ),
-        ]
 
 
 class DiscoveryRun(models.Model):

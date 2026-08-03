@@ -1116,6 +1116,16 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
 
     def perform_destroy(self, instance):
         _invalidate_cluster_runtime_cache(instance)
+        try:
+            from resource_center.models import DiscoverySource
+
+            for source in DiscoverySource.objects.filter(k8s_cluster_id=instance.id):
+                source.runs.all().delete()
+                source.bindings.all().delete()
+                source.runtime_resources.all().delete()
+                source.delete()
+        except Exception as e:
+            logger.warning('清理集群 %s 的自动发现源失败: %s', instance.name, e)
         instance.delete()
 
     @action(detail=True, methods=['post'])
