@@ -1683,6 +1683,58 @@ class ContainerManagementTests(TestCase):
         self.assertIn('server: https://k8s.example.com:6443', rendered)
         self.assertNotIn('server: https://203.0.113.176:6443', rendered)
 
+    def test_prepare_kubeconfig_injects_insecure_skip_tls_verify(self):
+        cluster = K8sCluster.objects.create(
+            name='vip-k8s',
+            api_server='https://10.140.117.8:6443',
+            tls_skip_verify=True,
+            kubeconfig=(
+                'apiVersion: v1\n'
+                'kind: Config\n'
+                'current-context: vip\n'
+                'contexts:\n'
+                '  - name: vip\n'
+                '    context:\n'
+                '      cluster: vip-cluster\n'
+                '      user: vip-user\n'
+                'clusters:\n'
+                '  - name: vip-cluster\n'
+                '    cluster:\n'
+                '      server: https://10.140.117.126:6443\n'
+            ),
+        )
+
+        rendered = _prepare_kubeconfig(cluster)
+
+        self.assertIn('server: https://10.140.117.8:6443', rendered)
+        self.assertIn('insecure-skip-tls-verify: true', rendered)
+
+    def test_prepare_kubeconfig_skips_insecure_when_disabled(self):
+        cluster = K8sCluster.objects.create(
+            name='secure-k8s',
+            api_server='https://10.140.117.8:6443',
+            tls_skip_verify=False,
+            kubeconfig=(
+                'apiVersion: v1\n'
+                'kind: Config\n'
+                'current-context: secure\n'
+                'contexts:\n'
+                '  - name: secure\n'
+                '    context:\n'
+                '      cluster: secure-cluster\n'
+                '      user: secure-user\n'
+                'clusters:\n'
+                '  - name: secure-cluster\n'
+                '    cluster:\n'
+                '      server: https://10.140.117.126:6443\n'
+            ),
+        )
+
+        rendered = _prepare_kubeconfig(cluster)
+
+        self.assertIn('server: https://10.140.117.8:6443', rendered)
+        self.assertNotIn('insecure-skip-tls-verify', rendered)
+
     def test_service_external_ips_supports_current_client_field_name(self):
         spec = SimpleNamespace(external_ips=['203.0.113.10', '203.0.113.11'])
 

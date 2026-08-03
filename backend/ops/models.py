@@ -1896,6 +1896,7 @@ class K8sCluster(models.Model):
     kubeconfig = models.TextField('KubeConfig', help_text='YAML 格式的 kubeconfig 内容')
     user_type = models.CharField('访问身份', max_length=16, choices=USER_TYPE_CHOICES, default='readonly')
     status = models.CharField('状态', max_length=16, choices=STATUS_CHOICES, default='disconnected')
+    tls_skip_verify = models.BooleanField('跳过 TLS 证书校验', default=False)
     description = models.CharField('描述', max_length=256, blank=True, default='')
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)

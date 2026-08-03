@@ -353,6 +353,7 @@ class K8sClusterSerializer(serializers.ModelSerializer):
             'user_type',
             'status',
             'status_display',
+            'tls_skip_verify',
             'discovery_status',
             'discovery_last_success_at',
             'discovery_last_error',

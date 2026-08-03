@@ -752,6 +752,15 @@
               <el-form-item label="APIServer 地址">
                 <el-input v-model="clusterForm.api_server" placeholder="可选；例如 https://192.168.2.106:6443" />
               </el-form-item>
+              <el-form-item label="TLS 校验">
+                <div class="kuboard-tls-skip-row">
+                  <el-switch v-model="clusterForm.tls_skip_verify" />
+                  <div class="kuboard-tls-skip-text">
+                    <strong>跳过 TLS 证书校验</strong>
+                    <span>高可用集群（VIP / 负载均衡）证书链不完整或使用自签名证书时开启；仅建议用于只读接入的内部集群。</span>
+                  </div>
+                </div>
+              </el-form-item>
               <el-form-item label="KubeConfig" required>
                 <el-input
                   v-model="clusterForm.kubeconfig"
@@ -1043,6 +1052,7 @@ NAMESPACE="\${NAMESPACE:-xing-cloud}"
 SERVICE_ACCOUNT="\${SERVICE_ACCOUNT:-xing-cloud-readonly}"
 CLUSTER_ROLE="\${CLUSTER_ROLE:-xing-cloud-readonly}"
 SERVER="\${SERVER:-$(kubectl config view --raw --minify -o jsonpath='{.clusters[0].cluster.server}')}"
+INSECURE="\${INSECURE:-0}"
 
 kubectl create namespace "\${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 kubectl -n "\${NAMESPACE}" create serviceaccount "\${SERVICE_ACCOUNT}" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
@@ -1125,6 +1135,7 @@ clusters:
   cluster:
     certificate-authority-data: \${CA_DATA}
     server: \${SERVER}
+    insecure-skip-tls-verify: \$([ "\${INSECURE}" = "1" ] && echo true || echo false)
 users:
 - name: \${SERVICE_ACCOUNT}
   user:
@@ -1741,17 +1752,17 @@ function normalizeContainerNames(containers) {
 const clusterDialogVisible = ref(false)
 const editingClusterId = ref(null)
 const savingCluster = ref(false)
-const clusterForm = ref({ name: '', api_server: '', user_type: 'readonly', description: '', kubeconfig: '' })
+const clusterForm = ref({ name: '', api_server: '', user_type: 'readonly', description: '', kubeconfig: '', tls_skip_verify: false })
 const kubeconfigGuide = computed(() => kubeconfigGuideMap[clusterForm.value.user_type] || kubeconfigGuideMap.readonly)
 
 function openClusterDialog(cluster) {
   if (!canManageK8s.value) return
   if (cluster) {
     editingClusterId.value = cluster.id
-    clusterForm.value = { name: cluster.name, api_server: cluster.api_server, user_type: cluster.user_type || 'readonly', description: cluster.description, kubeconfig: '' }
+    clusterForm.value = { name: cluster.name, api_server: cluster.api_server, user_type: cluster.user_type || 'readonly', description: cluster.description, kubeconfig: '', tls_skip_verify: !!cluster.tls_skip_verify }
   } else {
     editingClusterId.value = null
-    clusterForm.value = { name: '', api_server: '', user_type: 'readonly', description: '', kubeconfig: '' }
+    clusterForm.value = { name: '', api_server: '', user_type: 'readonly', description: '', kubeconfig: '', tls_skip_verify: false }
   }
   clusterDialogVisible.value = true
 }
@@ -3032,6 +3043,31 @@ onBeforeUnmount(() => { disposeExecTerminal() })
 
 .kuboard-step-main {
   min-width: 0;
+}
+
+.kuboard-tls-skip-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.kuboard-tls-skip-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.kuboard-tls-skip-text strong {
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.kuboard-tls-skip-text span {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .kuboard-step-head {

@@ -73,8 +73,7 @@ def _is_demo(cluster):
 def _prepare_kubeconfig(cluster):
     kubeconfig_text = cluster.kubeconfig or ''
     api_server = (cluster.api_server or '').strip()
-    if not api_server:
-        return kubeconfig_text
+    skip_verify = bool(getattr(cluster, 'tls_skip_verify', False))
 
     try:
         kubeconfig = yaml.safe_load(kubeconfig_text) or {}
@@ -112,7 +111,10 @@ def _prepare_kubeconfig(cluster):
             continue
         cluster_data = cluster_item.setdefault('cluster', {})
         if isinstance(cluster_data, dict):
-            cluster_data['server'] = api_server
+            if api_server:
+                cluster_data['server'] = api_server
+            if skip_verify:
+                cluster_data['insecure-skip-tls-verify'] = True
             return yaml.safe_dump(kubeconfig, sort_keys=False, allow_unicode=True)
 
     return kubeconfig_text
@@ -1160,7 +1162,8 @@ class K8sClusterViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
                     '证书校验失败：当前 API Server 地址与 kubeconfig 证书不匹配。'
                     '请改用证书 SAN 中的域名或 IP，'
                     '或者在 apiserver 证书中加入该 IP 的 SAN，'
-                    '也可以在 kubeconfig 中启用 insecure-skip-tls-verify。'
+                    '也可以在 kubeconfig 中启用 insecure-skip-tls-verify，'
+                    '或在集群配置中开启「跳过 TLS 证书校验」。'
                 )
             return Response({'success': False, 'message': f'连接失败: {error_text}'})
 
