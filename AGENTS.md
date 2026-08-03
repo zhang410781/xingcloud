@@ -89,7 +89,7 @@ model:
     - provider: custom:sail-cloud  # Sail Cloud
       models:
         - Qwen3.6-35B-A3B
-    - provider: custom:apihub.agnes-ai.com  # AGNES
+    - provider: custom:apihub.agnes-ai.cn  # AGNES
       models:
         - agnes-2.0-flash
     - provider: openrouter          # OpenRouter (13个免费模型)

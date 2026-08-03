@@ -300,7 +300,7 @@ class AIOpsConfigurationTests(TestCase):
 
         self.assertIn('sail_cloud', presets)
         self.assertEqual(presets['agnes_ai']['name'], 'Agnes AI')
-        self.assertEqual(presets['agnes_ai']['base_url'], 'https://apihub.agnes-ai.com/v1')
+        self.assertEqual(presets['agnes_ai']['base_url'], 'https://apihub.agnes-ai.cn/v1')
         self.assertEqual(presets['agnes_ai']['default_model'], 'agnes-2.0-flash')
         self.assertNotIn('api_key', presets['agnes_ai'])
 
@@ -330,7 +330,7 @@ class AIOpsConfigurationTests(TestCase):
         agnes = AIOpsModelProvider.objects.create(
             name='Agnes AI',
             provider_preset='agnes_ai',
-            base_url='https://apihub.agnes-ai.com/v1',
+            base_url='https://apihub.agnes-ai.cn/v1',
             default_model='agnes-2.0-flash',
             is_enabled=True,
         )
@@ -349,7 +349,7 @@ class AIOpsConfigurationTests(TestCase):
         provider = AIOpsModelProvider.objects.create(
             name='�������������',
             provider_preset='agnes_ai',
-            base_url='https://apihub.agnes-ai.com/v1',
+            base_url='https://apihub.agnes-ai.cn/v1',
             default_model='agnes-2.0-flash',
             is_enabled=True,
         )
@@ -364,7 +364,7 @@ class AIOpsConfigurationTests(TestCase):
         self.assertEqual(config.default_provider_id, provider.id)
         self.assertEqual(
             AIOpsModelProvider.objects.filter(
-                base_url='https://apihub.agnes-ai.com/v1',
+                base_url='https://apihub.agnes-ai.cn/v1',
                 default_model='agnes-2.0-flash',
             ).count(),
             1,
