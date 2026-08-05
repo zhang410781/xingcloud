@@ -473,6 +473,17 @@
                 </template>
                 <span v-else>{{ selectedAlert.resource_match_status === 'conflict' ? '匹配冲突' : '未匹配' }}</span>
               </el-descriptions-item>
+              <el-descriptions-item label="资产负责人">
+                <template v-if="selectedAlert.asset_contacts?.length">
+                  <el-tag v-for="item in selectedAlert.asset_contacts" :key="`${item.role}-${item.id || item.contact_name}`" size="small" class="mini-tag contact-role-tag">
+                    {{ item.role_display }}：{{ item.recipient_name || item.user_name || item.contact_name }}
+                  </el-tag>
+                </template>
+                <span v-else>-</span>
+              </el-descriptions-item>
+              <el-descriptions-item v-if="selectedAlert.asset_recipient_names?.length" label="通知对象">
+                {{ selectedAlert.asset_recipient_names.join('、') }}
+              </el-descriptions-item>
               <el-descriptions-item label="匹配依据">
                 <span>{{ selectedAlert.resource_match_reason || '-' }}</span>
                 <el-button
@@ -2687,6 +2698,12 @@ watch(() => route.params.id, openRouteAlertDetail)
 
 .mini-tag {
   margin: 0 4px 4px 0;
+}
+
+.contact-role-tag {
+  border-color: #bae6fd;
+  background: #f0f9ff;
+  color: #0369a1;
 }
 
 .separator {

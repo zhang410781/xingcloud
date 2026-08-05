@@ -21,3 +21,8 @@ export const updateDiscoverySource = (id, data) => request.patch(`/resource-cent
 export const previewDiscoverySource = (id) => request.post(`/resource-center/discovery-sources/${id}/preview/`)
 export const runDiscoverySource = (id, wait = false) => request.post(`/resource-center/discovery-sources/${id}/run/?wait=${wait}`)
 export const getDiscoveryRuns = (params) => request.get('/resource-center/discovery-runs/', { params })
+
+export const getResourceNodeTree = () => request.get('/resource-center/nodes/tree/')
+export const createResourceNode = (data) => request.post('/resource-center/nodes/', data)
+export const updateResourceNode = (id, data) => request.patch(`/resource-center/nodes/${id}/`, data)
+export const deleteResourceNode = (id) => request.delete(`/resource-center/nodes/${id}/`)

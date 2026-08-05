@@ -22,7 +22,7 @@ from ops.alerting import _recipient_contacts
 from aiops.models import AIOpsKnowledgeEnvironment
 
 from .discovery import collect_k8s_inventory, ensure_builtin_resource_types, execute_discovery_run, reconcile_k8s_inventory
-from .models import DiscoveryRun, DiscoverySource, Resource, ResourceContact, ResourceIdentifier, ResourceRelation, ResourceSourceBinding, RuntimeResource
+from .models import DiscoveryRun, DiscoverySource, Resource, ResourceContact, ResourceIdentifier, ResourceNode, ResourceRelation, ResourceSourceBinding, RuntimeResource
 from .alert_matching import resource_contact_recipients
 
 
@@ -327,3 +327,48 @@ class ResourceApiTests(TestCase):
         output = StringIO()
         call_command('clear_legacy_asset_data', stdout=output)
         self.assertIn('未执行删除', output.getvalue())
+
+
+class ResourceNodeApiTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_superuser('node-admin', 'node@example.com', 'Admin@123456')
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_tree_endpoint_builds_nested_hierarchy(self):
+        biz = ResourceNode.objects.create(name='交易系统', node_type='biz', sort_order=1)
+        ResourceNode.objects.create(name='prod', node_type='env', parent=biz, sort_order=10)
+        response = self.client.get('/api/resource-center/nodes/tree/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]['name'], '交易系统')
+        self.assertEqual(response.data[0]['children'][0]['name'], 'prod')
+
+    def test_crud_flow_and_env_parent_constraint(self):
+        response = self.client.post('/api/resource-center/nodes/', {
+            'name': '订单系统', 'node_type': 'biz', 'sort_order': 2,
+        }, format='json')
+        self.assertEqual(response.status_code, 201)
+        biz_id = response.data['id']
+        env = self.client.post('/api/resource-center/nodes/', {
+            'name': 'test', 'node_type': 'env', 'parent': biz_id, 'sort_order': 20,
+        }, format='json')
+        self.assertEqual(env.status_code, 201)
+        patch = self.client.patch(f'/api/resource-center/nodes/{env.data["id"]}/', {'sort_order': 21}, format='json')
+        self.assertEqual(patch.status_code, 200)
+        self.assertEqual(patch.data['sort_order'], 21)
+        delete = self.client.delete(f'/api/resource-center/nodes/{biz_id}/')
+        self.assertEqual(delete.status_code, 204)
+        self.assertEqual(ResourceNode.objects.count(), 0)
+
+    def test_tree_list_requires_ci_view_permission(self):
+        plain_user = get_user_model().objects.create_user('plain-user', 'plain@example.com', 'Plain@123456')
+        client = APIClient()
+        client.force_authenticate(plain_user)
+        response = client.get('/api/resource-center/nodes/tree/')
+        self.assertEqual(response.status_code, 403)
+
+    def test_clear_legacy_cmdb_data_command_previews_without_confirm(self):
+        output = StringIO()
+        call_command('clear_legacy_cmdb_data', stdout=output)
+        self.assertIn('没有遗留 CMDB 表', output.getvalue())

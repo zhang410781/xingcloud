@@ -5,7 +5,7 @@ from django.core.cache import cache
 from django.test import TestCase
 from rest_framework.test import APIClient
 
-from cmdb.models import ResourceNode
+from resource_center.models import ResourceNode
 from resource_center.discovery import ensure_builtin_resource_types
 from resource_center.models import Resource, ResourceRelation, ResourceSourceBinding
 from ops import deployer

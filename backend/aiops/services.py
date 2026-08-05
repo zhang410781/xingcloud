@@ -25,7 +25,7 @@ from django.http import QueryDict
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 
-from cmdb.models import ConfigItem
+from resource_center.models import Resource
 from ops.eventwall_stub import EventRecord
 from ops.eventwall_stub import record_event
 from xing_cloud.features import filter_feature_tools, tool_feature_enabled
@@ -4016,9 +4016,10 @@ def _query_cmdb_queryset(queryset, tokens):
         queryset,
         [
             'name',
-            'business_line',
-            'admin_user',
-            'ci_type__name',
+            'display_name',
+            'business_system',
+            'resource_type__name',
+            'primary_ip',
             'attributes__ip_address',
             'attributes__ip',
             'attributes__private_ip',
@@ -4036,7 +4037,7 @@ def _query_cmdb_queryset(queryset, tokens):
 
 def _serialize_cmdb_item(item):
     attributes = dict(item.attributes or {})
-    ip_address = (
+    ip_address = item.primary_ip or (
         attributes.get('ip_address')
         or attributes.get('private_ip')
         or attributes.get('public_ip')
@@ -4046,11 +4047,11 @@ def _serialize_cmdb_item(item):
     )
     return {
         'id': item.id,
-        'name': item.name,
-        'ci_type': item.ci_type.name,
-        'business_line': item.business_line,
+        'name': item.display_name or item.name,
+        'ci_type': item.resource_type.name,
+        'business_line': item.business_system,
         'environment': item.environment,
-        'admin_user': item.admin_user,
+        'admin_user': attributes.get('admin_user') or '',
         'status': item.status,
         'status_display': item.get_status_display(),
         'ip_address': ip_address,
@@ -4244,8 +4245,6 @@ def query_resources(session, user_message, user, query='', environment='', limit
             return resource_result
     if any(keyword in lowered_query for keyword in ['离线', 'offline']) and any(keyword in lowered_query for keyword in ['主机', '服务器', 'host']):
         return query_hosts(session, user_message, user, query=query, environment=environment, status='offline', limit=limit)
-    if any(keyword in lowered_query for keyword in ['月成本', '成本', 'cost']):
-        return query_cost_report(session, user_message, user, query=query, environment=environment, limit=max(3, min(limit, 8)))
 
     tokens = _clean_cmdb_query_tokens(query)
     environment = environment or _extract_environment(query)
@@ -4274,18 +4273,18 @@ def query_resources(session, user_message, user, query='', environment='', limit
             citations.append({'title': '资源底座', 'path': '/tasks/resources'})
 
     if user_has_permissions(user, ['cmdb.ci.view']):
-        ci_queryset = ConfigItem.objects.select_related('ci_type').all()
+        ci_queryset = Resource.objects.select_related('resource_type').all()
         if environment:
             ci_queryset = ci_queryset.filter(environment=environment)
         ci_queryset = _query_cmdb_queryset(ci_queryset, tokens)
         items = list(ci_queryset.order_by('-updated_at')[:limit])
         if items:
             sections.append({
-                'title': 'CMDB 配置项',
-                'items': [f'{item.name} / {item.ci_type.name} / {item.get_status_display()}' for item in items],
+                'title': '资产资源',
+                'items': [f'{item.display_name or item.name} / {item.resource_type.name} / {item.status}' for item in items],
             })
             summary['cmdb_items'] = len(items)
-            citations.append({'title': 'CMDB'})
+            citations.append({'title': '资产中心'})
 
     if user_has_permissions(user, ['ops.k8s.view']):
         cluster_queryset = _queryset_search(K8sCluster.objects.all(), ['name', 'api_server', 'description'], tokens)
@@ -4618,63 +4617,6 @@ def query_task_resources(session, user_message, user, query='', environment='', 
         'resources': formatted_resources,
         'resource_ids': summary['resource_ids'],
     }
-
-
-def query_cost_report(session, user_message, user, query='', environment='', business_line='', month='', limit=5):
-    started_at = time.time()
-    environment = environment or _extract_environment(query)
-    system_name = business_line or _extract_system_name(query)
-    month = (month or timezone.localdate().strftime('%Y-%m')).strip()
-    invocation = _create_tool_invocation(
-        session,
-        user_message,
-        'query_cost_report',
-        {'query': query, 'environment': environment, 'system_name': system_name, 'month': month, 'limit': limit},
-    )
-    if not user_has_permissions(user, ['cmdb.ci.view']):
-        _finish_tool_invocation(invocation, {'detail': 'missing_permission'}, started_at, success=False)
-        return {'sections': [], 'citations': []}
-
-    from cmdb.views import _cost_rows_for_month
-
-    rows = _cost_rows_for_month(month)
-    filtered_rows = []
-    for row in rows:
-        ci = row['ci']
-        if environment and ci.environment != environment:
-            continue
-        if system_name and ci.business_line != system_name:
-            continue
-        filtered_rows.append(row)
-
-    total = sum((row['amount'] for row in filtered_rows), Decimal('0'))
-    top_items = sorted(filtered_rows, key=lambda item: (-item['amount'], item['ci'].name))[:limit]
-    sections = [{
-        'title': '成本概览',
-        'items': [
-            f"月份：{month}",
-            f"系统：{system_name or '全部系统'}",
-            f"环境：{environment or '全部环境'}",
-            f"月成本合计：{float(total):.2f} 元",
-        ],
-    }]
-    if top_items:
-        sections.append({
-            'title': '高成本资源',
-            'items': [
-                f"{item['ci'].name} / {item['ci'].ci_type.name} / {float(item['amount']):.2f} 元"
-                for item in top_items
-            ],
-        })
-    summary = {
-        'month': month,
-        'count': len(filtered_rows),
-        'environment': environment,
-        'system_name': system_name,
-        'total_monthly_cost': float(total),
-    }
-    _finish_tool_invocation(invocation, summary, started_at, success=True)
-    return {'summary': summary, 'sections': sections, 'citations': [{'title': 'CMDB 成本分析'}], 'items': top_items}
 
 
 def query_alerts(session, user_message, user, query='', level='', only_unacknowledged=False, status='', date_filter='', business_line='', system_name='', limit=8):
@@ -8442,21 +8384,21 @@ def query_cmdb_items(session, user_message, user, query='', environment='', limi
     if not user_has_permissions(user, ['cmdb.ci.view']):
         _finish_tool_invocation(invocation, {'detail': 'missing_permission'}, started_at, success=False)
         return {'sections': [], 'citations': []}
-    queryset = ConfigItem.objects.select_related('ci_type').all()
+    queryset = Resource.objects.select_related('resource_type').all()
     if environment:
         queryset = queryset.filter(environment=environment)
     queryset = _query_cmdb_queryset(queryset, tokens)
     items = list(queryset.order_by('-updated_at')[:limit])
     serialized_items = [_serialize_cmdb_item(item) for item in items]
     sections = [{
-        'title': 'CMDB 配置项',
+        'title': '资产资源',
         'items': [f"{item['name']} / {item['ci_type']} / {item['ip_address'] or item['status_display']}" for item in serialized_items],
     }] if items else []
     _finish_tool_invocation(invocation, {'count': len(items)}, started_at, success=True)
     return {
         'summary': {'count': len(serialized_items), 'tokens': tokens, 'environment': environment},
         'sections': sections,
-        'citations': [{'title': 'CMDB'}],
+        'citations': [{'title': '资产中心'}],
         'items': serialized_items,
     }
 
@@ -12402,17 +12344,18 @@ def _append_unique_host(candidates, seen_ids, host):
         seen_ids.add(host.id)
 
 
-def _host_from_config_item(config_item, host_queryset=None):
-    if not config_item:
+def _host_from_resource(resource, host_queryset=None):
+    if not resource:
         return None
     host_queryset = host_queryset or Host.objects.all()
-    attributes = config_item.attributes or {}
-    for hostname in [config_item.name, attributes.get('host_name'), attributes.get('docker_environment_name')]:
+    attributes = resource.attributes or {}
+    for hostname in [resource.name, resource.display_name, attributes.get('host_name'), attributes.get('docker_environment_name')]:
         if hostname:
             host = host_queryset.filter(hostname=hostname).order_by('id').first()
             if host:
                 return host
     for ip_value in [
+        resource.primary_ip,
         attributes.get('host_ip'),
         attributes.get('docker_environment_ip'),
         attributes.get('ip_address'),
@@ -12450,7 +12393,7 @@ def _resolve_host_targets_for_task(question='', environment='', target_status='a
     for target_id in dict.fromkeys(explicit_ids):
         host = host_queryset.filter(id=target_id).order_by('id').first()
         if not host:
-            host = _host_from_config_item(ConfigItem.objects.filter(id=target_id).first(), host_queryset=host_queryset)
+            host = _host_from_resource(Resource.objects.filter(id=target_id).first(), host_queryset=host_queryset)
         _append_unique_host(candidates, seen_ids, host)
 
     explicit_names = []
@@ -12466,11 +12409,11 @@ def _resolve_host_targets_for_task(question='', environment='', target_status='a
 
     if tokens:
         config_items = list(
-            _query_cmdb_queryset(ConfigItem.objects.select_related('ci_type').all(), tokens)
+            _query_cmdb_queryset(Resource.objects.select_related('resource_type').all(), tokens)
             .order_by('-updated_at')[: max_hosts * 2]
         )
         for item in config_items:
-            _append_unique_host(candidates, seen_ids, _host_from_config_item(item, host_queryset=host_queryset))
+            _append_unique_host(candidates, seen_ids, _host_from_resource(item, host_queryset=host_queryset))
 
     if not candidates:
         for ip_value in re.findall(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', question_text):

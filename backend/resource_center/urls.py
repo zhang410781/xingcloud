@@ -10,5 +10,6 @@ router.register(r'relations', views.ResourceRelationViewSet, basename='resource-
 router.register(r'contacts', views.ResourceContactViewSet, basename='resource-contact')
 router.register(r'discovery-sources', views.DiscoverySourceViewSet, basename='discovery-source')
 router.register(r'discovery-runs', views.DiscoveryRunViewSet, basename='discovery-run')
+router.register(r'nodes', views.ResourceNodeViewSet, basename='resource-node')
 
 urlpatterns = [path('', include(router.urls))]

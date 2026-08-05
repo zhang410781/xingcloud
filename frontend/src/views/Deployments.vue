@@ -399,11 +399,11 @@
               <div class="sub-text">NS: {{ detailItem.namespace || 'default' }}</div>
             </div>
           </el-descriptions-item>
-          <el-descriptions-item label="CMDB 配置项">{{ detailItem.cmdb_item_name || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="CMDB 状态">{{ detailItem.cmdb_item_status || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="资产资源">{{ detailItem.asset_item_name || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="资产状态">{{ detailItem.asset_item_status || '-' }}</el-descriptions-item>
           <el-descriptions-item label="环境">{{ detailItem.environment_display }}</el-descriptions-item>
           <el-descriptions-item label="发布模式">{{ detailItem.deploy_mode_display }}</el-descriptions-item>
-          <el-descriptions-item label="关联目标" :span="2">{{ detailItem.cmdb_targets?.join(' / ') || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="关联目标" :span="2">{{ detailItem.asset_targets?.join(' / ') || '-' }}</el-descriptions-item>
           <el-descriptions-item label="发布策略">{{ detailItem.release_strategy_display }}</el-descriptions-item>
           <el-descriptions-item label="策略说明">{{ detailItem.strategy_summary }}</el-descriptions-item>
           <el-descriptions-item label="审批流">{{ detailItem.approval_flow_name || '默认审批' }}</el-descriptions-item>

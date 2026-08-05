@@ -13,7 +13,7 @@ from django.db import OperationalError
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
-from cmdb.models import ResourceNode
+from resource_center.models import Resource, ResourceContact, ResourceIdentifier, ResourceNode, ResourceType
 from ops.models import (
     Alert,
     AlertAction,
@@ -3304,3 +3304,43 @@ class AlertActionApiTests(TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn('签名密钥', str(response.json()))
+
+
+class AlertAssetContactsTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_superuser('alert-admin', 'alert@example.com', 'Admin@123456')
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.resource_type = ResourceType.objects.get_or_create(code='physical_server', defaults={'name': '物理机', 'category': 'compute'})[0]
+        self.resource = Resource.objects.create(
+            resource_type=self.resource_type, name='server-01', environment='prod',
+            primary_ip='10.20.0.1', source='manual',
+        )
+        ResourceIdentifier.objects.create(
+            resource=self.resource, kind='ip', value='10.20.0.1', scope='manual', is_primary=True,
+        )
+        self.recipient = AlertRecipient.objects.create(name='主机运维', phone='13800000000')
+        self.alert = Alert.objects.create(
+            title='CPU 高', level='warning', source='Prometheus', source_type=Alert.SOURCE_PROMETHEUS,
+            resource='10.20.0.1', labels={'host_ip': '10.20.0.1'},
+        )
+        self.alert.refresh_from_db()
+        self.assertEqual(self.alert.matched_resource_id, self.resource.id)
+
+    def test_alert_detail_exposes_asset_contacts_and_recipient_names(self):
+        ResourceContact.objects.create(
+            resource=self.resource, role='ops_owner', recipient=self.recipient, is_primary=True,
+        )
+        response = self.client.get(f'/api/alerts/{self.alert.id}/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['matched_resource'], self.resource.id)
+        contacts = response.data['asset_contacts']
+        self.assertEqual(len(contacts), 1)
+        self.assertEqual(contacts[0]['role'], 'ops_owner')
+        self.assertEqual(contacts[0]['recipient_name'], '主机运维')
+        self.assertIn('主机运维', response.data['asset_recipient_names'])
+
+    def test_alert_without_matched_resource_has_empty_asset_contacts(self):
+        response = self.client.get(f'/api/alerts/{self.alert.id}/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['asset_contacts'], [])

@@ -112,6 +112,27 @@
       </el-table>
     </section>
 
+    <section v-else-if="activeTab === 'nodes'" class="workbench-card resource-section">
+      <div class="section-toolbar">
+        <div class="toolbar-head"><span class="toolbar-title">分组树</span><span class="toolbar-desc">维护业务线/环境分组树，应用发布、事务工单与告警匹配共用。</span></div>
+        <el-button v-if="canManage" type="primary" size="small" @click="openNodeDialog(null)">新增业务线</el-button>
+      </div>
+      <el-table :data="resourceNodes" row-key="id" :tree-props="{ children: 'children' }" default-expand-all v-loading="nodesLoading">
+        <el-table-column prop="name" label="名称" min-width="220" />
+        <el-table-column label="类型" width="120"><template #default="{ row }">{{ nodeTypeText(row.node_type) }}</template></el-table-column>
+        <el-table-column prop="sort_order" label="排序" width="80" />
+        <el-table-column label="操作" width="220" fixed="right">
+          <template #default="{ row }">
+            <el-button v-if="canManage && row.node_type === 'biz'" link type="primary" @click="openNodeDialog(null, row)">加环境</el-button>
+            <el-button v-if="canManage" link type="primary" @click="openNodeDialog(row)">编辑</el-button>
+            <el-popconfirm v-if="canManage" title="确定删除该节点吗？（子节点一并删除）" @confirm="removeNode(row)">
+              <template #reference><el-button link type="danger">删除</el-button></template>
+            </el-popconfirm>
+          </template>
+        </el-table-column>
+      </el-table>
+    </section>
+
     <section v-else class="workbench-card resource-section">
       <div class="section-toolbar"><div class="toolbar-head"><span class="toolbar-title">资源关系</span><span class="toolbar-desc">展示长期资源之间的包含、运行于、部署于和依赖关系。</span></div></div>
       <el-table :data="topology.edges || []" stripe v-loading="topologyLoading">
@@ -170,6 +191,16 @@
       <el-table :data="contactResource?.contacts || []" stripe><el-table-column label="职责"><template #default="{ row }">{{ roleText(row.role) }}</template></el-table-column><el-table-column label="联系人"><template #default="{ row }">{{ row.recipient_name || row.user_name || row.contact_name }}</template></el-table-column><el-table-column label="向下继承" width="100"><template #default="{ row }">{{ row.inherit_to_children ? '是' : '否' }}</template></el-table-column><el-table-column width="80"><template #default="{ row }"><el-button link type="danger" @click="removeContact(row)">删除</el-button></template></el-table-column></el-table>
       <el-form inline class="contact-form"><el-form-item label="职责"><el-select v-model="contactForm.role" style="width:150px"><el-option label="运维负责人" value="ops_owner" /><el-option label="项目负责人" value="project_owner" /><el-option label="产品负责人" value="product_owner" /><el-option label="值班人员" value="oncall" /></el-select></el-form-item><el-form-item label="告警接收人"><el-select v-model="contactForm.recipient" filterable style="width:190px"><el-option v-for="item in recipients" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item><el-form-item label="向下继承"><el-switch v-model="contactForm.inherit_to_children" /></el-form-item><el-button type="primary" :disabled="!contactForm.recipient" @click="addContact">添加</el-button></el-form>
     </el-dialog>
+
+    <el-dialog v-model="nodeDialogVisible" :title="nodeDialogTitle" width="420px" destroy-on-close>
+      <el-form label-width="90px">
+        <el-form-item label="节点名称" required><el-input v-model="nodeForm.name" placeholder="例如：交易系统 / prod" /></el-form-item>
+        <el-form-item label="节点类型"><el-select v-model="nodeForm.node_type" style="width:100%" :disabled="Boolean(editingNodeId)"><el-option label="业务线" value="biz" /><el-option label="环境" value="env" /></el-select></el-form-item>
+        <el-form-item label="父节点"><el-select v-model="nodeForm.parent" style="width:100%" clearable :disabled="Boolean(editingNodeId)"><el-option v-for="item in bizNodeOptions" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item>
+        <el-form-item label="排序"><el-input-number v-model="nodeForm.sort_order" :min="0" /></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="nodeDialogVisible=false">取消</el-button><el-button type="primary" :loading="saving" @click="saveNode">保存</el-button></template>
+    </el-dialog>
   </div>
 </template>
 
@@ -183,11 +214,12 @@ import {
   createResource, createResourceContact, deleteResource, deleteResourceContact, updateResource,
   getDiscoveryRuns, getDiscoverySources, getResourceChanges, getResourceRuntime, getResourceSummary,
   getResourceBusinessContexts, getResourceTopology, getResourceTypes, getResources, previewDiscoverySource, runDiscoverySource,
+  createResourceNode, deleteResourceNode, getResourceNodeTree, updateResourceNode,
 } from '@/api/modules/resourceCenter'
 
 const authStore = useAuthStore()
 const canManage = computed(() => authStore.hasPermission('cmdb.ci.manage'))
-const tabs = [{ key: 'resources', label: '资源清单', icon: List }, { key: 'discovery', label: '自动发现', icon: Connection }, { key: 'history', label: '发现历史', icon: Clock }, { key: 'topology', label: '资源关系', icon: Share }]
+const tabs = [{ key: 'resources', label: '资源清单', icon: List }, { key: 'nodes', label: '分组树', icon: Files }, { key: 'discovery', label: '自动发现', icon: Connection }, { key: 'history', label: '发现历史', icon: Clock }, { key: 'topology', label: '资源关系', icon: Share }]
 const activeTab = ref('resources')
 const loadError = ref('')
 const loading = ref(false); const summaryLoading = ref(false); const discoveryLoading = ref(false); const topologyLoading = ref(false)
@@ -205,6 +237,11 @@ const selectedManualTypeCategory = computed(() => selectedManualType.value?.cate
 const previewVisible = ref(false); const preview = ref({}); const runningSourceId = ref(null)
 const detailVisible = ref(false); const detailResource = ref(null); const detailRuntimeCounts = ref({}); const detailChanges = ref([]); const detailLoading = ref(false)
 const contactVisible = ref(false); const contactResource = ref(null); const recipients = ref([]); const contactForm = ref({ role: 'ops_owner', recipient: null, inherit_to_children: true })
+const nodeDialogVisible = ref(false); const editingNodeId = ref(null); const nodeForm = ref({ name: '', node_type: 'biz', parent: null, sort_order: 0 })
+const resourceNodes = ref([]); const nodesLoading = ref(false)
+const bizNodeOptions = computed(() => (resourceNodes.value || []).filter(item => item.node_type === 'biz'))
+const nodeDialogTitle = computed(() => editingNodeId.value ? '编辑节点' : (nodeForm.value.node_type === 'env' ? '新增环境节点' : '新增业务线'))
+const nodeTypeText = value => ({ biz: '业务线', env: '环境' }[value] || value)
 
 const normalize = value => value?.results || value || []
 const formatTime = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-'
@@ -226,7 +263,7 @@ async function fetchResources() { loading.value = true; try { resources.value = 
 async function fetchSummary() { summaryLoading.value = true; try { summary.value = await getResourceSummary() } catch (error) { summary.value = {}; loadError.value = requestErrorText(error, '资源统计加载失败') } finally { summaryLoading.value = false } }
 async function fetchDiscovery() { discoveryLoading.value = true; try { const [sources, runs] = await Promise.all([getDiscoverySources(), getDiscoveryRuns()]); discoverySources.value = normalize(sources); discoveryRuns.value = normalize(runs) } catch (error) { discoverySources.value = []; discoveryRuns.value = []; loadError.value = requestErrorText(error, '自动发现数据加载失败') } finally { discoveryLoading.value = false } }
 async function fetchTopology() { topologyLoading.value = true; try { topology.value = await getResourceTopology() } catch (error) { topology.value = { nodes: [], edges: [] }; loadError.value = requestErrorText(error, '资源关系加载失败') } finally { topologyLoading.value = false } }
-async function refreshAll() { loadError.value = ''; const [types, contexts] = await Promise.allSettled([getResourceTypes(), getResourceBusinessContexts()]); if (types.status === 'fulfilled') resourceTypes.value = normalize(types.value); else loadError.value = requestErrorText(types.reason, '资源类型加载失败'); if (contexts.status === 'fulfilled') businessContexts.value = normalize(contexts.value); else loadError.value = requestErrorText(contexts.reason, '业务上下文加载失败'); await Promise.all([fetchSummary(), fetchResources(), fetchDiscovery()]); if (activeTab.value === 'topology') await fetchTopology() }
+async function refreshAll() { loadError.value = ''; const [types, contexts] = await Promise.allSettled([getResourceTypes(), getResourceBusinessContexts()]); if (types.status === 'fulfilled') resourceTypes.value = normalize(types.value); else loadError.value = requestErrorText(types.reason, '资源类型加载失败'); if (contexts.status === 'fulfilled') businessContexts.value = normalize(contexts.value); else loadError.value = requestErrorText(contexts.reason, '业务上下文加载失败'); await Promise.all([fetchSummary(), fetchResources(), fetchDiscovery(), fetchNodes()]); if (activeTab.value === 'topology') await fetchTopology() }
 function openResourceDialog(row = null) { editingResourceId.value = row?.id || null; const attributes = row?.attributes || {}; resourceForm.value = row ? { resource_type: row.resource_type, name: row.name, display_name: row.display_name || '', environment: row.environment, status: row.status, primary_ip: row.primary_ip || '', product: row.product || '', business_system: row.business_system || '', business_contexts: row.business_contexts || [], criticality: row.criticality, description: row.description || '', serial_number: attributes.serial_number || attributes.instance_id || '', os_image: attributes.os_image || '', endpoint: attributes.endpoint || '', port: attributes.port || 0, version: attributes.version || '', attributes } : emptyResourceForm(); if (!row) resourceForm.value.resource_type = manualResourceTypes.value[0]?.id || ''; resourceDialogVisible.value = true }
 async function saveResource() { if (!resourceForm.value.resource_type || !resourceForm.value.name.trim()) return ElMessage.warning('请选择资源类型并填写资源名称'); if (selectedManualTypeCategory.value === 'platform' && !resourceForm.value.endpoint.trim()) return ElMessage.warning('数据库和中间件需要填写访问地址'); saving.value = true; try { const { serial_number, os_image, endpoint, port, version, ...base } = resourceForm.value; const attributes = { ...(base.attributes || {}) }; if (serial_number) attributes.serial_number = serial_number; else delete attributes.serial_number; if (os_image) attributes.os_image = os_image; else delete attributes.os_image; if (endpoint) attributes.endpoint = endpoint; else delete attributes.endpoint; if (port) attributes.port = port; else delete attributes.port; if (version) attributes.version = version; else delete attributes.version; const payload = { ...base, attributes, primary_ip: base.primary_ip || null }; if (editingResourceId.value) await updateResource(editingResourceId.value, payload); else await createResource(payload); ElMessage.success(editingResourceId.value ? '资源已更新' : '资源已登记'); resourceDialogVisible.value = false; await refreshAll() } finally { saving.value = false } }
 async function removeResource(row) { await deleteResource(row.id); ElMessage.success('资源已删除'); await refreshAll() }
@@ -236,8 +273,29 @@ async function openDetail(row) { detailResource.value = row; detailRuntimeCounts
 async function openContactDialog(row) { contactResource.value = row; contactForm.value = { role: 'ops_owner', recipient: null, inherit_to_children: true }; if (!recipients.value.length) recipients.value = normalize(await getAlertRecipients({ page_size: 500 })); contactVisible.value = true }
 async function addContact() { await createResourceContact({ resource: contactResource.value.id, role: contactForm.value.role, recipient: contactForm.value.recipient, inherit_to_children: contactForm.value.inherit_to_children }); ElMessage.success('负责人已添加'); await fetchResources(); contactResource.value = resources.value.find(item => item.id === contactResource.value.id); contactForm.value.recipient = null }
 async function removeContact(row) { await deleteResourceContact(row.id); ElMessage.success('负责人已删除'); await fetchResources(); contactResource.value = resources.value.find(item => item.id === contactResource.value.id) }
+async function fetchNodes() { nodesLoading.value = true; try { resourceNodes.value = normalize(await getResourceNodeTree()) } catch (error) { resourceNodes.value = []; loadError.value = requestErrorText(error, '分组树加载失败') } finally { nodesLoading.value = false } }
+function openNodeDialog(row = null, parentNode = null) {
+  editingNodeId.value = row?.id || null
+  nodeForm.value = row
+    ? { name: row.name, node_type: row.node_type, parent: row.parent, sort_order: row.sort_order || 0 }
+    : { name: '', node_type: parentNode ? 'env' : 'biz', parent: parentNode?.id || null, sort_order: 0 }
+  nodeDialogVisible.value = true
+}
+async function saveNode() {
+  if (!nodeForm.value.name.trim()) return ElMessage.warning('请填写节点名称')
+  if (nodeForm.value.node_type === 'biz' && nodeForm.value.parent) return ElMessage.warning('业务线节点不能挂载到其他节点下')
+  saving.value = true
+  try {
+    const payload = { name: nodeForm.value.name.trim(), node_type: nodeForm.value.node_type, parent: nodeForm.value.parent, sort_order: nodeForm.value.sort_order || 0 }
+    if (editingNodeId.value) await updateResourceNode(editingNodeId.value, payload); else await createResourceNode(payload)
+    ElMessage.success(editingNodeId.value ? '节点已更新' : '节点已创建')
+    nodeDialogVisible.value = false
+    await fetchNodes()
+  } finally { saving.value = false }
+}
+async function removeNode(row) { await deleteResourceNode(row.id); ElMessage.success('节点已删除'); await fetchNodes() }
 
-watch(activeTab, tab => { if (tab === 'discovery' || tab === 'history') void fetchDiscovery(); if (tab === 'topology') void fetchTopology() })
+watch(activeTab, tab => { if (tab === 'discovery' || tab === 'history') void fetchDiscovery(); if (tab === 'topology') void fetchTopology(); if (tab === 'nodes') void fetchNodes() })
 onMounted(refreshAll)
 </script>
 

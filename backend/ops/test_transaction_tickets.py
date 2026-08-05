@@ -2,7 +2,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from rest_framework.test import APIClient
 
-from cmdb.models import ResourceNode
+from resource_center.models import ResourceNode
 from ops.models import DeploymentApprovalFlow, TransactionTicket
 
 

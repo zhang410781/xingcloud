@@ -7,12 +7,13 @@ from rest_framework.response import Response
 from rbac.permissions import RBACPermissionMixin
 
 from .discovery import ensure_builtin_resource_types, execute_discovery_run, preview_source
-from .models import DiscoveryRun, DiscoverySource, Resource, ResourceContact, ResourceRelation, ResourceType, RuntimeResource
+from .models import DiscoveryRun, DiscoverySource, Resource, ResourceContact, ResourceNode, ResourceRelation, ResourceType, RuntimeResource
 from .serializers import (
     DiscoveryRunSerializer,
     DiscoverySourceSerializer,
-    ResourceContactSerializer,
     ResourceChangeSerializer,
+    ResourceContactSerializer,
+    ResourceNodeSerializer,
     ResourceRelationSerializer,
     ResourceSerializer,
     ResourceTypeSerializer,
@@ -204,3 +205,35 @@ class DiscoveryRunViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
         if self.request.query_params.get('source'):
             queryset = queryset.filter(source_id=self.request.query_params['source'])
         return queryset
+
+
+class ResourceNodeViewSet(RBACPermissionMixin, viewsets.ModelViewSet):
+    """资源分组节点(业务线/环境)树管理"""
+    queryset = ResourceNode.objects.all().order_by('sort_order', 'id')
+    serializer_class = ResourceNodeSerializer
+    filterset_fields = ['node_type', 'parent']
+    pagination_class = None
+    rbac_permissions = {
+        'list': ['cmdb.ci.view'],
+        'retrieve': ['cmdb.ci.view'],
+        'create': ['cmdb.ci.manage'],
+        'update': ['cmdb.ci.manage'],
+        'partial_update': ['cmdb.ci.manage'],
+        'destroy': ['cmdb.ci.manage'],
+        'tree': ['cmdb.ci.view'],
+    }
+
+    @action(detail=False, methods=['get'])
+    def tree(self, request):
+        nodes = list(ResourceNode.objects.all().order_by('sort_order', 'id').values())
+        return Response(self._build_tree(nodes, None))
+
+    def _build_tree(self, nodes, parent_id):
+        tree = []
+        for node in nodes:
+            if node['parent_id'] == parent_id:
+                children = self._build_tree(nodes, node['id'])
+                if children:
+                    node['children'] = children
+                tree.append(node)
+        return tree

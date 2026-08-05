@@ -10,6 +10,7 @@ from .models import (
     ResourceChange,
     ResourceContact,
     ResourceIdentifier,
+    ResourceNode,
     ResourceRelation,
     ResourceSourceBinding,
     ResourceType,
@@ -234,5 +235,11 @@ class ResourceChangeSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ResourceChange
+        fields = '__all__'
+
+
+class ResourceNodeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ResourceNode
         fields = '__all__'
         read_only_fields = [field.name for field in ResourceChange._meta.fields]

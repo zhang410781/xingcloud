@@ -7,7 +7,7 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from rest_framework import serializers
 
-from cmdb.models import CIRelation, ConfigItem, ResourceNode
+from resource_center.models import Resource, ResourceNode, ResourceRelation
 
 from .host_task_schedules import CronExpressionError, compute_next_run, preview_next_runs, validate_cron_expression
 from .models import (
@@ -1254,10 +1254,10 @@ class DeploymentSerializer(serializers.ModelSerializer):
     rerun_source_version = serializers.CharField(source='rerun_source.version', read_only=True, default='')
     can_rollback = serializers.SerializerMethodField()
     can_advance_batch = serializers.SerializerMethodField()
-    cmdb_item_id = serializers.SerializerMethodField()
-    cmdb_item_name = serializers.SerializerMethodField()
-    cmdb_item_status = serializers.SerializerMethodField()
-    cmdb_targets = serializers.SerializerMethodField()
+    asset_item_id = serializers.SerializerMethodField()
+    asset_item_name = serializers.SerializerMethodField()
+    asset_item_status = serializers.SerializerMethodField()
+    asset_targets = serializers.SerializerMethodField()
 
     class Meta:
         model = Deployment
@@ -1320,10 +1320,10 @@ class DeploymentSerializer(serializers.ModelSerializer):
             'is_current',
             'can_rollback',
             'can_advance_batch',
-            'cmdb_item_id',
-            'cmdb_item_name',
-            'cmdb_item_status',
-            'cmdb_targets',
+            'asset_item_id',
+            'asset_item_name',
+            'asset_item_status',
+            'asset_targets',
             'deployed_at',
         ]
         read_only_fields = [
@@ -1364,36 +1364,36 @@ class DeploymentSerializer(serializers.ModelSerializer):
         step = obj.current_approval_step
         return DeploymentApprovalStepSerializer(step).data if step else None
 
-    def _get_cmdb_item(self, obj):
-        cached = getattr(obj, '_cmdb_item_cache', None)
+    def _get_asset_item(self, obj):
+        cached = getattr(obj, '_asset_item_cache', None)
         if cached is not None:
             return cached
-        item = ConfigItem.objects.filter(
+        item = Resource.objects.filter(
             attributes__source='app_release',
             attributes__deployment_id=obj.id,
         ).first()
-        setattr(obj, '_cmdb_item_cache', item)
+        setattr(obj, '_asset_item_cache', item)
         return item
 
-    def get_cmdb_item_id(self, obj):
-        item = self._get_cmdb_item(obj)
+    def get_asset_item_id(self, obj):
+        item = self._get_asset_item(obj)
         return item.id if item else None
 
-    def get_cmdb_item_name(self, obj):
-        item = self._get_cmdb_item(obj)
-        return item.name if item else ''
+    def get_asset_item_name(self, obj):
+        item = self._get_asset_item(obj)
+        return item.display_name or item.name if item else ''
 
-    def get_cmdb_item_status(self, obj):
-        item = self._get_cmdb_item(obj)
+    def get_asset_item_status(self, obj):
+        item = self._get_asset_item(obj)
         return item.get_status_display() if item else ''
 
-    def get_cmdb_targets(self, obj):
-        item = self._get_cmdb_item(obj)
+    def get_asset_targets(self, obj):
+        item = self._get_asset_item(obj)
         if not item:
             return []
         return [
-            relation.target.name
-            for relation in CIRelation.objects.select_related('target').filter(source=item, relation_type='runs_on')
+            relation.target.display_name or relation.target.name
+            for relation in ResourceRelation.objects.select_related('target').filter(source=item, relation_type='runs_on')
         ]
 
     def validate_strategy_config(self, value):
@@ -2388,6 +2388,8 @@ class AlertSerializer(serializers.ModelSerializer):
     source_display = serializers.SerializerMethodField()
     cluster_display = serializers.SerializerMethodField()
     matched_resource_detail = serializers.SerializerMethodField()
+    asset_contacts = serializers.SerializerMethodField()
+    asset_recipient_names = serializers.SerializerMethodField()
 
     class Meta:
         model = Alert
@@ -2412,6 +2414,34 @@ class AlertSerializer(serializers.ModelSerializer):
             'product': resource.product,
             'primary_ip': resource.primary_ip,
         }
+
+    def get_asset_contacts(self, obj):
+        resource = obj.matched_resource
+        if not resource:
+            return []
+        contacts = resource.contacts.select_related('user', 'recipient').all()
+        return [
+            {
+                'role': contact.role,
+                'role_display': contact.get_role_display(),
+                'contact_name': contact.contact_name,
+                'user_name': contact.user.username if contact.user_id else '',
+                'recipient_name': contact.recipient.name if contact.recipient_id else '',
+                'inherit_to_children': contact.inherit_to_children,
+                'is_primary': contact.is_primary,
+            }
+            for contact in contacts
+        ]
+
+    def get_asset_recipient_names(self, obj):
+        resource = obj.matched_resource
+        if not resource:
+            return []
+        from resource_center.alert_matching import resource_contact_recipients
+        recipient_ids = resource_contact_recipients(resource, level=obj.level)
+        if not recipient_ids:
+            return []
+        return list(AlertRecipient.objects.filter(id__in=recipient_ids).values_list('name', flat=True))
 
     def get_claimed_by(self, obj):
         names = [item.claimant for item in self._claim_records(obj)]

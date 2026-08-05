@@ -250,3 +250,25 @@ class ResourceChange(models.Model):
 
     class Meta:
         ordering = ['-created_at', '-id']
+
+
+class ResourceNode(models.Model):
+    """业务线/环境分组树节点（自 cmdb app 迁移并入）"""
+    NODE_TYPE_CHOICES = [
+        ('biz', '业务线'),
+        ('env', '环境'),
+    ]
+
+    name = models.CharField(max_length=100, verbose_name='名称')
+    node_type = models.CharField(max_length=20, choices=NODE_TYPE_CHOICES, verbose_name='节点类型')
+    parent = models.ForeignKey(
+        'self', on_delete=models.CASCADE, null=True, blank=True, related_name='children', verbose_name='父节点'
+    )
+    sort_order = models.IntegerField(default=0, verbose_name='排序')
+
+    class Meta:
+        verbose_name = '资源分组节点'
+        verbose_name_plural = '资源分组节点'
+
+    def __str__(self):
+        return self.name

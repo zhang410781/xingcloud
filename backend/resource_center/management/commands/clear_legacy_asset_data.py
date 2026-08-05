@@ -1,12 +1,11 @@
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
-from cmdb.models import CIRelation, ConfigItem
 from ops.models import MiddlewareAsset
 
 
 class Command(BaseCommand):
-    help = '清理已被资源中心替代的旧配置项和中间件资产；默认只预览。'
+    help = '清理任务中心遗留的中间件资产（已被资源中心替代）；默认只预览。'
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -17,11 +16,9 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         counts = {
-            'cmdb_relations': CIRelation.objects.count(),
-            'cmdb_config_items': ConfigItem.objects.count(),
             'middleware_assets': MiddlewareAsset.objects.count(),
         }
-        self.stdout.write('遗留资产数据预览：')
+        self.stdout.write('遗留中间件资产预览：')
         for name, count in counts.items():
             self.stdout.write(f'  {name}: {count}')
 
@@ -30,14 +27,12 @@ class Command(BaseCommand):
             return
 
         if not any(counts.values()):
-            self.stdout.write(self.style.SUCCESS('没有需要清理的遗留资产数据。'))
+            self.stdout.write(self.style.SUCCESS('没有需要清理的遗留中间件资产。'))
             return
 
         try:
             with transaction.atomic():
-                CIRelation.objects.all().delete()
-                ConfigItem.objects.all().delete()
                 MiddlewareAsset.objects.all().delete()
         except Exception as exc:
-            raise CommandError(f'遗留资产数据清理失败，事务已回滚：{exc}') from exc
-        self.stdout.write(self.style.SUCCESS('遗留资产数据已清理。任务执行目标、主机凭据和资源中心数据未删除。'))
+            raise CommandError(f'遗留中间件资产清理失败，事务已回滚：{exc}') from exc
+        self.stdout.write(self.style.SUCCESS('遗留中间件资产已清理。任务执行目标、主机凭据和资源中心数据未删除。'))
