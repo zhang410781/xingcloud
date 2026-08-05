@@ -50,7 +50,13 @@ def validate_and_drop_cmdb_tables(apps, schema_editor):
                     f'{table} 仍有存量数据，请先执行 python manage.py clear_legacy_cmdb_data --confirm 后重试'
                 )
 
-    for table in ('cmdb_cirelation', 'cmdb_configitem', 'cmdb_costrecord', 'cmdb_resourcerequest', 'cmdb_citype'):
+    for table in (
+        'cmdb_cirelation',
+        'cmdb_costrecord',
+        'cmdb_resourcerequest',
+        'cmdb_configitem',
+        'cmdb_citype',
+    ):
         with connection.cursor() as cursor:
             cursor.execute(f'DROP TABLE IF EXISTS {table}')
 
