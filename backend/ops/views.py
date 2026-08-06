@@ -67,6 +67,8 @@ from .models import (
     TaskResourceGroup,
     TransactionTicket,
     Event,
+    AlertTicket,
+    OnCallSchedule,
 )
 from .serializers import (
     AlertActionSerializer,
@@ -102,11 +104,13 @@ from .serializers import (
     TaskResourceSerializer,
     TransactionTicketSerializer,
     EventSerializer,
+    OnCallScheduleSerializer,
 )
 from .alerting import (
     alert_group_summary,
     alert_summary,
     apply_alert_action,
+    current_oncall_group,
     dispatch_alert_notifications,
     resolve_notification_policies,
     handle_interaction_token,
@@ -2448,6 +2452,8 @@ class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.Mod
         'summary': ['ops.alert.view'],
         'groups': ['ops.alert.view'],
         'children': ['ops.alert.view'],
+        'create_ticket': ['ops.alert.view'],
+        'tickets': ['ops.alert.view'],
         'acknowledge': ['ops.alert.manage'],
         'claim': ['ops.alert.manage'],
         'unclaim': ['ops.alert.manage'],
@@ -2529,6 +2535,79 @@ class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.Mod
         if page is not None:
             return self.get_paginated_response(payload)
         return Response(payload)
+
+    @action(detail=True, methods=['post'], url_path='create-ticket')
+    def create_ticket(self, request, pk=None):
+        alert = self.get_object()
+        priority_map = {
+            'critical': TransactionTicket.PRIORITY_HIGH,
+            'warning': TransactionTicket.PRIORITY_MEDIUM,
+            'info': TransactionTicket.PRIORITY_LOW,
+        }
+        existing = TransactionTicket.objects.filter(
+            alert_links__alert=alert,
+            ticket_type=TransactionTicket.TYPE_INCIDENT,
+            status__in=[
+                TransactionTicket.STATUS_PENDING,
+                TransactionTicket.STATUS_APPROVED,
+                TransactionTicket.STATUS_PROCESSING,
+            ],
+        ).first()
+        if existing:
+            return Response({'id': existing.id, 'created': False, 'ticket': TransactionTicketSerializer(existing).data})
+        title = (request.data.get('title') or '').strip() or alert.title
+        priority = (request.data.get('priority') or '').strip() or priority_map.get(alert.level, TransactionTicket.PRIORITY_MEDIUM)
+        if priority not in dict(TransactionTicket.PRIORITY_CHOICES):
+            priority = priority_map.get(alert.level, TransactionTicket.PRIORITY_MEDIUM)
+        owner = (request.data.get('owner') or '').strip()
+        if not owner:
+            schedule = current_oncall_group()
+            owner = schedule.recipient_group.name if schedule else ''
+        description = (request.data.get('description') or '').strip()
+        if not description:
+            labels = ' '.join(f'{key}={value}' for key, value in (alert.labels or {}).items())[:400]
+            description = (
+                f'告警：{alert.title}；资源：{alert.resource or "-"}；级别：{alert.level}；'
+                f'时间：{alert.starts_at or alert.created_at}；{labels}'
+            ).strip()
+        ticket = TransactionTicket.objects.create(
+            title=title[:200],
+            ticket_type=TransactionTicket.TYPE_INCIDENT,
+            priority=priority,
+            owner=owner[:64],
+            applicant=self._actor(request) or 'system',
+            description=description,
+            status=TransactionTicket.STATUS_PENDING,
+        )
+        AlertTicket.objects.create(alert=alert, ticket=ticket, created_by=request.user if request.user.is_authenticated else None)
+        record_event(
+            request=request,
+            module='ops',
+            category='alert',
+            action='create_ticket',
+            title='告警转工单',
+            summary=f'{request.user.username} 将告警 {alert.title} 转为工单 {ticket.title}',
+            resource_type='alert',
+            resource_id=alert.id,
+            resource_name=alert.title,
+            severity=EventRecord.SEVERITY_WARNING,
+            correlation_id=f'alert:{alert.id}',
+        )
+        return Response({'id': ticket.id, 'created': True, 'ticket': TransactionTicketSerializer(ticket).data})
+
+    @action(detail=True, methods=['get'])
+    def tickets(self, request, pk=None):
+        alert = self.get_object()
+        links = alert.tickets.select_related('ticket').order_by('-ticket__updated_at', '-ticket__id')
+        return Response([{
+            'id': link.ticket_id,
+            'title': link.ticket.title,
+            'ticket_type': link.ticket.ticket_type,
+            'priority': link.ticket.priority,
+            'status': link.ticket.status,
+            'owner': link.ticket.owner,
+            'created_at': link.ticket.created_at.isoformat() if link.ticket.created_at else '',
+        } for link in links])
 
     def _actor(self, request):
         return request.user.username if request.user and request.user.is_authenticated else ''
@@ -3039,6 +3118,44 @@ class AlertNotificationChannelViewSet(EventWallModelViewSetMixin, RBACPermission
         from .alerting import send_alert_notification
         logs.append(send_alert_notification(channel, alert, {'names': ['渠道测试']}, action='test', rule=None, request=request))
         return Response(AlertNotificationLogSerializer(logs, many=True).data)
+
+
+class OnCallScheduleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):
+    queryset = OnCallSchedule.objects.select_related('recipient_group').all()
+    serializer_class = OnCallScheduleSerializer
+    pagination_class = AlertConfigPagination
+    search_fields = ['name']
+    filterset_fields = ['is_enabled']
+    event_module = 'ops'
+    event_resource_type = 'oncall_schedule'
+    event_resource_label = '值班班次'
+    event_resource_name_fields = ('name',)
+    rbac_permissions = {
+        'list': ['ops.oncall.view'],
+        'retrieve': ['ops.oncall.view'],
+        'create': ['ops.oncall.manage'],
+        'update': ['ops.oncall.manage'],
+        'partial_update': ['ops.oncall.manage'],
+        'destroy': ['ops.oncall.manage'],
+        'current': ['ops.oncall.view'],
+    }
+
+    @action(detail=False, methods=['get'])
+    def current(self, request):
+        schedule = current_oncall_group()
+        if schedule is None:
+            return Response({'schedule': None, 'group': None, 'recipient_names': []})
+        group = schedule.recipient_group
+        names = {
+            recipient.name for recipient in group.recipients.filter(is_enabled=True)
+        } | {
+            (user.get_full_name() or user.username) for user in group.users.filter(is_active=True)
+        }
+        return Response({
+            'schedule': OnCallScheduleSerializer(schedule).data,
+            'group': {'id': group.id, 'name': group.name},
+            'recipient_names': sorted(names),
+        })
 
 
 class AlertNotificationPolicyViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.ModelViewSet):

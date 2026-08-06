@@ -30,6 +30,7 @@ from .models import (
     AlertRule,
     AlertSilence,
     Host,
+    OnCallSchedule,
 )
 
 
@@ -900,6 +901,44 @@ def build_recipient_contacts(*, groups=None, recipients=None):
     return {key: sorted(value) for key, value in result.items()}
 
 
+def current_oncall_group(now=None):
+    """解析当前时段的当班班次（星期位图 + 时间段，跨天班拆分处理）。返回 OnCallSchedule 或 None。"""
+    now = timezone.localtime(now or timezone.now())
+    weekday = now.isoweekday()
+    current = now.time()
+    for schedule in OnCallSchedule.objects.filter(is_enabled=True).select_related('recipient_group').order_by('id'):
+        if not (schedule.weekday_bits & (1 << (weekday - 1))):
+            continue
+        start = schedule.start_time
+        end = schedule.end_time
+        if start == end:
+            return schedule
+        if start < end:
+            if start <= current <= end:
+                return schedule
+        elif current >= start or current <= end:
+            return schedule
+    return None
+
+
+def oncall_escalation_contacts(policy, base_contacts, now=None):
+    """升级通知接收人：策略配置了值班班次且当前当班命中时，把当班接收组追加合并到原接收人。"""
+    if not policy or not policy.oncall_schedule_id:
+        return base_contacts
+    schedule = current_oncall_group(now=now)
+    if schedule is None:
+        return base_contacts
+    group = schedule.recipient_group
+    if not group or not group.is_enabled:
+        return base_contacts
+    oncall_contacts = build_recipient_contacts(groups=[group])
+    merged = defaultdict(set)
+    for contacts in (base_contacts, oncall_contacts):
+        for key, values in (contacts or {}).items():
+            merged[key].update(values)
+    return {key: sorted(value) for key, value in merged.items()}
+
+
 def _recipient_contacts(rule=None, policy=None, route=None, alert=None, level=None):
     config = (rule.notify_config or {}) if rule else {}
     groups = []
@@ -1645,11 +1684,14 @@ def apply_escalation_policy(alert, request=None):
             log = send_alert_notification(
                 route.channel,
                 alert,
-                _recipient_contacts(
-                    policy=policy,
-                    route=route,
-                    alert=alert,
-                    level=notification_level,
+                oncall_escalation_contacts(
+                    policy,
+                    _recipient_contacts(
+                        policy=policy,
+                        route=route,
+                        alert=alert,
+                        level=notification_level,
+                    ),
                 ),
                 action='escalation',
                 rule=rule,

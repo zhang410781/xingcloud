@@ -1,6 +1,7 @@
 import hashlib
 import secrets
 import uuid
+from datetime import time
 
 from django.conf import settings
 from django.core.validators import MaxValueValidator, MinValueValidator
@@ -16,6 +17,14 @@ def generate_alert_token():
 
 def default_alert_owner_levels():
     return ['warning', 'critical']
+
+
+def default_oncall_start_time():
+    return time(0, 0)
+
+
+def default_oncall_end_time():
+    return time(23, 59, 59)
 
 
 class Host(models.Model):
@@ -1385,6 +1394,28 @@ class AlertNotificationChannel(models.Model):
         return f'{self.name} ({self.channel_type})'
 
 
+class OnCallSchedule(models.Model):
+    name = models.CharField('班次名称', max_length=128)
+    recipient_group = models.ForeignKey(
+        AlertRecipientGroup, on_delete=models.PROTECT,
+        related_name='oncall_schedules', verbose_name='值班接收组',
+    )
+    weekday_bits = models.PositiveIntegerField('星期位图', default=127)
+    start_time = models.TimeField('开始时间', default=default_oncall_start_time)
+    end_time = models.TimeField('结束时间', default=default_oncall_end_time)
+    is_enabled = models.BooleanField('启用', default=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        verbose_name = '值班班次'
+        verbose_name_plural = '值班班次'
+        ordering = ['id']
+
+    def __str__(self):
+        return self.name
+
+
 class AlertNotificationPolicy(models.Model):
     name = models.CharField('策略名称', max_length=128)
     alert_source = models.ForeignKey(
@@ -1406,6 +1437,10 @@ class AlertNotificationPolicy(models.Model):
     notify_on_resolved = models.BooleanField('发送恢复通知', default=True)
     notify_on_analysis = models.BooleanField('发送研判完成通知', default=True)
     is_enabled = models.BooleanField('启用', default=True)
+    oncall_schedule = models.ForeignKey(
+        'OnCallSchedule', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='policies', verbose_name='值班班次',
+    )
     description = models.CharField('说明', max_length=255, blank=True, default='')
     created_at = models.DateTimeField('创建时间', auto_now_add=True)
     updated_at = models.DateTimeField('更新时间', auto_now=True)
@@ -2200,6 +2235,28 @@ class TransactionTicket(models.Model):
 
     def __str__(self):
         return self.title
+
+
+class AlertTicket(models.Model):
+    alert = models.ForeignKey(Alert, on_delete=models.CASCADE, related_name='tickets', verbose_name='告警')
+    ticket = models.ForeignKey(
+        TransactionTicket, on_delete=models.CASCADE, related_name='alert_links', verbose_name='工单',
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='alert_ticket_links', verbose_name='创建人',
+    )
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+
+    class Meta:
+        verbose_name = '告警工单关联'
+        verbose_name_plural = '告警工单关联'
+        constraints = [
+            models.UniqueConstraint(fields=['alert', 'ticket'], name='uniq_ops_alert_ticket'),
+        ]
+
+    def __str__(self):
+        return f'{self.alert_id}->{self.ticket_id}'
 
 
 class Event(models.Model):

@@ -53,6 +53,7 @@ from .models import (
     TaskResource,
     TaskResourceGroup,
     Event,
+    OnCallSchedule,
 )
 
 
@@ -1478,6 +1479,7 @@ class TransactionTicketSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     environment_display = serializers.CharField(source='get_environment_display', read_only=True)
     approval_flow_name = serializers.CharField(source='approval_flow.name', read_only=True, default='')
+    alerts = serializers.SerializerMethodField()
 
     class Meta:
         model = TransactionTicket
@@ -1499,6 +1501,7 @@ class TransactionTicketSerializer(serializers.ModelSerializer):
             'description',
             'status',
             'status_display',
+            'alerts',
             'created_at',
             'updated_at',
         ]
@@ -1512,6 +1515,17 @@ class TransactionTicketSerializer(serializers.ModelSerializer):
             'status_display',
             'environment_display',
             'approval_flow_name',
+            'alerts',
+        ]
+
+    def get_alerts(self, obj):
+        return [
+            {
+                'id': link.alert_id,
+                'title': link.alert.title,
+                'level': link.alert.level,
+            }
+            for link in obj.alert_links.select_related('alert').all()[:20]
         ]
 
     def validate(self, attrs):
@@ -1901,6 +1915,24 @@ class AlertNotificationChannelSerializer(serializers.ModelSerializer):
         return super().update(instance, validated_data)
 
 
+class OnCallScheduleSerializer(serializers.ModelSerializer):
+    recipient_group_name = serializers.CharField(source='recipient_group.name', read_only=True)
+    weekday_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = OnCallSchedule
+        fields = [
+            'id', 'name', 'recipient_group', 'recipient_group_name', 'weekday_bits',
+            'weekday_display', 'start_time', 'end_time', 'is_enabled',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def get_weekday_display(self, obj):
+        weekdays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+        return [name for index, name in enumerate(weekdays) if obj.weekday_bits & (1 << index)]
+
+
 class AlertNotificationRouteSerializer(serializers.ModelSerializer):
     channel_detail = serializers.SerializerMethodField()
     recipient_group_detail = serializers.SerializerMethodField()
@@ -1956,6 +1988,7 @@ class AlertNotificationPolicySerializer(serializers.ModelSerializer):
             'group_interval_seconds', 'repeat_interval_minutes', 'storm_threshold',
             'mute_schedule', 'inhibition_matchers', 'notify_on_fire', 'notify_on_resolved',
             'notify_on_analysis', 'is_enabled', 'description',
+            'oncall_schedule',
             'created_at', 'updated_at',
         ]
 

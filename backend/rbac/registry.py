@@ -23,6 +23,8 @@ PERMISSION_DEFINITIONS = [
     ('ops.alert.view', '查看告警', 'ops', '查看告警列表'),
     ('ops.alert.manage', '管理告警', 'ops', '确认、编辑、删除告警'),
     ('ops.alert.notify', '发送告警通知', 'ops', '手动触发告警通知、测试通知渠道'),
+    ('ops.oncall.view', '查看值班班次', 'ops', '查看值班班次与当前当班'),
+    ('ops.oncall.manage', '管理值班班次', 'ops', '维护值班班次配置'),
     ('ops.alert.config.view', '查看告警配置', 'ops', '查看告警规则、规则模板、通知渠道、接收人、聚合抑制和升级策略'),
     ('ops.alert.config.manage', '管理告警配置', 'ops', '维护告警规则、规则模板、通知渠道、接收人、聚合抑制和升级策略'),
     ('ops.log.entry.view', '查看内置日志', 'ops', '查看平台内置日志表'),
@@ -90,6 +92,7 @@ BUILTIN_ROLES = [
             'ops.deployment.view', 'ops.deployment.manage', 'ops.deployment.approve',
             'ops.ticket.view', 'ops.ticket.manage', 'ops.ticket.approve',
             'ops.alert.view', 'ops.alert.manage', 'ops.alert.notify', 'ops.alert.config.view', 'ops.alert.config.manage',
+            'ops.oncall.view', 'ops.oncall.manage',
             'ops.log.entry.view', 'ops.log.datasource.view', 'ops.log.datasource.manage', 'ops.log.query',
             'ops.metric.query', 'ops.metric.datasource.view', 'ops.metric.datasource.manage',
             'ops.monitor.dashboard.view',
@@ -108,6 +111,7 @@ BUILTIN_ROLES = [
         'permissions': [
             'aiops.knowledge.view',
             'ops.dashboard.view', 'ops.host.view', 'ops.task.resource.view', 'ops.middleware.view', 'ops.host.schedule.view', 'ops.deployment.view', 'ops.ticket.view', 'ops.alert.view', 'ops.alert.config.view',
+            'ops.oncall.view',
             'ops.monitor.dashboard.view',
             'aiops.chat.view', 'aiops.chat.analyze', 'aiops.task.generate', 'aiops.runbook.view', 'aiops.review.view',
             'cmdb.ci.view', 'cmdb.topology.view',
@@ -130,6 +134,7 @@ BUILTIN_ROLES = [
         'description': '只能浏览各模块的只读信息。',
         'permissions': [
             'ops.dashboard.view', 'ops.host.view', 'ops.task.resource.view', 'ops.middleware.view', 'ops.host.schedule.view', 'ops.deployment.view', 'ops.ticket.view', 'ops.alert.view', 'ops.alert.config.view',
+            'ops.oncall.view',
             'ops.monitor.dashboard.view',
             'cmdb.ci.view', 'cmdb.topology.view',
             'aiops.chat.view', 'aiops.knowledge.view', 'aiops.config.view', 'aiops.mcp.view', 'aiops.runbook.view', 'aiops.review.view',

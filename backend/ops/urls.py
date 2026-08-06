@@ -30,6 +30,7 @@ router.register(r'alert-notification-channels', views.AlertNotificationChannelVi
 router.register(r'alert-notification-policies', views.AlertNotificationPolicyViewSet, basename='alert-notification-policy')
 router.register(r'alert-notification-rules', views.AlertNotificationPolicyViewSet, basename='alert-notification-rule-compat')
 router.register(r'alert-notification-logs', views.AlertNotificationLogViewSet, basename='alert-notification-log')
+router.register(r'oncall-schedules', views.OnCallScheduleViewSet, basename='oncall-schedule')
 router.register(r'inspection-report-schedules', views.InspectionReportScheduleViewSet, basename='inspection-report-schedule')
 router.register(r'inspection-report-executions', views.InspectionReportExecutionViewSet, basename='inspection-report-execution')
 router.register(r'alert-actions', views.AlertActionViewSet, basename='alert-action')
