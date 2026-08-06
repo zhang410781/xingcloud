@@ -2391,6 +2391,7 @@ class AlertSerializer(serializers.ModelSerializer):
     matched_resource_detail = serializers.SerializerMethodField()
     asset_contacts = serializers.SerializerMethodField()
     asset_recipient_names = serializers.SerializerMethodField()
+    children_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Alert
@@ -2415,6 +2416,9 @@ class AlertSerializer(serializers.ModelSerializer):
             'product': resource.product,
             'primary_ip': resource.primary_ip,
         }
+
+    def get_children_count(self, obj):
+        return obj.group_children.exclude(is_group_root=True).count()
 
     def get_asset_contacts(self, obj):
         resource = obj.matched_resource

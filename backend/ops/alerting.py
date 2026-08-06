@@ -1542,6 +1542,12 @@ def dispatch_alert_batch_notifications(alerts, action='fire', request=None, forc
     alerts = [alert for alert in alerts or [] if alert]
     if not alerts:
         return {'notified_count': 0, 'notification_logs': [], 'storm_batches': []}
+    alerts = [
+        alert for alert in alerts
+        if not (alert.is_suppressed and str(alert.suppressed_by or '').startswith('topology:'))
+    ]
+    if not alerts:
+        return {'notified_count': 0, 'notification_logs': [], 'storm_batches': []}
 
     logs = []
     notified = set()

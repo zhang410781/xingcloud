@@ -139,15 +139,12 @@ def attach_alert_resource(alert):
     return resource
 
 
-def resource_contact_recipients(resource, level='warning'):
+def ancestor_resource_ids(resource, hops=3):
     if not resource:
-        return []
-    roles = {'ops_owner', 'oncall'}
-    if level == 'critical':
-        roles.update({'project_owner', 'product_owner'})
+        return set()
     ancestor_ids = set()
     frontier = {resource.id}
-    for _ in range(3):
+    for _ in range(max(int(hops or 3), 1)):
         parent_ids = set(ResourceRelation.objects.filter(
             target_id__in=frontier,
             relation_type='contains',
@@ -161,6 +158,38 @@ def resource_contact_recipients(resource, level='warning'):
             break
         ancestor_ids.update(parent_ids)
         frontier = parent_ids
+    return ancestor_ids
+
+
+def descendant_resource_ids(resource, hops=3):
+    if not resource:
+        return set()
+    descendant_ids = set()
+    frontier = {resource.id}
+    for _ in range(max(int(hops or 3), 1)):
+        child_ids = set(ResourceRelation.objects.filter(
+            source_id__in=frontier,
+            relation_type='contains',
+        ).values_list('target_id', flat=True))
+        child_ids.update(ResourceRelation.objects.filter(
+            target_id__in=frontier,
+            relation_type__in=['belongs_to', 'runs_on', 'deployed_on'],
+        ).values_list('source_id', flat=True))
+        child_ids -= descendant_ids | {resource.id}
+        if not child_ids:
+            break
+        descendant_ids.update(child_ids)
+        frontier = child_ids
+    return descendant_ids
+
+
+def resource_contact_recipients(resource, level='warning'):
+    if not resource:
+        return []
+    roles = {'ops_owner', 'oncall'}
+    if level == 'critical':
+        roles.update({'project_owner', 'product_owner'})
+    ancestor_ids = ancestor_resource_ids(resource, hops=3)
     return list(
         ResourceContact.objects.filter(
             Q(resource_id=resource.id) | Q(resource_id__in=ancestor_ids, inherit_to_children=True),
@@ -168,3 +197,53 @@ def resource_contact_recipients(resource, level='warning'):
             recipient__isnull=False,
         ).select_related('recipient').values_list('recipient', flat=True).distinct()
     )
+
+
+def check_topology_suppression(alert, ancestor_hops=3):
+    """拓扑抑制判定：祖先资源存在 active 且未被抑制的告警时返回抑制原因，否则返回空串。"""
+    resource = alert.matched_resource
+    if not resource:
+        return ''
+    ancestor_ids = ancestor_resource_ids(resource, hops=ancestor_hops)
+    if not ancestor_ids:
+        return ''
+    from ops.models import Alert
+    parent_alerts = Alert.objects.filter(
+        matched_resource_id__in=ancestor_ids,
+        status=Alert.STATUS_ACTIVE,
+        is_suppressed=False,
+    ).exclude(pk=alert.pk)
+    for parent in parent_alerts[:20]:
+        if str(parent.suppressed_by or '').startswith('topology:'):
+            continue
+        parent_name = parent.resource or str(parent.matched_resource_id)
+        return f'父资源 {parent_name} 存在 active 告警'
+    return ''
+
+
+def apply_topology_suppression(alert, ancestor_hops=3):
+    reason = check_topology_suppression(alert, ancestor_hops=ancestor_hops)
+    if reason:
+        Alert = alert.__class__
+        Alert.objects.filter(pk=alert.pk).update(
+            is_suppressed=True, suppressed_by='topology', suppressed_reason=reason,
+        )
+        alert.is_suppressed = True
+        alert.suppressed_by = 'topology'
+        alert.suppressed_reason = reason
+        return True
+    return False
+
+
+def release_topology_suppression(resource, ancestor_hops=3):
+    """父资源告警恢复后解除其子孙资源上的拓扑抑制标记。"""
+    if not resource:
+        return 0
+    from ops.models import Alert
+    scope_ids = {resource.id} | descendant_resource_ids(resource, hops=ancestor_hops)
+    updated = Alert.objects.filter(
+        matched_resource_id__in=scope_ids,
+        is_suppressed=True,
+        suppressed_by='topology',
+    ).update(is_suppressed=False, suppressed_by='', suppressed_reason='')
+    return updated

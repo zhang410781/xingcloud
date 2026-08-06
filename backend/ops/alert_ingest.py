@@ -484,17 +484,40 @@ def ingest_external_alert_payload(payload, ingress_source=None):
             )
         reactivated = previous_status == Alert.STATUS_RESOLVED and alert.status == Alert.STATUS_ACTIVE
         newly_resolved = previous_status == Alert.STATUS_ACTIVE and alert.status == Alert.STATUS_RESOLVED
-        if alert.status == Alert.STATUS_ACTIVE and (created or reactivated):
-            fire_alerts.append(alert)
-            analysis_targets.append(alert)
-            _record_ingest_event(
-                normalized, alert,
-                kind='alert_active' if created else 'alert_reactivated',
-            )
-        elif newly_resolved:
-            resolved_alerts.append(alert)
-            _record_ingest_event(normalized, alert, kind='alert_resolved', severity='info')
         if alert.status == Alert.STATUS_ACTIVE:
+            if ingress_source and ingress_source.converge_enabled:
+                from ops.alert_convergence import convergence_group_key, promote_or_attach
+                converge_key = convergence_group_key(
+                    alert, ingress_source.converge_group_fields, f's{ingress_source.id}',
+                )
+                role = promote_or_attach(
+                    alert, converge_key, ingress_source.converge_window_minutes,
+                )
+            else:
+                role = 'root'
+            if ingress_source and ingress_source.suppress_by_topology and not alert.is_suppressed:
+                from resource_center.alert_matching import apply_topology_suppression
+                apply_topology_suppression(alert, ancestor_hops=ingress_source.suppress_ancestor_hops)
+            if role == 'root' and (created or reactivated):
+                fire_alerts.append(alert)
+                analysis_targets.append(alert)
+                _record_ingest_event(
+                    normalized, alert,
+                    kind='alert_active' if created else 'alert_reactivated',
+                )
+        elif newly_resolved:
+            from resource_center.alert_matching import release_topology_suppression
+            release_topology_suppression(alert.matched_resource)
+            if ingress_source and ingress_source.converge_enabled:
+                from ops.alert_convergence import converge_resolved_alert
+                resolved_roots = converge_resolved_alert(alert)
+                for root in resolved_roots:
+                    resolved_alerts.append(root)
+                    _record_ingest_event(normalized, root, kind='alert_resolved', severity='info')
+            else:
+                resolved_alerts.append(alert)
+                _record_ingest_event(normalized, alert, kind='alert_resolved', severity='info')
+        if alert.status == Alert.STATUS_ACTIVE and not alert.group_parent_id:
             active_alerts.append(alert)
         results.append({
             'id': alert.id,

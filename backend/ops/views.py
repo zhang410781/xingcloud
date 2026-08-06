@@ -2431,6 +2431,7 @@ class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.Mod
         'level', 'status', 'source_type', 'source', 'alert_source', 'binding_status',
         'is_acknowledged', 'is_suppressed', 'service', 'environment', 'cluster',
         'namespace', 'region', 'business_line', 'claimed_by',
+        'is_group_root', 'converge_key',
     ]
     event_module = 'ops'
     event_resource_type = 'alert'
@@ -2446,6 +2447,7 @@ class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.Mod
         'destroy': ['ops.alert.manage'],
         'summary': ['ops.alert.view'],
         'groups': ['ops.alert.view'],
+        'children': ['ops.alert.view'],
         'acknowledge': ['ops.alert.manage'],
         'claim': ['ops.alert.manage'],
         'unclaim': ['ops.alert.manage'],
@@ -2508,6 +2510,25 @@ class AlertViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets.Mod
         queryset = self.filter_queryset(self.get_queryset())
         group_by = [item.strip() for item in request.query_params.get('group_by', '').split(',') if item.strip()]
         return Response(alert_group_summary(queryset, group_by=group_by or None))
+
+    @action(detail=True, methods=['get'])
+    def children(self, request, pk=None):
+        alert = self.get_object()
+        queryset = alert.group_children.exclude(is_group_root=True).order_by('-created_at', '-id')
+        page = self.paginate_queryset(queryset)
+        payload = [{
+            'id': item.id,
+            'title': item.title,
+            'level': item.level,
+            'status': item.status,
+            'resource': item.resource,
+            'resource_type': item.resource_type,
+            'occurred_at': item.created_at.isoformat() if item.created_at else '',
+            'fingerprint': item.fingerprint,
+        } for item in (page if page is not None else queryset)]
+        if page is not None:
+            return self.get_paginated_response(payload)
+        return Response(payload)
 
     def _actor(self, request):
         return request.user.username if request.user and request.user.is_authenticated else ''

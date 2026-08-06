@@ -3,6 +3,7 @@ from datetime import timedelta
 from django.db import transaction
 from django.utils import timezone
 
+from ops.alert_convergence import convergence_group_key, converge_resolved_alert, promote_or_attach
 from ops.alert_rules import build_platform_alert_payload, build_rule_fingerprint
 from ops.alerting import (
     apply_alert_suppression,
@@ -84,6 +85,17 @@ def _emit_alert(rule, result, request=None, status=Alert.STATUS_ACTIVE, action_n
         action_note=action_note,
     )
     apply_alert_suppression(alert)
+    if status == Alert.STATUS_ACTIVE:
+        if rule.converge_enabled:
+            converge_key = convergence_group_key(alert, rule.group_fields, f'r{rule.id}')
+            role = promote_or_attach(alert, converge_key, rule.group_window)
+            alert.is_group_root = role == 'root'
+        if rule.suppress_by_topology and not alert.is_suppressed:
+            from resource_center.alert_matching import apply_topology_suppression
+            apply_topology_suppression(alert, ancestor_hops=rule.suppress_ancestor_hops)
+    else:
+        from resource_center.alert_matching import release_topology_suppression
+        release_topology_suppression(alert.matched_resource)
     apply_escalation_policy(alert, request=request)
     return alert, created, previous_level, reactivated
 
@@ -173,7 +185,8 @@ def process_rule_results(rule, results, *, dry_run=False, request=None):
                 alert, created, previous_level, reactivated = _emit_alert(
                     rule, item, request=request, status=Alert.STATUS_ACTIVE, action_note=action_note,
                 )
-                alerts_to_notify.append(alert)
+                if not rule.converge_enabled or alert.is_group_root:
+                    alerts_to_notify.append(alert)
                 analysis_candidates.append((alert, created, previous_level, reactivated))
                 created_count += 1 if created else 0
                 updated_count += 0 if created else 1
@@ -203,7 +216,10 @@ def process_rule_results(rule, results, *, dry_run=False, request=None):
                     'evidence': {'state': 'resolved', 'last_value': state.last_value},
                 }
                 alert, _, _, _ = _emit_alert(rule, result, request=request, status=Alert.STATUS_RESOLVED)
-                resolved_to_notify.append(alert)
+                if rule.converge_enabled:
+                    resolved_to_notify.extend(converge_resolved_alert(alert))
+                else:
+                    resolved_to_notify.append(alert)
                 resolved_count += 1
             state.status = AlertRuleState.STATUS_RESOLVED
             state.last_seen_at = now
