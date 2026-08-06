@@ -469,7 +469,7 @@ def _record_discovery_event(run):
             'run_id': run.id,
             'source_id': run.source_id,
             'source_name': run.source.name,
-            'provider': run.source.provider or '',
+            'provider': run.source.source_type or '',
             'status': run.status,
             'error': (run.error or '')[:2000],
         },

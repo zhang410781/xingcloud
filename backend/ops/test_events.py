@@ -160,7 +160,7 @@ class EventInternalHookTests(TestCase):
         run.source_id = 7
         run.source = Mock(name='k8s-prod')
         run.source.name = 'k8s-prod'
-        run.source.provider = 'k8s'
+        run.source.source_type = 'k8s'
         run.error = ''
         _record_discovery_event(run)
         event = Event.objects.get(kind='discovery_success')
@@ -177,7 +177,7 @@ class EventInternalHookTests(TestCase):
         run.source_id = 7
         run.source = Mock(name='k8s-prod')
         run.source.name = 'k8s-prod'
-        run.source.provider = 'k8s'
+        run.source.source_type = 'k8s'
         run.error = 'timeout'
         _record_discovery_event(run)
         event = Event.objects.get(kind='discovery_failed')
