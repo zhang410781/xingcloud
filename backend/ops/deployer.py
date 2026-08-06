@@ -12,7 +12,8 @@ from kubernetes.client.exceptions import ApiException
 from resource_center.discovery import ensure_builtin_resource_types
 from resource_center.models import Resource, ResourceIdentifier, ResourceRelation, ResourceSourceBinding
 from .eventwall_stub import EventRecord
-from .eventwall_stub import build_resource, record_event
+from .eventwall_stub import build_resource
+from .events import record_event
 from ops.k8s_views import _get_k8s_client, _is_demo
 
 from .models import Deployment
@@ -363,24 +364,23 @@ def deploy_service(deployment_id):
         except Exception:
             logger.exception('sync_deployment_to_cmdb error after deploy success')
         record_event(
-            module='ops',
-            category='execution',
-            action='deploy_finish',
+            source_type='deployment',
+            kind='release_success',
+            severity='info',
             title='发布执行成功',
-            summary=f'发布单 {deployment.app_name} 执行成功',
-            result=EventRecord.RESULT_SUCCESS,
-            source_type=EventRecord.SOURCE_ASYNC,
-            actor_type=EventRecord.ACTOR_SYSTEM,
-            actor_username=deployment.deployer or deployment.submitter or 'system',
-            actor_display=deployment.deployer or deployment.submitter or 'system',
-            resource_type='deployment',
-            resource_id=deployment.id,
-            resource_name=deployment.app_name,
-            business_line=deployment.business_line,
-            environment=deployment.environment,
-            application=deployment.app_name,
-            correlation_id=f'deployment:{deployment.id}',
-            metadata=_deployment_event_metadata(deployment, execution_count=deployment.execution_count),
+            message=f'发布单 {deployment.app_name} 执行成功',
+            target_type='deployment',
+            target_resource=deployment.release_name,
+            payload={
+                'deployment_id': deployment.id,
+                'app_name': deployment.app_name,
+                'version': deployment.version,
+                'business_line': deployment.business_line,
+                'environment': deployment.environment,
+                'actor': deployment.deployer or deployment.submitter or 'system',
+                'correlation_id': f'deployment:{deployment.id}',
+                'metadata': _deployment_event_metadata(deployment, execution_count=deployment.execution_count),
+            },
         )
     except Exception as exc:
         logger.exception('deploy_service error')
@@ -388,25 +388,23 @@ def deploy_service(deployment_id):
         deployment.finished_at = timezone.now()
         log_lines.append(f'[ERROR] 发布失败: {str(exc)}')
         record_event(
-            module='ops',
-            category='execution',
-            action='deploy_finish',
+            source_type='deployment',
+            kind='release_failed',
+            severity='error',
             title='发布执行失败',
-            summary=f'发布单 {deployment.app_name} 执行失败',
-            result=EventRecord.RESULT_FAILED,
-            severity=EventRecord.SEVERITY_WARNING,
-            source_type=EventRecord.SOURCE_ASYNC,
-            actor_type=EventRecord.ACTOR_SYSTEM,
-            actor_username=deployment.deployer or deployment.submitter or 'system',
-            actor_display=deployment.deployer or deployment.submitter or 'system',
-            resource_type='deployment',
-            resource_id=deployment.id,
-            resource_name=deployment.app_name,
-            business_line=deployment.business_line,
-            environment=deployment.environment,
-            application=deployment.app_name,
-            correlation_id=f'deployment:{deployment.id}',
-            metadata=_deployment_event_metadata(deployment, error=str(exc)),
+            message=f'发布单 {deployment.app_name} 执行失败',
+            target_type='deployment',
+            target_resource=deployment.release_name,
+            payload={
+                'deployment_id': deployment.id,
+                'app_name': deployment.app_name,
+                'version': deployment.version,
+                'business_line': deployment.business_line,
+                'environment': deployment.environment,
+                'actor': deployment.deployer or deployment.submitter or 'system',
+                'correlation_id': f'deployment:{deployment.id}',
+                'metadata': _deployment_event_metadata(deployment, error=str(exc)),
+            },
         )
 
     deployment.deploy_log = '\n'.join(log_lines)
@@ -433,6 +431,27 @@ def _scale_k8s_workloads(deployment, replicas):
     return scaled
 
 
+def _emit_deployment_event(deployment, kind, severity, title, message, actor='system', **extra):
+    record_event(
+        source_type='deployment',
+        kind=kind,
+        severity=severity,
+        title=title,
+        message=message,
+        target_type='deployment',
+        target_resource=deployment.release_name,
+        payload={
+            'deployment_id': deployment.id,
+            'app_name': deployment.app_name,
+            'version': deployment.version,
+            'business_line': deployment.business_line,
+            'environment': deployment.environment,
+            'actor': actor,
+            'metadata': extra,
+        },
+    )
+
+
 def stop_service(deployment):
     if not deployment.is_current:
         deployment.deploy_log += '\n[WARN] 只能停止当前生效版本'
@@ -448,6 +467,8 @@ def stop_service(deployment):
         deployment.deploy_log += f'\n[ERROR] 停止失败: {str(exc)}'
     deployment.finished_at = timezone.now()
     deployment.save(update_fields=['status', 'deploy_log', 'finished_at'])
+    if deployment.status == 'stopped':
+        _emit_deployment_event(deployment, 'service_stopped', 'warning', '停止应用实例', f'应用 {deployment.app_name} 已停止')
     try:
         sync_deployment_to_cmdb(deployment, override_status='idle')
     except Exception:
@@ -470,6 +491,8 @@ def start_service(deployment):
         deployment.deploy_log += f'\n[ERROR] 启动失败: {str(exc)}'
     deployment.finished_at = timezone.now()
     deployment.save(update_fields=['status', 'deploy_log', 'finished_at'])
+    if deployment.status == 'running':
+        _emit_deployment_event(deployment, 'service_started', 'info', '启动应用实例', f'应用 {deployment.app_name} 已启动')
     try:
         sync_deployment_to_cmdb(deployment, override_status='active')
     except Exception:
@@ -511,6 +534,8 @@ def remove_service(deployment):
         deployment.deploy_log += f'\n[ERROR] 下线失败: {str(exc)}'
     deployment.finished_at = timezone.now()
     deployment.save(update_fields=['status', 'is_current', 'deploy_log', 'finished_at'])
+    if deployment.status == 'removed':
+        _emit_deployment_event(deployment, 'service_removed', 'warning', '下线应用实例', f'应用 {deployment.app_name} 已下线')
     try:
         sync_deployment_to_cmdb(deployment, override_status='offline')
     except Exception:
@@ -541,6 +566,17 @@ def advance_batch(deployment, actor='', change_summary=''):
         message += '\n[SUCCESS] 批次发布已完成'
     deployment.deploy_log = f'{deployment.deploy_log}{message}'.strip()
     deployment.save(update_fields=['batch_current', 'finished_at', 'deploy_log'])
+    _emit_deployment_event(
+        deployment,
+        'batch_advanced',
+        'info',
+        '批次推进',
+        f'发布单 {deployment.app_name} 批次推进至 {deployment.batch_current}/{deployment.batch_total}',
+        actor=actor or 'system',
+        batch_current=deployment.batch_current,
+        batch_total=deployment.batch_total,
+        change_summary=change_summary or '',
+    )
     return deployment
 
 

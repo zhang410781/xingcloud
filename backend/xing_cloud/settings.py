@@ -328,6 +328,16 @@ ALERT_INGEST_MAX_BODY_BYTES = _int_value(
     'ALERT_INGEST_MAX_BODY_BYTES',
     1_048_576,
 )
+EVENT_RETENTION_DAYS = _int_value(
+    _setting_value(
+        {},
+        ('event_retention_days',),
+        ('EVENT_RETENTION_DAYS',),
+        30,
+    ),
+    'EVENT_RETENTION_DAYS',
+    30,
+)
 
 X_FRAME_OPTIONS = os.getenv('X_FRAME_OPTIONS', 'SAMEORIGIN')
 

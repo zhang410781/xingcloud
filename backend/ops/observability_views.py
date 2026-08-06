@@ -1,4 +1,4 @@
-﻿from urllib.parse import quote
+from urllib.parse import quote
 
 import re
 from datetime import datetime, timedelta, timezone as datetime_timezone
@@ -17,7 +17,7 @@ from rest_framework.response import Response
 
 from .eventwall_stub import EventWallModelViewSetMixin
 from .eventwall_stub import EventRecord
-from .eventwall_stub import record_event
+from .events import record_event
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from rbac.services import user_has_permissions
 from .alert_rule_presets import ensure_datasource_rule_instances, install_rules_from_templates

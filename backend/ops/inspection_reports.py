@@ -579,9 +579,33 @@ def run_due_inspection_reports(limit=20):
             execution = run_inspection_report_schedule(schedule)
             if execution.status in {InspectionReportExecution.STATUS_SUCCESS, InspectionReportExecution.STATUS_PARTIAL}:
                 completed += 1
+                _record_inspection_event(schedule, execution, 'inspection_completed', 'info')
             else:
                 failed += 1
+                _record_inspection_event(schedule, execution, 'inspection_failed', 'error')
         except Exception:
             failed += 1
+            _record_inspection_event(schedule, None, 'inspection_failed', 'error')
             logger.exception('scheduled inspection report %s failed before execution', schedule_id)
     return {'checked': len(due_ids), 'completed': completed, 'failed': failed}
+
+
+def _record_inspection_event(schedule, execution, kind, severity):
+    from .events import record_event
+
+    record_event(
+        source_type='inspection',
+        kind=kind,
+        severity=severity,
+        title='巡检完成' if kind == 'inspection_completed' else '巡检失败',
+        message=f'巡检任务 {schedule.name} 完成' if kind == 'inspection_completed' else f'巡检任务 {schedule.name} 执行失败',
+        target_type='schedule',
+        target_resource=schedule.name,
+        payload={
+            'schedule_id': schedule.id,
+            'schedule_name': schedule.name,
+            'execution_id': execution.id if execution else None,
+            'status': execution.status if execution else 'failed',
+            'error_message': (execution.error_message or '')[:2000] if execution else '',
+        },
+    )

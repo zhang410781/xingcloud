@@ -6,7 +6,7 @@ import paramiko
 from django.conf import settings
 from django.db.models import Avg, Count, F, Prefetch, Q
 from django.utils import timezone
-from rest_framework import status, viewsets
+from rest_framework import filters, status, viewsets
 from rest_framework.decorators import action, api_view, authentication_classes, permission_classes
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -15,7 +15,8 @@ from rest_framework.response import Response
 from aiops.models import AIOpsKnowledgeEnvironment, AIOpsPendingAction
 from .eventwall_stub import EventWallModelViewSetMixin
 from .eventwall_stub import EventRecord
-from .eventwall_stub import build_json_preview, build_resource, record_event
+from .eventwall_stub import build_json_preview, build_resource
+from .events import record_event
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 
 from . import deployer
@@ -65,6 +66,7 @@ from .models import (
     TaskResource,
     TaskResourceGroup,
     TransactionTicket,
+    Event,
 )
 from .serializers import (
     AlertActionSerializer,
@@ -99,6 +101,7 @@ from .serializers import (
     TaskResourceGroupSerializer,
     TaskResourceSerializer,
     TransactionTicketSerializer,
+    EventSerializer,
 )
 from .alerting import (
     alert_group_summary,
@@ -3280,3 +3283,36 @@ def dashboard_stats(request):
         'recent_deploys': recent_deploys,
         'recent_alerts': recent_alerts,
     })
+
+class EventViewSet(RBACPermissionMixin, viewsets.ReadOnlyModelViewSet):
+    serializer_class = EventSerializer
+    pagination_class = AlertConfigPagination
+    queryset = Event.objects.all().select_related('alert')
+    filter_backends = (filters.SearchFilter, filters.OrderingFilter)
+    search_fields = ['title', 'message']
+    ordering_fields = ['occurred_at', 'created_at']
+    rbac_permissions = {
+        'list': {'actions': [], 'any': True},
+        'retrieve': {'actions': [], 'any': True},
+    }
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        params = self.request.query_params
+        for field in ('source_type', 'kind', 'severity', 'target_type'):
+            value = params.get(field)
+            if value:
+                queryset = queryset.filter(**{field: value})
+        target_resource = params.get('target_resource')
+        if target_resource:
+            queryset = queryset.filter(target_resource__icontains=target_resource)
+        alert_id = params.get('alert_id')
+        if alert_id:
+            queryset = queryset.filter(alert_id=alert_id)
+        occurred_after = params.get('occurred_after')
+        if occurred_after:
+            queryset = queryset.filter(occurred_at__gte=occurred_after)
+        occurred_before = params.get('occurred_before')
+        if occurred_before:
+            queryset = queryset.filter(occurred_at__lte=occurred_before)
+        return queryset

@@ -2184,3 +2184,43 @@ class TransactionTicket(models.Model):
 
     def __str__(self):
         return self.title
+
+
+class Event(models.Model):
+    SEVERITY_CHOICES = [
+        ('info', '信息'),
+        ('warning', '警告'),
+        ('error', '错误'),
+        ('danger', '危险'),
+    ]
+
+    source_type = models.CharField('来源类别', max_length=32, db_index=True, default='system')
+    kind = models.CharField('事件类型', max_length=64, db_index=True)
+    severity = models.CharField('级别', max_length=16, choices=SEVERITY_CHOICES, default='info')
+    title = models.CharField('标题', max_length=255, blank=True, default='')
+    message = models.TextField('描述', blank=True, default='')
+    target_type = models.CharField('目标类别', max_length=64, blank=True, default='')
+    target_resource = models.CharField('目标标识', max_length=255, blank=True, default='', db_index=True)
+    alert = models.ForeignKey(
+        'Alert',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='events',
+        verbose_name='关联告警',
+    )
+    payload = models.JSONField('附加数据', default=dict, blank=True)
+    occurred_at = models.DateTimeField('发生时间', default=timezone.now, db_index=True)
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+
+    class Meta:
+        verbose_name = '事件'
+        verbose_name_plural = '事件'
+        ordering = ['-occurred_at', '-id']
+        indexes = [
+            models.Index(fields=['source_type', 'kind']),
+            models.Index(fields=['-occurred_at']),
+        ]
+
+    def __str__(self):
+        return f'{self.source_type}/{self.kind}: {self.title}'

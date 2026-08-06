@@ -728,7 +728,7 @@ def _task_environment_for_event(task):
 def record_task_center_event(task, action, title, summary='', request=None, actor_username='', source_type=''):
     try:
         from .eventwall_stub import EventRecord
-        from .eventwall_stub import record_event
+        from .events import record_event
     except Exception:
         return None
     return record_event(

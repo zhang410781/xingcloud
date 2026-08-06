@@ -448,4 +448,29 @@ def run_due_discoveries(limit=10):
         execute_discovery_run(run)
         processed += 1
         failed += int(run.status == 'failed')
+        _record_discovery_event(run)
     return {'processed': processed, 'failed': failed}
+
+
+def _record_discovery_event(run):
+    from ops.events import record_event
+
+    success = run.status in ('completed', 'partial')
+    kind = 'discovery_success' if success else 'discovery_failed'
+    record_event(
+        source_type='discovery',
+        kind=kind,
+        severity='info' if success else 'error',
+        title='资源发现完成' if success else '资源发现失败',
+        message=f'数据源 {run.source.name} 资源发现{"完成" if success else "失败"}',
+        target_type='source',
+        target_resource=run.source.name,
+        payload={
+            'run_id': run.id,
+            'source_id': run.source_id,
+            'source_name': run.source.name,
+            'provider': run.source.provider or '',
+            'status': run.status,
+            'error': (run.error or '')[:2000],
+        },
+    )

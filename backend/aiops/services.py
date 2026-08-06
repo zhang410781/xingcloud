@@ -27,7 +27,7 @@ from django.utils.dateparse import parse_date, parse_datetime
 
 from resource_center.models import Resource
 from ops.eventwall_stub import EventRecord
-from ops.eventwall_stub import record_event
+from ops.events import record_event
 from xing_cloud.features import filter_feature_tools, tool_feature_enabled
 from ops.host_tasks import build_host_target_snapshot as build_ops_host_target_snapshot
 from ops.host_tasks import build_k8s_target_snapshot as build_ops_k8s_target_snapshot

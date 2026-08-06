@@ -487,8 +487,13 @@ def ingest_external_alert_payload(payload, ingress_source=None):
         if alert.status == Alert.STATUS_ACTIVE and (created or reactivated):
             fire_alerts.append(alert)
             analysis_targets.append(alert)
+            _record_ingest_event(
+                normalized, alert,
+                kind='alert_active' if created else 'alert_reactivated',
+            )
         elif newly_resolved:
             resolved_alerts.append(alert)
+            _record_ingest_event(normalized, alert, kind='alert_resolved', severity='info')
         if alert.status == Alert.STATUS_ACTIVE:
             active_alerts.append(alert)
         results.append({
@@ -530,6 +535,28 @@ def ingest_external_alert_payload(payload, ingress_source=None):
         'notification_log_count': len(fire_dispatch.get('notification_logs') or []) + len(resolved_dispatch.get('notification_logs') or []),
         'storm_batches': (fire_dispatch.get('storm_batches') or []) + (resolved_dispatch.get('storm_batches') or []),
     }
+
+
+def _record_ingest_event(normalized, alert, kind, severity=None):
+    from .events import record_event
+
+    record_event(
+        source_type='webhook',
+        kind=kind,
+        severity=severity or normalized.get('level') or 'info',
+        title=normalized.get('title') or '',
+        message=normalized.get('message') or '',
+        target_type=normalized.get('resource_type') or '',
+        target_resource=normalized.get('resource') or '',
+        alert=alert,
+        payload={
+            'source': normalized.get('source') or '',
+            'fingerprint': normalized.get('fingerprint') or '',
+            'labels': {k: v for k, v in _dict(normalized.get('labels')).items() if k in ('alertname', 'severity', 'cluster', 'namespace', 'pod', 'node', 'instance', 'reason')},
+            'annotations': {k: v for k, v in _dict(normalized.get('annotations')).items() if k in ('summary', 'description', 'runbook_url')},
+            'starts_at': str(normalized.get('starts_at') or ''),
+        },
+    )
 
 
 def run_due_external_alert_escalations(limit=100):

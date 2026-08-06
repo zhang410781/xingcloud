@@ -13,7 +13,7 @@ from rest_framework.response import Response
 
 from .eventwall_stub import EventWallModelViewSetMixin
 from .eventwall_stub import EventRecord
-from .eventwall_stub import record_event
+from .events import record_event
 from .models import LogDataSource
 from .serializers import LogDataSourceSerializer
 from rbac.permissions import RBACPermissionMixin, build_rbac_permission

@@ -1,4 +1,4 @@
-﻿from django.contrib.auth import authenticate, get_user_model
+from django.contrib.auth import authenticate, get_user_model
 from rest_framework import filters, status, viewsets
 from rest_framework.authentication import TokenAuthentication
 from rest_framework.authtoken.models import Token
@@ -9,7 +9,7 @@ from rest_framework.exceptions import ValidationError
 
 from ops.eventwall_stub import EventWallModelViewSetMixin
 from ops.eventwall_stub import EventRecord
-from ops.eventwall_stub import record_event
+from ops.events import record_event
 
 from .models import PermissionDefinition, Role, SystemModuleSetting, UserGroup
 from .permissions import RBACPermissionMixin, build_rbac_permission

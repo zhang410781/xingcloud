@@ -52,6 +52,7 @@ from .models import (
     TransactionTicket,
     TaskResource,
     TaskResourceGroup,
+    Event,
 )
 
 
@@ -2553,3 +2554,10 @@ class NginxRouteSerializer(serializers.ModelSerializer):
     class Meta:
         model = NginxRoute
         fields = '__all__'
+
+
+class EventSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Event
+        fields = ('id', 'source_type', 'kind', 'severity', 'title', 'message', 'target_type', 'target_resource', 'alert_id', 'occurred_at', 'created_at')
+        read_only_fields = fields

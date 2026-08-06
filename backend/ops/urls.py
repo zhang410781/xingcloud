@@ -39,6 +39,7 @@ router.register(r'observability/metric/datasources', observability_views.MetricD
 router.register(r'observability/dashboard-definitions', observability_views.ObservabilityDashboardViewSet, basename='observability-dashboard-definition')
 router.register(r'k8s/clusters', k8s_views.K8sClusterViewSet)
 router.register(r'docker/hosts', docker_views.DockerHostViewSet)
+router.register(r'events', views.EventViewSet, basename='event')
 urlpatterns = [
     path('dashboard/stats/', views.dashboard_stats, name='dashboard-stats'),
     path('ops/alerts/ingest/', views.alert_ingest, name='external-alert-ingest'),
