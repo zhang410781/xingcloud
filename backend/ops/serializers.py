@@ -1650,6 +1650,12 @@ class AlertRuleSerializer(serializers.ModelSerializer):
         if alert_source:
             query_config['metric_datasource_id'] = alert_source.metric_datasource_id
             attrs['query_config'] = query_config
+        detector = attrs.get('detector', getattr(self.instance, 'detector', {}) or {})
+        detector_name = str(detector.get('name') or 'threshold').strip().lower()
+        if detector_name != 'threshold':
+            from .alert_engine.detectors import DETECTORS  # 延迟导入避免包初始化环
+            if detector_name not in DETECTORS:
+                raise serializers.ValidationError({'detector': f'检测算法 {detector_name!r} 未注册'})
         return attrs
 
 

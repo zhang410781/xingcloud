@@ -14,6 +14,7 @@ from ops.models import AlertRule, LogDataSource
 from ops.observability_views import execute_promql_query
 from ops.sla import build_sla_summary
 
+from .detectors import run_detector
 from .evidence import result_evidence
 from .pipeline import mark_rule_error, process_rule_results
 
@@ -129,9 +130,28 @@ def _prometheus_results(rule):
         if cluster_display_name:
             labels['cluster_display_name'] = cluster_display_name
         resource = labels.get('pod') or labels.get('instance') or labels.get('node') or labels.get('job') or ''
-        matched = _compare(value, condition)
+        detector_outcome = run_detector(
+            rule,
+            value,
+            context={
+                'rule': rule,
+                'source_type': 'prometheus',
+                'query': query,
+                'datasource_id': datasource.id,
+                'environment': datasource.environment or '',
+            },
+        )
+        matched = detector_outcome['matched']
         display_labels = {**labels, 'cluster': cluster_display_name or labels.get('cluster') or ''}
         rendered_annotations, template_diagnostics = render_rule_annotations(rule, labels=display_labels, value=value)
+        evidence = result_evidence('prometheus', query=query, value=value, labels=labels, raw=item)
+        detector_meta = {
+            key: value
+            for key, value in detector_outcome.items()
+            if value not in (None, '', {}, [])
+        }
+        if detector_meta:
+            evidence['detector'] = detector_meta
         results.append({
             'source_type': 'prometheus',
             'matched': matched,
@@ -144,7 +164,7 @@ def _prometheus_results(rule):
             'message': rendered_annotations['message'],
             'annotations': rendered_annotations,
             'template_diagnostics': template_diagnostics,
-            'evidence': result_evidence('prometheus', query=query, value=value, labels=labels, raw=item),
+            'evidence': evidence,
         })
     return results
 
@@ -251,7 +271,26 @@ def _clickhouse_results(rule, *, collection_key=None):
             'collection': collection.get('key'),
             'resource': row.get('name') or row.get('resource') or '',
         })
-        matched = _compare(value, condition)
+        detector_outcome = run_detector(
+            rule,
+            value,
+            context={
+                'rule': rule,
+                'source_type': 'clickhouse',
+                'query': '',
+                'datasource_id': datasource.id if datasource else '',
+                'environment': '',
+            },
+        )
+        matched = detector_outcome['matched']
+        evidence = result_evidence('clickhouse', sql=sql, value=value, labels=labels, raw=row)
+        detector_meta = {
+            key: value
+            for key, value in detector_outcome.items()
+            if value not in (None, '', {}, [])
+        }
+        if detector_meta:
+            evidence['detector'] = detector_meta
         results.append({
             'source_type': 'clickhouse',
             'matched': matched,
@@ -261,10 +300,9 @@ def _clickhouse_results(rule, *, collection_key=None):
             'resource_type': 'log',
             'title': rule.name if matched else '',
             'message': f'ClickHouse {collection.get("key")} count {value}',
-            'evidence': result_evidence('clickhouse', sql=sql, value=value, labels=labels, raw=row),
+            'evidence': evidence,
         })
     return results
-
 
 def _sla_results(rule):
     condition = _dict(rule.condition)

@@ -22,6 +22,7 @@ from rbac.permissions import RBACPermissionMixin, build_rbac_permission
 from . import deployer
 from .alert_engine import engine_status as alert_engine_status
 from .alert_engine import evaluate_rule
+from .alert_engine.detectors import detector_registry
 from .alert_annotation_templates import notification_preview
 from .alert_ingest import (
     AlertIngestError,
@@ -2851,6 +2852,7 @@ class AlertRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets
         'destroy': ['ops.alert.config.manage'],
         'apply_preset': ['ops.alert.config.manage'],
         'by_category': ['ops.alert.config.view'],
+        'detectors': ['ops.alert.config.view'],
         'trigger': ['ops.alert.config.manage'],
         'evaluate': ['ops.alert.config.manage'],
         'dry_run_draft': ['ops.alert.config.manage'],
@@ -2922,6 +2924,10 @@ class AlertRuleViewSet(EventWallModelViewSetMixin, RBACPermissionMixin, viewsets
             {'category': category, 'category_display': label, 'count': counts.get(category, 0)}
             for category, label in AlertRule.CATEGORY_CHOICES
         ])
+
+    @action(detail=False, methods=['get'], url_path='detectors')
+    def detectors(self, request):
+        return Response(detector_registry())
 
     @action(detail=True, methods=['post'])
     def trigger(self, request, pk=None):

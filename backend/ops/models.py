@@ -1163,6 +1163,7 @@ class AlertRule(models.Model):
     duration_seconds = models.PositiveIntegerField('持续时间秒', default=0)
     notify_enabled = models.BooleanField('命中后通知', default=True)
     auto_analyze = models.BooleanField('命中后 AI 研判', default=True)
+    detector = models.JSONField('检测算法', default=dict, blank=True)
     is_enabled = models.BooleanField('启用', default=True)
     last_evaluated_at = models.DateTimeField('最近评估时间', null=True, blank=True)
     last_triggered_at = models.DateTimeField('最近触发时间', null=True, blank=True)
