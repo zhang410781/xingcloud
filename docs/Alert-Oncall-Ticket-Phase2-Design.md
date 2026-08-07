@@ -135,4 +135,11 @@ UniqueConstraint(alert, ticket)
 ## 11. 验收记录
 
 - 自动化：`ops.test_oncall_ticket` 19 测试全绿；相关回归（events/transaction_tickets/alert_ingest/alert_analysis/unified_alert_sources）112 测试全绿；全量 407 测试 1 失败为并行基础设施抖动（Redis/worker 超时），单独复跑通过。
-- 生产验收：待部署后补充。
+- 生产验收（镜像 `oncall-ticket-20260806`，迁移 0109 已自动应用）：
+  1. 值班解析：全周班命中；隔夜班 02:00 命中（停用全天班后仅夜班命中）
+  2. 升级合并：策略配置 `oncall_schedule` 且当班命中 → 当班组联系人并入升级接收人（`{'email': ['a@x.com']}` 合并）
+  3. 转工单：POST `/api/alerts/{id}/create-ticket/` → 200，ticket_type=incident、priority=critical→high、owner=当班组名、applicant=admin
+  4. 幂等：重复 POST → `created=False` 返回已有工单
+  5. 双向查询：`GET /api/alerts/{id}/tickets/` 返回关联工单；工单详情 `alerts` 摘要正确
+  6. `GET /api/oncall-schedules/` CRUD 与 `GET /api/oncall-schedules/current/` 正常
+  7. 验收数据已清理（schedules/policies/sources/tickets/alerts 均 0 残留）
