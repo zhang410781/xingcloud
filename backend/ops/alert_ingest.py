@@ -24,6 +24,14 @@ class AlertIngestError(ValueError):
 
 
 SEVERITY_MAP = {
+    # Zabbix priority values: 0 not classified, 1 information, 2 warning,
+    # 3 average, 4 high and 5 disaster.
+    '0': 'info',
+    '1': 'info',
+    '2': 'warning',
+    '3': 'warning',
+    '4': 'critical',
+    '5': 'critical',
     'not classified': 'info',
     'information': 'info',
     'info': 'info',
@@ -40,7 +48,9 @@ SEVERITY_MAP = {
 
 
 def _text(value, limit=None):
-    result = str(value or '').strip()
+    # Preserve numeric zero. Zabbix uses 0 for "not classified" and for
+    # resolved status in several webhook/script integrations.
+    result = '' if value is None else str(value).strip()
     return result[:limit] if limit else result
 
 
@@ -169,7 +179,18 @@ def normalize_zabbix(payload):
         raise AlertIngestError('Zabbix payload must be a JSON object.')
     trigger_id = _first(payload.get('trigger_id'), payload.get('triggerid'))
     event_id = _first(payload.get('event_id'), payload.get('eventid'))
+    host_id = _first(
+        payload.get('host_id'),
+        payload.get('hostid'),
+        payload.get('zabbix_hostid'),
+    )
     host_name = _first(payload.get('host_name'), payload.get('host'), payload.get('hostname'))
+    host_ip = _first(
+        payload.get('host_ip'),
+        payload.get('hostip'),
+        payload.get('ip'),
+        payload.get('interface_ip'),
+    )
     title = _first(payload.get('subject'), payload.get('trigger_name'), 'Zabbix 告警')
     message = _first(payload.get('message'), payload.get('trigger_description'), title)
     status_value = _zabbix_status(payload)
@@ -177,11 +198,19 @@ def normalize_zabbix(payload):
     ends_at = _timestamp(_first(payload.get('ends_at'), payload.get('recovery_time'), payload.get('timestamp'))) if status_value == Alert.STATUS_RESOLVED else None
     labels = {
         **_dict(payload.get('labels')),
-        'zabbix_host': host_name,
         'trigger_id': trigger_id,
         'event_id': event_id,
         'severity': _text(payload.get('severity')),
     }
+    for key, value in (
+        ('zabbix_host', host_name),
+        ('zabbix_hostid', host_id),
+        ('host_id', host_id),
+        ('host_ip', host_ip),
+        ('ip', host_ip),
+    ):
+        if value:
+            labels[key] = value
     raw_payload = dict(payload)
     raw_payload['ingest'] = {'source': 'zabbix', 'schema_version': 1}
     return {
@@ -191,8 +220,8 @@ def normalize_zabbix(payload):
         'source': 'zabbix',
         'source_type': Alert.SOURCE_ZABBIX,
         'external_id': _text(event_id, 128),
-        'fingerprint': _stable_fingerprint('zabbix', trigger_id or title, host_name),
-        'resource': _text(host_name, 256),
+        'fingerprint': _stable_fingerprint('zabbix', trigger_id or title, host_id or host_name or host_ip),
+        'resource': _text(host_name or host_ip, 256),
         'resource_type': _text(payload.get('resource_type') or 'host', 64),
         'environment': _text(payload.get('environment'), 64),
         'cluster': _text(payload.get('cluster'), 128),

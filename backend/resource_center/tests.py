@@ -218,6 +218,45 @@ class ResourceApiTests(TestCase):
         contacts = _recipient_contacts(policy=policy, route=route, alert=alert)
         self.assertEqual(contacts['phones'], ['13800000000'])
 
+    def test_zabbix_host_id_matching_is_scoped_to_alert_source(self):
+        first_source = AlertSource.objects.create(
+            name='Zabbix 上海', code='zabbix-shanghai', provider=AlertSource.PROVIDER_ZABBIX,
+        )
+        second_source = AlertSource.objects.create(
+            name='Zabbix 南京', code='zabbix-nanjing', provider=AlertSource.PROVIDER_ZABBIX,
+        )
+        first = Resource.objects.get(name='server-01')
+        second = Resource.objects.create(
+            resource_type=first.resource_type,
+            name='server-nanjing',
+            display_name='南京主机',
+            environment='prod',
+            source='manual',
+        )
+        ResourceIdentifier.objects.create(
+            resource=first, kind='zabbix_hostid', value='1001',
+            scope='zabbix:zabbix-shanghai', source='manual',
+        )
+        ResourceIdentifier.objects.create(
+            resource=second, kind='zabbix_hostid', value='1001',
+            scope='zabbix:zabbix-nanjing', source='manual',
+        )
+
+        shanghai_alert = Alert.objects.create(
+            title='CPU', level='warning', source=first_source.code,
+            source_type=Alert.SOURCE_ZABBIX, alert_source=first_source,
+            resource='server-01', labels={'zabbix_hostid': '1001'},
+        )
+        nanjing_alert = Alert.objects.create(
+            title='CPU', level='warning', source=second_source.code,
+            source_type=Alert.SOURCE_ZABBIX, alert_source=second_source,
+            resource='server-nanjing', labels={'zabbix_hostid': '1001'},
+        )
+        shanghai_alert.refresh_from_db()
+        nanjing_alert.refresh_from_db()
+        self.assertEqual(shanghai_alert.matched_resource_id, first.id)
+        self.assertEqual(nanjing_alert.matched_resource_id, second.id)
+
     def test_resource_contacts_follow_relation_direction_and_inheritance(self):
         resource = Resource.objects.get(name='server-01')
         product = Resource.objects.create(

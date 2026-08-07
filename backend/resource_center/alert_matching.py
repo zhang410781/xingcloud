@@ -52,6 +52,42 @@ def _unique_resource(queryset):
     return None, 'conflict' if len(ids) > 1 else 'unmatched'
 
 
+def _zabbix_scope(alert):
+    """Return the source-qualified scope used by Zabbix Host IDs.
+
+    Host IDs are only unique inside one Zabbix installation. New resources may
+    therefore store them as ``zabbix:<alert-source-code>``. Legacy global
+    identifiers remain supported as a fallback for existing inventory.
+    """
+    source = None
+    if getattr(alert, 'alert_source_id', None):
+        source = getattr(alert, 'alert_source', None)
+    if source and str(getattr(source, 'provider', '')).lower() == 'zabbix':
+        code = _clean(getattr(source, 'code', ''))
+        if code:
+            return f'zabbix:{code}'
+    labels = alert.labels if isinstance(alert.labels, dict) else {}
+    source_code = _clean(labels.get('zabbix_source') or labels.get('source_code'))
+    return f'zabbix:{source_code}' if source_code else ''
+
+
+def _match_identifier(kind, value, scope=''):
+    """Match a resource identifier, preferring a source-scoped identity."""
+    if scope:
+        resource, state = _unique_resource(ResourceIdentifier.objects.filter(
+            kind=kind, value=value, scope=scope,
+        ))
+        if state != 'unmatched':
+            return resource, state
+    # Before source scoping was introduced, manual and discovered identifiers
+    # used arbitrary scopes. Keep those records usable, but do not let an
+    # identifier scoped to another Zabbix source become a fallback match.
+    legacy = ResourceIdentifier.objects.filter(
+        kind=kind, value=value,
+    ).exclude(scope__startswith='zabbix:')
+    return _unique_resource(legacy)
+
+
 def match_alert_to_resource(alert):
     labels = alert.labels if isinstance(alert.labels, dict) else {}
     identifier_candidates = []
@@ -61,8 +97,9 @@ def match_alert_to_resource(alert):
     for key in ('hostid', 'zabbix_hostid'):
         if _clean(labels.get(key)):
             identifier_candidates.append(('zabbix_hostid', _clean(labels[key]), key))
+    zabbix_scope = _zabbix_scope(alert)
     for kind, value, reason in identifier_candidates:
-        resource, state = _unique_resource(ResourceIdentifier.objects.filter(kind=kind, value=value))
+        resource, state = _match_identifier(kind, value, scope=zabbix_scope)
         if state == 'matched':
             return resource, 'matched', f'{reason}={value}'
         if state == 'conflict':

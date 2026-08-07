@@ -501,6 +501,33 @@ class ExternalAlertNormalizationTests(TestCase):
         self.assertEqual(normalized['fingerprint'], 'zabbix:2:node-1')
         self.assertIsNotNone(normalized['ends_at'])
 
+    def test_normalizes_zabbix_host_identity_and_numeric_severity(self):
+        normalized = normalize_zabbix({
+            'event_id': 'event-9',
+            'trigger_id': 'trigger-9',
+            'host_id': 'host-42',
+            'host_name': 'redis-prod',
+            'host_ip': '10.20.0.42',
+            'severity': '5',
+            'event_status': 'PROBLEM',
+        })
+        self.assertEqual(normalized['level'], 'critical')
+        self.assertEqual(normalized['resource'], 'redis-prod')
+        self.assertEqual(normalized['labels']['zabbix_hostid'], 'host-42')
+        self.assertEqual(normalized['labels']['host_ip'], '10.20.0.42')
+        self.assertEqual(normalized['fingerprint'], 'zabbix:trigger-9:host-42')
+
+    def test_normalizes_zabbix_zero_priority_and_status(self):
+        normalized = normalize_zabbix({
+            'event_id': 'event-0',
+            'trigger_id': 'trigger-0',
+            'host_id': 'host-0',
+            'severity': 0,
+            'event_status': 0,
+        })
+        self.assertEqual(normalized['level'], 'info')
+        self.assertEqual(normalized['status'], Alert.STATUS_RESOLVED)
+
     def test_normalizes_alertmanager_resolved_alert(self):
         normalized = normalize_alertmanager({
             'status': 'resolved',
