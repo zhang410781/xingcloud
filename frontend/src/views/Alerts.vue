@@ -738,6 +738,40 @@
           </el-form-item>
           <el-form-item label="&#x9608;&#x503C;"><el-input-number v-model="ruleDialog.form.threshold" :min="0" :precision="2" /></el-form-item>
         </div>
+        <div class="split-grid">
+          <el-form-item label="&#x68C0;&#x6D4B;&#x7B97;&#x6CD5;">
+            <el-select v-model="ruleDialog.form.detector_name" :disabled="isLogRule(ruleDialog.form)">
+              <el-option
+                v-for="item in detectorOptions"
+                :key="item.name"
+                :label="item.implemented ? item.label : `${item.label}（未接入）`"
+                :value="item.name"
+                :disabled="!item.implemented"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="detectorParamsVisible && detectorParamFields.length" label="&#x7B97;&#x6CD5;&#x53C2;&#x6570;">
+            <template v-for="field in detectorParamFields" :key="field.key">
+              <template v-if="field.type === 'select'">
+                <el-select v-model="ruleDialog.form[field.key]" style="width: 150px">
+                  <el-option v-for="option in field.options" :key="option.value" :label="option.label" :value="option.value" />
+                </el-select>
+              </template>
+              <template v-else-if="field.type === 'number'">
+                <el-input-number v-model="ruleDialog.form[field.key]" :min="field.min ?? 0" :max="field.max" :precision="field.precision ?? 0" />
+              </template>
+              <span v-if="field.suffix" class="field-suffix">{{ field.suffix }}</span>
+            </template>
+          </el-form-item>
+        </div>
+        <el-alert
+          v-if="isLogRule(ruleDialog.form) && ruleDialog.form.detector_name !== 'threshold'"
+          title="&#x65E5;&#x5FD7;&#x89C4;&#x5219;&#x4E0D;&#x652F;&#x6301;&#x57FA;&#x51C6;&#x6BD4;&#x8F83;&#xFF0C;&#x5B9E;&#x9645;&#x8BC4;&#x4F30;&#x5C06;&#x56DE;&#x9000;&#x4E3A;&#x9759;&#x6001;&#x9608;&#x503C;&#x3002;"
+          type="warning"
+          :closable="false"
+          show-icon
+          class="rule-form-tip"
+        />
         <el-form-item label="&#x6807;&#x7B7E;"><MatcherEditor v-model="ruleDialog.form.label_rows" mode="equals" /></el-form-item>
         <el-form-item label="&#x6CE8;&#x89E3;"><MatcherEditor v-model="ruleDialog.form.annotation_rows" mode="equals" /></el-form-item>
         <div class="split-grid">
@@ -1010,6 +1044,7 @@ import {
   getAlertNotificationRules,
   getAlertRecipientGroups,
   getAlertRecipients,
+  getAlertRuleDetectors,
   getAlertRules,
   getAlerts,
   getAlertSummary,
@@ -1417,6 +1452,25 @@ const environmentOptions = computed(() => {
 })
 
 const ruleDialog = reactive({ visible: false, form: emptyAlertRule() })
+const detectorOptions = ref([])
+const detectorParamFields = computed(() => {
+  const name = ruleDialog.form.detector_name
+  if (name === 'yoy' || name === 'wow') {
+    return [
+      { key: 'detector_period', type: 'select', options: [{ label: '按日', value: 'day' }, { label: '按周', value: 'week' }] },
+      { key: 'detector_delta_pct', type: 'number', label: '偏差%', suffix: '%', min: 0 },
+      { key: 'detector_operator', type: 'select', options: [{ label: '上升', value: '>' }, { label: '下降', value: '<' }] },
+    ]
+  }
+  if (name === 'sigma') {
+    return [
+      { key: 'detector_window_minutes', type: 'number', suffix: '分钟', min: 10 },
+      { key: 'detector_sigma_threshold', type: 'number', suffix: 'σ', min: 1, precision: 1 },
+    ]
+  }
+  return []
+})
+const detectorParamsVisible = computed(() => ['yoy', 'wow', 'sigma'].includes(ruleDialog.form.detector_name) && !isLogRule(ruleDialog.form))
 const rulesCategoryFilter = ref('')
 const muteDialog = reactive({ visible: false, target: null, form: { minutes: 60 } })
 const channelDialog = reactive({ visible: false, form: emptyChannel() })
@@ -1949,6 +2003,12 @@ function emptyAlertRule() {
     level: 'warning',
     query_config: {},
     condition: {},
+    detector_name: 'threshold',
+    detector_period: 'day',
+    detector_delta_pct: 30,
+    detector_operator: '>',
+    detector_window_minutes: 120,
+    detector_sigma_threshold: 3,
     metric_key: 'k8s-node-not-ready',
     metric_query: '',
     custom_query_enabled: false,
@@ -1976,6 +2036,8 @@ function openAlertRule(row = null) {
   const condition = row?.condition || {}
   const query = config.promql || config.query || config.metric || ''
   const fields = conditionFields(config, condition)
+  const detector = row?.detector && typeof row.detector === 'object' ? row.detector : {}
+  const detectorParams = detector.params && typeof detector.params === 'object' ? detector.params : {}
   ruleDialog.form = row ? {
     ...emptyAlertRule(),
     ...row,
@@ -1991,6 +2053,12 @@ function openAlertRule(row = null) {
     window_minutes: Number(config.window_minutes || config.window || condition.window_minutes || 5),
     log_group_by: config.group_by || condition.group_by || '',
     keyword: condition.keyword || config.keyword || '',
+    detector_name: detector.name || 'threshold',
+    detector_period: detectorParams.period || 'day',
+    detector_delta_pct: Number(detectorParams.delta_pct ?? 30),
+    detector_operator: detectorParams.operator || '>',
+    detector_window_minutes: Number(detectorParams.window_minutes ?? 120),
+    detector_sigma_threshold: Number(detectorParams.threshold ?? 3),
     ...fields,
     label_rows: matcherRowsFromObject(row.labels),
     annotation_rows: matcherRowsFromObject(row.annotations),
@@ -2029,11 +2097,21 @@ function buildAlertRulePayload(form) {
     threshold: form.threshold,
     ...(isLogRule(form) && form.keyword ? { keyword: form.keyword } : {}),
   }
+  const detector = form.detector_name === 'threshold'
+    ? { name: 'threshold', params: {} }
+    : {
+        name: form.detector_name,
+        params: {
+          ...(['yoy', 'wow'].includes(form.detector_name) ? { period: form.detector_period, delta_pct: form.detector_delta_pct, operator: form.detector_operator } : {}),
+          ...(form.detector_name === 'sigma' ? { window_minutes: form.detector_window_minutes, threshold: form.detector_sigma_threshold } : {}),
+        },
+      }
   const data = {
     ...form,
     source: form.id ? form.source : 'custom',
     query_config,
     condition,
+    detector,
     labels: matchersToObject(form.label_rows),
     annotations: matchersToObject(form.annotation_rows),
   }
@@ -2049,6 +2127,12 @@ function buildAlertRulePayload(form) {
   delete data.keyword
   delete data.operator
   delete data.threshold
+  delete data.detector_name
+  delete data.detector_period
+  delete data.detector_delta_pct
+  delete data.detector_operator
+  delete data.detector_window_minutes
+  delete data.detector_sigma_threshold
   delete data.label_rows
   delete data.annotation_rows
   return data
@@ -2080,10 +2164,26 @@ async function dryRunAlertRule(row) {
     `匹配结果：${result.matched_count || 0}`,
     `预计触发：${result.would_fire_count || 0}`,
   ]
+  const detectors = (result.results || []).map((item) => item.evidence?.detector).filter(Boolean)
+  if (detectors.length) {
+    const first = detectors[0]
+    lines.push(`检测算法：${detectorLabel(first.algorithm)}`)
+    if (first.algorithm !== 'threshold') {
+      if (first.baseline != null) lines.push(`基准值：${first.baseline}`)
+      if (first.delta != null) lines.push(`偏差：${Math.round(first.delta * 100)}%`)
+      if (first.score != null) lines.push(`异常分：${first.score}`)
+    }
+    if (first.detail) lines.push(`说明：${first.detail}`)
+  }
   if (result.error) lines.push(`错误：${result.error}`)
   await ElMessageBox.alert(lines.join('\n'), '规则试运行', {
     confirmButtonText: '知道了',
   })
+}
+
+function detectorLabel(name) {
+  const item = detectorOptions.value.find((option) => option.name === name)
+  return item?.label || name || '-'
 }
 
 async function testAlertRule(row) {
@@ -2402,7 +2502,16 @@ onMounted(async () => {
   users.value = listOf(await getUsers())
   await refreshAll()
   await openRouteAlertDetail()
+  fetchDetectorOptions()
 })
+
+async function fetchDetectorOptions() {
+  try {
+    detectorOptions.value = listOf(await getAlertRuleDetectors())
+  } catch (error) {
+    detectorOptions.value = []
+  }
+}
 
 watch(() => route.params.id, openRouteAlertDetail)
 </script>

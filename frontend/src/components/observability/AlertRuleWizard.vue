@@ -50,6 +50,38 @@
           </div>
           <el-form-item label="查询配置"><el-input v-model="form.query_config_text" type="textarea" :rows="5" spellcheck="false" /></el-form-item>
           <el-form-item label="触发条件"><el-input v-model="form.condition_text" type="textarea" :rows="4" spellcheck="false" /></el-form-item>
+          <el-form-item v-if="form.source_type === 'prometheus'" label="检测算法">
+            <el-select v-model="form.detector_name">
+              <el-option
+                v-for="item in detectorOptions"
+                :key="item.name"
+                :label="item.implemented ? item.label : `${item.label}（未接入）`"
+                :value="item.name"
+                :disabled="!item.implemented"
+              />
+            </el-select>
+          </el-form-item>
+          <div v-if="form.source_type === 'prometheus' && detectorParamFields.length" class="wizard-two-col">
+            <el-form-item v-for="field in detectorParamFields" :key="field.key" :label="field.label">
+              <template v-if="field.type === 'select'">
+                <el-select v-model="form[field.key]">
+                  <el-option v-for="option in field.options" :key="option.value" :label="option.label" :value="option.value" />
+                </el-select>
+              </template>
+              <template v-else>
+                <el-input-number v-model="form[field.key]" :min="field.min ?? 0" :precision="field.precision ?? 0" />
+                <span v-if="field.suffix" class="field-suffix">{{ field.suffix }}</span>
+              </template>
+            </el-form-item>
+          </div>
+          <el-alert
+            v-if="form.source_type === 'prometheus' && form.detector_name !== 'threshold'"
+            title="基准比较基于 Prometheus 历史数据，评估时自动查询最近周期窗口。"
+            type="info"
+            :closable="false"
+            show-icon
+            class="rule-form-tip"
+          />
           <el-checkbox v-model="form.notify_enabled">命中后通知</el-checkbox>
           <el-checkbox v-model="form.auto_analyze">命中后 AIOps 研判</el-checkbox>
           <el-checkbox v-model="form.is_enabled">保存后启用</el-checkbox>
@@ -72,10 +104,10 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import RuleTemplateCatalog from './RuleTemplateCatalog.vue'
-import { dryRunDraftAlertRule } from '@/api/modules/ops'
+import { dryRunDraftAlertRule, getAlertRuleDetectors } from '@/api/modules/ops'
 
 const visible = defineModel({ type: Boolean, default: false })
 const props = defineProps({
@@ -101,7 +133,34 @@ const BUNDLES = [
 const step = ref(0)
 const dryRunning = ref(false)
 const dryRunResult = ref('')
+const detectorOptions = ref([])
 const form = reactive(emptyForm())
+
+const detectorParamFields = computed(() => {
+  const name = form.detector_name
+  if (name === 'yoy' || name === 'wow') {
+    return [
+      { key: 'detector_period', label: '周期', type: 'select', options: [{ label: '按日', value: 'day' }, { label: '按周', value: 'week' }] },
+      { key: 'detector_delta_pct', label: '偏差%', type: 'number', min: 0, suffix: '%' },
+      { key: 'detector_operator', label: '方向', type: 'select', options: [{ label: '上升', value: '>' }, { label: '下降', value: '<' }] },
+    ]
+  }
+  if (name === 'sigma') {
+    return [
+      { key: 'detector_window_minutes', label: '历史窗口', type: 'number', min: 10, suffix: '分钟' },
+      { key: 'detector_sigma_threshold', label: 'Sigma', type: 'number', min: 1, precision: 1, suffix: 'σ' },
+    ]
+  }
+  return []
+})
+
+onMounted(async () => {
+  try {
+    detectorOptions.value = await getAlertRuleDetectors()
+  } catch (error) {
+    detectorOptions.value = []
+  }
+})
 
 const templateBundles = computed(() => BUNDLES.map((bundle) => {
   const templates = props.templates.filter((item) => bundle.codes.includes(item.code))
@@ -130,6 +189,12 @@ function emptyForm() {
     level: 'warning',
     query_config_text: '{}',
     condition_text: '{}',
+    detector_name: 'threshold',
+    detector_period: 'day',
+    detector_delta_pct: 30,
+    detector_operator: '>',
+    detector_window_minutes: 120,
+    detector_sigma_threshold: 3,
     labels: {},
     annotations: {},
     interval_seconds: 60,
@@ -156,6 +221,14 @@ function applyTemplate(template) {
   form.level = template.level
   form.query_config_text = JSON.stringify(template.query_config || {}, null, 2)
   form.condition_text = JSON.stringify(template.condition || {}, null, 2)
+  const detector = template.detector && typeof template.detector === 'object' ? template.detector : {}
+  const detectorParams = detector.params && typeof detector.params === 'object' ? detector.params : {}
+  form.detector_name = detector.name || 'threshold'
+  form.detector_period = detectorParams.period || 'day'
+  form.detector_delta_pct = Number(detectorParams.delta_pct ?? 30)
+  form.detector_operator = detectorParams.operator || '>'
+  form.detector_window_minutes = Number(detectorParams.window_minutes ?? 120)
+  form.detector_sigma_threshold = Number(detectorParams.threshold ?? 3)
   form.labels = { ...(template.labels || {}), integration: form.template_bundle || template.labels?.integration }
   form.annotations = template.annotations || {}
   form.interval_seconds = template.interval_seconds || 60
@@ -167,6 +240,15 @@ function applyTemplate(template) {
 }
 
 function payload() {
+  const detector = form.detector_name === 'threshold'
+    ? { name: 'threshold', params: {} }
+    : {
+        name: form.detector_name,
+        params: {
+          ...(['yoy', 'wow'].includes(form.detector_name) ? { period: form.detector_period, delta_pct: form.detector_delta_pct, operator: form.detector_operator } : {}),
+          ...(form.detector_name === 'sigma' ? { window_minutes: form.detector_window_minutes, threshold: form.detector_sigma_threshold } : {}),
+        },
+      }
   return {
     source: 'custom',
     category: form.category || 'server',
@@ -175,6 +257,7 @@ function payload() {
     level: form.level,
     query_config: JSON.parse(form.query_config_text || '{}'),
     condition: JSON.parse(form.condition_text || '{}'),
+    detector,
     labels: { ...form.labels, integration: form.labels?.integration || form.template_bundle },
     annotations: form.annotations,
     interval_seconds: form.interval_seconds,

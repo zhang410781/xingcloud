@@ -129,6 +129,7 @@ export const archiveAlertRuleTemplate = (id) => request.post(`/alert-rule-templa
 export const instantiateAlertRule = (data) => request.post('/alert-rules/instantiate/', data)
 export const triggerAlertRule = (id, data = {}) => request.post(`/alert-rules/${id}/trigger/`, data)
 export const evaluateAlertRule = (id, data = {}) => request.post(`/alert-rules/${id}/evaluate/`, data)
+export const getAlertRuleDetectors = () => request.get('/alert-rules/detectors/')
 export const getAlertRuleEngineStatus = () => request.get('/alert-rules/engine-status/')
 export const previewAlertRuleNotification = (data) => request.post('/alert-rules/preview-notification/', data)
 export const getAlertRecipients = (params) => request.get('/alert-recipients/', { params })
